@@ -19,6 +19,7 @@ from .const import DOMAIN
 from .coord_assignments import AssignmentsMixin
 from .coord_avatars import AvatarsMixin
 from .coord_badges import BadgeCoordinator
+from .coord_birthdays import BirthdaysMixin
 from .coord_calendar import CalendarMixin
 from .coord_challenges import ChallengesMixin
 from .coord_chores import ChoresMixin
@@ -62,6 +63,7 @@ class TaskMateCoordinator(
     GuestsMixin,
     UnlocksMixin,
     SoundsMixin,
+    BirthdaysMixin,
     TagsMixin,
     DataUpdateCoordinator,
 ):
@@ -363,6 +365,8 @@ class TaskMateCoordinator(
         await self.async_apply_due_scheduled_changes(refresh=False)
         # A restart mid-unlock must never strand the TV on (#678).
         await self.async_resume_unlocks()
+        # Birthday mode (#924): HA may have been off at midnight on the day.
+        await self.async_check_birthdays(refresh=False)
         await self.async_refresh()
         # Schedule midnight streak check at 00:00:05
         self._unsub_midnight = async_track_time_change(
@@ -767,6 +771,8 @@ class TaskMateCoordinator(
             self.async_prune_roulette_state,
             self.async_archive_expired_guests,
             self._async_check_streaks,
+            # Birthday mode (#924): badge + celebration, once per child per day.
+            self.async_check_birthdays,
             self._async_expire_one_shot_chores,
             self._async_expire_dated_chores,
             self._async_expire_deadline_chores,
@@ -870,6 +876,7 @@ class TaskMateCoordinator(
         unavailability_entity: str = "",
         pause_streak_when_unavailable: bool = False,
         linked_user_id: str = "",
+        birthday: str = "",
         presence_entity: str = "",
     ) -> Child:
         """Add a new child."""
@@ -881,10 +888,13 @@ class TaskMateCoordinator(
             unavailability_entity=unavailability_entity,
             pause_streak_when_unavailable=pause_streak_when_unavailable,
             linked_user_id=linked_user_id,
+            birthday=birthday,
             presence_entity=presence_entity,
         )
         self.storage.add_child(child)
         await self.storage.async_save()
+        # A birthday entered on the day still gets its badge and celebration.
+        await self.async_check_birthdays(refresh=False)
         await self.async_refresh()
         return child
 
@@ -892,6 +902,7 @@ class TaskMateCoordinator(
         """Update a child."""
         self.storage.update_child(child)
         await self.storage.async_save()
+        await self.async_check_birthdays(refresh=False)
         await self.async_refresh()
 
     async def async_remove_child(self, child_id: str) -> None:

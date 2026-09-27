@@ -1354,6 +1354,7 @@ class TaskMateStorage:
             "history_days",
             "chore_undo_seconds",
             "weekend_multiplier",
+            "birthday_points_multiplier",
             "difficulty_multiplier_easy",
             "difficulty_multiplier_medium",
             "difficulty_multiplier_hard",

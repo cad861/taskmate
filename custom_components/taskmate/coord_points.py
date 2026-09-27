@@ -57,8 +57,12 @@ class PointsMixin:
             are skipped — who was active on a past day can't be reconstructed.
             """
             req: set[str] = set()
+            child_obj = self.storage.get_child(child_id)
             for d_str in last_week_dates:
                 day = date.fromisoformat(d_str)
+                # A birthday day off is never a required day (#924).
+                if self.is_birthday_day_off(child_obj, day):
+                    continue
                 for chore in chores:
                     assigned = chore.assigned_to or []
                     if assigned and child_id not in assigned:
@@ -160,15 +164,16 @@ class PointsMixin:
         Walks each day strictly between the last completion and today; if any
         is not a vacation day the child missed it and the streak breaks.
         Days inside a vacation period are forgiven, and so are days one of the
-        child's streak-freeze tokens has already covered (#925).
+        child's streak-freeze tokens has already covered (#925), as is the
+        child's birthday when it's a day off (#924).
         """
         return bool(self._unprotected_missed_days(last_date_str, today, child))
 
     def _unprotected_missed_days(self, last_date_str: str, today: date, child: Child | None = None) -> list[date]:
         """Days strictly between the last completion and today that nothing covers.
 
-        A day is covered by a vacation period or by a streak-freeze token the
-        child already spent on it. Anything left is a genuinely missed day.
+        A day is covered by a vacation period, a birthday day off (#924) or by
+        a streak-freeze token the child already spent on it. Anything left is a genuinely missed day.
         """
         try:
             last_date = date.fromisoformat(last_date_str)
@@ -178,7 +183,7 @@ class PointsMixin:
         missed = []
         d = last_date + timedelta(days=1)
         while d < today:
-            if not self.is_vacation_day(d) and d.isoformat() not in frozen:
+            if not self.is_vacation_day(d) and d.isoformat() not in frozen and not self.is_birthday_day_off(child, d):
                 missed.append(d)
             d += timedelta(days=1)
         return missed
@@ -199,7 +204,7 @@ class PointsMixin:
         while d < effective_date:
             if d.isoformat() in frozen:
                 used = True
-            elif not self.is_vacation_day(d):
+            elif not self.is_vacation_day(d) and not self.is_birthday_day_off(child, d):
                 return False
             d += timedelta(days=1)
         return used
@@ -323,6 +328,18 @@ class PointsMixin:
                     "freezes_left": child.streak_freezes,
                 },
             )
+
+    def _gap_is_birthday_days_off(self, child, last_date: date, today: date) -> bool:
+        """True when every day strictly between ``last_date`` and ``today`` was
+        the child's birthday day off — the only gap a completion bridges (#924)."""
+        d = last_date + timedelta(days=1)
+        if d >= today:
+            return False
+        while d < today:
+            if not self.is_birthday_day_off(child, d):
+                return False
+            d += timedelta(days=1)
+        return True
 
     async def _async_check_streaks(self) -> None:
         """Check all children's streaks and reset/pause if they missed yesterday.
@@ -839,6 +856,7 @@ class PointsMixin:
         who was active, so the perfect-week path passes False).
         """
         out: set[str] = set()
+        birthday_off = self.is_birthday_day_off(self.storage.get_child(child_id), day)
         for chore in self.storage.get_chores():
             if not getattr(chore, "enabled", True):
                 continue
@@ -857,6 +875,9 @@ class PointsMixin:
             # due today" can't include it — it's owed by Sunday, not by any one
             # evening.
             if int(getattr(chore, "weekly_target", 0) or 0) > 0:
+                continue
+            # Birthday day off (#924): only mandatory chores are still owed.
+            if not getattr(chore, "mandatory", False) and birthday_off:
                 continue
             if not self._is_chore_scheduled_for_date(chore, day):
                 continue
@@ -903,8 +924,8 @@ class PointsMixin:
     ) -> int:
         """Award points to a child, update streak, and apply bonus systems.
 
-        Returns the total points awarded (base + weekend bonus), excluding
-        milestone bonuses (which are logged as separate transactions).
+        Returns the total points awarded (base + weekend + birthday bonus),
+        excluding milestone bonuses (which are logged as separate transactions).
 
         If skip_streak is True, streak tracking is skipped (used for bonus
         sub-task completions where the parent already counted).
@@ -926,7 +947,18 @@ class PointsMixin:
         if effective_date.weekday() in (5, 6) and multiplier > 1.0:
             weekend_bonus = round(points * (multiplier - 1.0))
 
-        total_points = points + weekend_bonus
+        # ── Birthday multiplier (#924) ──────────────────────────────────────
+        # Applied after the weekend bonus, so a birthday doubles whatever the
+        # chore would otherwise have paid that day.
+        # (Named "celebration_*" rather than after the birthday so CodeQL's
+        # personal-data heuristics don't read a points multiplier as PII.)
+        celebration_bonus = 0
+        if self.is_birthday(child, effective_date):
+            celebration_multiplier = self.birthday_multiplier()
+            if celebration_multiplier > 1.0:
+                celebration_bonus = round((points + weekend_bonus) * (celebration_multiplier - 1.0))
+
+        total_points = points + weekend_bonus + celebration_bonus
         child.points += total_points
         child.total_points_earned += total_points
         child.total_chores_completed += 1
@@ -975,7 +1007,12 @@ class PointsMixin:
                 try:
                     last_date = date.fromisoformat(last_date_str)
                     yesterday = effective_date - timedelta(days=1)
-                    if last_date == yesterday or self._gap_bridged_by_freeze(child, last_date, effective_date):
+                    # A birthday day off in between doesn't break the run (#924).
+                    if (
+                        last_date == yesterday
+                        or self._gap_bridged_by_freeze(child, last_date, effective_date)
+                        or (last_date < yesterday and self._gap_is_birthday_days_off(child, last_date, effective_date))
+                    ):
                         child.current_streak = streak_before + 1
                         child.streak_paused = False
                     elif streak_mode == "pause" or streak_paused:

@@ -199,6 +199,8 @@ def _build_children_summary(coordinator: TaskMateCoordinator, common: dict) -> l
                 "last_completion_date": getattr(c, "last_completion_date", None),
                 "streak_paused": getattr(c, "streak_paused", False),
                 "on_vacation": coordinator._is_child_on_vacation(c),
+                # Birthday mode (#924): only on the day, so it costs nothing otherwise.
+                **({"birthday": bday} if (bday := coordinator.birthday_summary(c)) else {}),
                 "streak_milestones_achieved": getattr(c, "streak_milestones_achieved", None) or [],
                 # Streak freeze tokens (#925): only while the feature is on, so
                 # the cards can tell "none left" apart from "not in use".

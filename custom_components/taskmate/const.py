@@ -267,6 +267,7 @@ NOTIF_TYPE_MANDATORY_PARENT_ALERT: Final = "mandatory_parent_alert"
 NOTIF_TYPE_MONTHLY_REPORT: Final = "monthly_report"
 NOTIF_TYPE_SEASON_CHAMPION: Final = "season_champion"
 NOTIF_TYPE_FAMILY_GOAL_REACHED: Final = "family_goal_reached"
+NOTIF_TYPE_BIRTHDAY: Final = "birthday"
 NOTIF_TYPE_STREAK_FREEZE_USED: Final = "streak_freeze_used"
 NOTIF_TYPE_PRESENCE_ARRIVAL: Final = "presence_arrival"
 
