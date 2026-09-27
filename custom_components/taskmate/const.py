@@ -91,6 +91,7 @@ SERVICE_COMPLETE_CHORE: Final = "complete_chore"
 SERVICE_APPROVE_CHORE: Final = "approve_chore"
 SERVICE_APPROVE_ALL_CHORES: Final = "approve_all_chores"
 SERVICE_REJECT_CHORE: Final = "reject_chore"
+SERVICE_UNDO_CHORE: Final = "undo_chore"
 SERVICE_UNDO_CHORE_APPROVAL: Final = "undo_chore_approval"
 SERVICE_APPLY_MANDATORY_PENALTY: Final = "apply_mandatory_penalty"
 SERVICE_POSTPONE_MANDATORY_CHORE: Final = "postpone_mandatory_chore"
@@ -247,6 +248,11 @@ NOTIF_TYPE_MONTHLY_REPORT: Final = "monthly_report"
 NOTIF_TYPE_SEASON_CHAMPION: Final = "season_champion"
 NOTIF_TYPE_FAMILY_GOAL_REACHED: Final = "family_goal_reached"
 NOTIF_TYPE_STREAK_FREEZE_USED: Final = "streak_freeze_used"
+NOTIF_TYPE_PRESENCE_ARRIVAL: Final = "presence_arrival"
+
+# Presence-aware reminders (#926): the default for how long a child must have
+# been away before arriving home earns a "you're home" nudge.
+DEFAULT_PRESENCE_ARRIVAL_MIN_AWAY: Final = 30
 
 # Default notification tap target. Must match PANEL_URL_PATH in panel.py —
 # a bare /taskmate is the static-files prefix and returns 403, not the panel.
