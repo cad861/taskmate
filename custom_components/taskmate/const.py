@@ -83,6 +83,17 @@ MAX_TIME_PERIODS: Final = 24
 CHORE_NOTE_MAX_LENGTH: Final = 200
 CHORE_SUGGESTED_POINTS_MAX: Final = 999
 
+# NFC / QR tag completion (#923): a chore lists the HA tag ids that complete it.
+# Tag ids are typed or picked by a parent, so both the count and the length are
+# bounded before storage.
+MAX_CHORE_TAGS: Final = 10
+TAG_ID_MAX_LENGTH: Final = 100
+# A phone reading an NFC sticker often fires tag_scanned twice for one tap, so a
+# second scan of the same chore by the same child inside this window is ignored
+# even when the daily limit would allow another completion.
+TAG_SCAN_DEBOUNCE_SECONDS: Final = 60
+EVENT_TAG_COMPLETION: Final = "taskmate_tag_completion"
+
 # Platforms
 PLATFORMS: Final = ["sensor", "button", "binary_sensor"]
 
