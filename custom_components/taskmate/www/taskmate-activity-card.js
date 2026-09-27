@@ -40,13 +40,20 @@ class TaskMateActivityCard extends LitElement {
     return [
       "Weekend bonus", "Streak milestone bonus", "Perfect week bonus",
       "Allocated to pool:", "Pool refund", "Points decay",
-      "Savings interest", "Badge",
+      "Savings interest", "Badge", "Streak freeze",
     ];
   }
 
   _txnReversible(reason) {
     const r = reason || "";
     return !TaskMateActivityCard._UNDO_DENY_PREFIXES.some(p => r.startsWith(p));
+  }
+
+  // Streak-freeze token movements (#925) are logged as zero-point rows. Worded
+  // as points they would read "lost 0", so both render paths give them their
+  // own line: the child, the translated reason, a snowflake — no points.
+  _isFreezeEntry(item) {
+    return !item.points && (item.reason || "").startsWith("Streak freeze");
   }
 
   shouldUpdate(changedProps) {
@@ -99,6 +106,22 @@ class TaskMateActivityCard extends LitElement {
     const streakMatch = reason.match(/^Streak milestone bonus \((\d+) day streak!\)$/);
     if (streakMatch) {
       return this._t('activity.reason_streak_milestone', { days: streakMatch[1] });
+    }
+    // Streak freeze tokens (#925). Zero-point rows: the reason is the news.
+    const freezeUsed = reason.match(/^Streak freeze used \((\d{4}-\d{2}-\d{2})\)$/);
+    if (freezeUsed) {
+      return this._t('activity.reason_streak_freeze_used', { date: freezeUsed[1] });
+    }
+    const freezeEarned = reason.match(/^Streak freeze earned \((\d+) day streak!\)$/);
+    if (freezeEarned) {
+      return this._t('activity.reason_streak_freeze_earned', { days: freezeEarned[1] });
+    }
+    const freezeAdjusted = reason.match(/^Streak freezes adjusted \(([+-]\d+)\)$/);
+    if (freezeAdjusted) {
+      return this._t('activity.reason_streak_freeze_adjusted', { delta: freezeAdjusted[1] });
+    }
+    if (reason === 'Streak freeze reversed') {
+      return this._t('activity.reason_streak_freeze_reversed');
     }
     return reason;
   }
@@ -694,6 +717,30 @@ class TaskMateActivityCard extends LitElement {
     const ago = this._formatAgo(new Date(item.completed_at));
     const klass = this._classifyItem(item);
 
+    // ── Streak-freeze tokens (#925) ───────────────────────
+    if ((type === "points_added" || type === "points_removed") && this._isFreezeEntry(item)) {
+      return html`
+        <div class="activity-item t-bonus">
+          ${this.config.accent_stripes !== false ? html`<div class="event-stripe"></div>` : ''}
+          <div class="activity-row">
+            <div class="activity-icon t-bonus">
+              <ha-icon icon="mdi:snowflake"></ha-icon>
+            </div>
+            <div class="activity-body">
+              <div class="activity-title">
+                <strong>${childName}</strong>
+                <span class="reason">— ${this._translateReason(item.reason)}</span>
+              </div>
+              <div class="activity-meta">
+                <span class="activity-time">${time}</span>
+                ${this.config.show_relative_time !== false ? html`<span class="activity-ago">${ago}</span>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     // ── Manual points transactions ────────────────────────
     if (type === "points_added" || type === "points_removed") {
       const isAdd = type === "points_added";
@@ -913,6 +960,18 @@ class TaskMateActivityCard extends LitElement {
     const type = item.type || "chore";
     const ago = this._formatAgo(new Date(item.completed_at)) || this._formatTime(new Date(item.completed_at));
     const time = this._formatTime(new Date(item.completed_at));
+
+    if ((type === "points_added" || type === "points_removed") && this._isFreezeEntry(item)) {
+      const displayReason = this._translateReason(item.reason);
+      return {
+        childName, tone: 'accent', emoji: '❄️', sign: '', pts: '',
+        text: html`<strong>${childName}</strong> <span class="reason">— ${displayReason}</span>`,
+        plain: `${childName} · ${displayReason}`,
+        ago, time,
+        ptsClass: 'accent',
+        undo: null,
+      };
+    }
 
     if (type === "points_added" || type === "points_removed") {
       const isAdd = type === "points_added";

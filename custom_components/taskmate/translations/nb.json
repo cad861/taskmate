@@ -836,6 +836,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Juster rekkefrys",
+      "description": "Gi et barn rekkefrys (positivt antall) eller ta noen bort (negativt). En tildeling går aldri over grensen streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som får endret frys"
+        },
+        "amount": {
+          "name": "Antall",
+          "description": "Frys som skal legges til (positivt) eller fjernes (negativt)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Utsett obligatorisk oppgave",
       "description": "Gi en glemt obligatorisk oppgave en ny periode (eller i morgen) uten straff, og fjern gjennomgangselementet.",

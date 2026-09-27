@@ -329,7 +329,7 @@ class TaskMatePanel extends HTMLElement {
     return [
       "Weekend bonus", "Streak milestone bonus", "Perfect week bonus",
       "Allocated to pool:", "Pool refund", "Points decay",
-      "Savings interest", "Badge",
+      "Savings interest", "Badge", "Streak freeze",
     ];
   }
 
@@ -374,6 +374,22 @@ class TaskMatePanel extends HTMLElement {
     const streakMatch = reason.match(/^Streak milestone bonus \((\d+) day streak!\)$/);
     if (streakMatch) {
       return this._t('activity.reason_streak_milestone', { days: streakMatch[1] });
+    }
+    // Streak freeze tokens (#925). Zero-point rows: the reason is the news.
+    const freezeUsed = reason.match(/^Streak freeze used \((\d{4}-\d{2}-\d{2})\)$/);
+    if (freezeUsed) {
+      return this._t('activity.reason_streak_freeze_used', { date: freezeUsed[1] });
+    }
+    const freezeEarned = reason.match(/^Streak freeze earned \((\d+) day streak!\)$/);
+    if (freezeEarned) {
+      return this._t('activity.reason_streak_freeze_earned', { days: freezeEarned[1] });
+    }
+    const freezeAdjusted = reason.match(/^Streak freezes adjusted \(([+-]\d+)\)$/);
+    if (freezeAdjusted) {
+      return this._t('activity.reason_streak_freeze_adjusted', { delta: freezeAdjusted[1] });
+    }
+    if (reason === 'Streak freeze reversed') {
+      return this._t('activity.reason_streak_freeze_reversed');
     }
     return reason;
   }
@@ -1822,7 +1838,8 @@ class TaskMatePanel extends HTMLElement {
       quantity_str: "", expires_at: "",
       restock_enabled: false, restock_amount: 0, restock_period: "weekly",
       unlock_entity: "", unlock_minutes: 30,
-      time_lock_enabled: false, available_days: [], available_from: "", available_until: "" };
+      time_lock_enabled: false, available_days: [], available_from: "", available_until: "",
+      streak_freeze: false };
     if (id) {
       const r = (this._state.rewards || []).find(x => x.id === id);
       if (!r) return;
@@ -1850,8 +1867,10 @@ class TaskMatePanel extends HTMLElement {
       description: d.description || "",
       icon: d.icon || "mdi:gift",
       assigned_to: d.assigned_to || [],
-      is_jackpot: !!d.is_jackpot,
+      // A streak freeze is one child's own token, never a shared jackpot (#925).
+      is_jackpot: !d.streak_freeze && !!d.is_jackpot,
       pool_enabled: !!d.pool_enabled,
+      streak_freeze: !!d.streak_freeze,
       quantity: qty,
       expires_at: (d.expires_at || "").trim() || null,
       restock_enabled: !!d.restock_enabled,
@@ -3732,7 +3751,7 @@ class TaskMatePanel extends HTMLElement {
         <div class="tm-child-head">
           <div class="tm-avatar tm-avatar-reward">${this._mdi(r.icon || "mdi:gift")}</div>
           <div class="tm-child-name">
-            <h3>${this._esc(r.name)} ${r.is_jackpot ? `<span class="tm-pill tm-pill-jackpot">🏆 ${this._t("panel.reward_badge_jackpot")}</span>` : ""} ${r.pool_enabled ? `<span class="tm-pill tm-pill-pool">${this._t("panel.reward_badge_pool")}</span>` : ""} ${this._rewardTimeLockPill(r)}</h3>
+            <h3>${this._esc(r.name)} ${r.is_jackpot ? `<span class="tm-pill tm-pill-jackpot">🏆 ${this._t("panel.reward_badge_jackpot")}</span>` : ""} ${r.pool_enabled ? `<span class="tm-pill tm-pill-pool">${this._t("panel.reward_badge_pool")}</span>` : ""} ${r.streak_freeze ? `<span class="tm-pill tm-pill-pool">❄️ ${this._t("panel.reward_badge_streak_freeze")}</span>` : ""} ${this._rewardTimeLockPill(r)}</h3>
             ${this._idBadge(r.id)}
             <div class="tm-meta">${this._esc(r.description || "")}</div>
           </div>
@@ -4789,6 +4808,14 @@ class TaskMatePanel extends HTMLElement {
             <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_streak_all_chores_label")}<small>${this._t("panel.settings_streak_all_chores_hint")}</small></div>
               <ha-switch data-setting="streak_requires_all_chores" ${s.streak_requires_all_chores ? "checked" : ""}></ha-switch>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_streak_freeze_max_label")}<small>${this._t("panel.settings_streak_freeze_max_hint")}</small></div>
+              <input type="number" class="tm-input" min="0" max="10" data-setting="streak_freeze_max" value="${this._num(s.streak_freeze_max, 2)}">
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_streak_freeze_earn_label")}<small>${this._t("panel.settings_streak_freeze_earn_hint")}</small></div>
+              <input type="number" class="tm-input" min="0" max="365" data-setting="streak_freeze_earn_every" value="${this._num(s.streak_freeze_earn_every, 7)}">
             </div>
             <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_weekend_multiplier_label")}<small>${this._t("panel.settings_weekend_multiplier_hint")}</small></div>
@@ -6023,12 +6050,16 @@ class TaskMatePanel extends HTMLElement {
             <span class="tm-field-hint">${this._t("panel.reward_assigned_hint")}</span>
           </div>
         ` : "",
+        // Streak freeze (#925): approving the claim hands the child a token.
+        // It is theirs alone, so the jackpot switch goes away while it's on.
+        this._switch(this._t("panel.reward_streak_freeze_label"), "streak_freeze", d.streak_freeze,
+          this._t("panel.reward_streak_freeze_hint"), true),
         // Jackpot first; toggling it re-renders so the Pool switch below can be
         // hidden — jackpots are always pool-mode (#552), so the separate Pool
         // toggle would be redundant and confusing.
-        this._switch(this._t("panel.reward_is_jackpot_label"), "is_jackpot", d.is_jackpot,
+        d.streak_freeze ? "" : this._switch(this._t("panel.reward_is_jackpot_label"), "is_jackpot", d.is_jackpot,
           this._t("panel.reward_is_jackpot_hint"), true),
-        d.is_jackpot ? "" : this._switch(this._t("panel.reward_pool_label"), "pool_enabled", d.pool_enabled,
+        (d.is_jackpot && !d.streak_freeze) ? "" : this._switch(this._t("panel.reward_pool_label"), "pool_enabled", d.pool_enabled,
           this._t("panel.reward_pool_hint")),
         `<div class="tm-field-row">
           ${this._field(this._t("panel.reward_quantity_label"), "quantity_str", d.quantity_str, "text", this._t("panel.reward_quantity_hint"))}

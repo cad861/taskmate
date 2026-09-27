@@ -836,6 +836,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Ajustar congelamentos de sequência",
+      "description": "Dá congelamentos de sequência a uma criança (quantidade positiva) ou remove alguns (negativa). Uma concessão nunca ultrapassa o limite streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança cujos congelamentos mudam"
+        },
+        "amount": {
+          "name": "Quantidade",
+          "description": "Congelamentos a adicionar (positivo) ou remover (negativo)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Adiar tarefa obrigatória",
       "description": "Dá a uma tarefa obrigatória perdida outro período (ou amanhã) sem penalidade e remove o item de revisão.",

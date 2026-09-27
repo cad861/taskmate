@@ -1321,6 +1321,8 @@ class TaskMateStorage:
                 "best_streak",
                 "career_score",
                 "total_penalties_received",
+                "streak_freezes",
+                "streak_freeze_earned_at",
             ),
             "chores": (
                 "points",

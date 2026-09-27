@@ -144,6 +144,7 @@ def _build_children_summary(coordinator: TaskMateCoordinator, common: dict) -> l
     committed = common["committed_points_by_child"]
     allocated = common["total_allocated_by_child"]
     season = common["season_points"]
+    freezes_on = _safe_int(((common.get("data") or {}).get("settings") or {}).get("streak_freeze_max"), 2) > 0
     summary = []
     for c in children:
         committed_amount = committed.get(c.id, 0)
@@ -199,6 +200,9 @@ def _build_children_summary(coordinator: TaskMateCoordinator, common: dict) -> l
                 "streak_paused": getattr(c, "streak_paused", False),
                 "on_vacation": coordinator._is_child_on_vacation(c),
                 "streak_milestones_achieved": getattr(c, "streak_milestones_achieved", None) or [],
+                # Streak freeze tokens (#925): only while the feature is on, so
+                # the cards can tell "none left" apart from "not in use".
+                **({"streak_freezes": getattr(c, "streak_freezes", 0) or 0} if freezes_on else {}),
                 "awarded_perfect_weeks": getattr(c, "awarded_perfect_weeks", None) or [],
                 "career_score": getattr(c, "career_score", 0) or 0,
                 "total_penalties_received": getattr(c, "total_penalties_received", 0) or 0,
@@ -550,6 +554,9 @@ def _build_rewards_list(common: dict) -> list[dict]:
         # Time lock (#857): only carried for rewards that actually use it. This
         # attribute slice is capped at the recorder's 16 KB limit, so unused
         # feature fields must not cost every reward bytes.
+        # Streak freeze (#925): flag only the rewards that are one.
+        if getattr(r, "streak_freeze", False):
+            out[-1]["streak_freeze"] = True
         if getattr(r, "time_lock_enabled", False):
             out[-1]["time_lock"] = {
                 "days": list(getattr(r, "available_days", []) or []),
@@ -905,6 +912,8 @@ class TaskMateOverallStatsSensor(_CachedAttrsSensor):
             "perfect_week_enabled": settings.get("perfect_week_enabled", "true") == "true",
             "perfect_week_bonus": _safe_int(settings.get("perfect_week_bonus"), 50),
             "streak_requires_all_chores": settings.get("streak_requires_all_chores", "false") in (True, "true"),
+            "streak_freeze_max": max(0, _safe_int(settings.get("streak_freeze_max"), 2)),
+            "streak_freeze_earn_every": max(0, _safe_int(settings.get("streak_freeze_earn_every"), 7)),
             "perfect_week_requires_all_chores": settings.get("perfect_week_requires_all_chores", "false")
             in (True, "true"),
             "total_children": len(children),
