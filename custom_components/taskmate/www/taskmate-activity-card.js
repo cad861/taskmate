@@ -49,6 +49,13 @@ class TaskMateActivityCard extends LitElement {
     return !TaskMateActivityCard._UNDO_DENY_PREFIXES.some(p => r.startsWith(p));
   }
 
+  // Streak-freeze token movements (#925) are logged as zero-point rows. Worded
+  // as points they would read "lost 0", so both render paths give them their
+  // own line: the child, the translated reason, a snowflake — no points.
+  _isFreezeEntry(item) {
+    return !item.points && (item.reason || "").startsWith("Streak freeze");
+  }
+
   shouldUpdate(changedProps) {
     if (changedProps.has("hass")) {
       return window.__taskmate_hasChanged
@@ -707,6 +714,30 @@ class TaskMateActivityCard extends LitElement {
     const ago = this._formatAgo(new Date(item.completed_at));
     const klass = this._classifyItem(item);
 
+    // ── Streak-freeze tokens (#925) ───────────────────────
+    if ((type === "points_added" || type === "points_removed") && this._isFreezeEntry(item)) {
+      return html`
+        <div class="activity-item t-bonus">
+          ${this.config.accent_stripes !== false ? html`<div class="event-stripe"></div>` : ''}
+          <div class="activity-row">
+            <div class="activity-icon t-bonus">
+              <ha-icon icon="mdi:snowflake"></ha-icon>
+            </div>
+            <div class="activity-body">
+              <div class="activity-title">
+                <strong>${childName}</strong>
+                <span class="reason">— ${this._translateReason(item.reason)}</span>
+              </div>
+              <div class="activity-meta">
+                <span class="activity-time">${time}</span>
+                ${this.config.show_relative_time !== false ? html`<span class="activity-ago">${ago}</span>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     // ── Manual points transactions ────────────────────────
     if (type === "points_added" || type === "points_removed") {
       const isAdd = type === "points_added";
@@ -917,6 +948,18 @@ class TaskMateActivityCard extends LitElement {
     const type = item.type || "chore";
     const ago = this._formatAgo(new Date(item.completed_at)) || this._formatTime(new Date(item.completed_at));
     const time = this._formatTime(new Date(item.completed_at));
+
+    if ((type === "points_added" || type === "points_removed") && this._isFreezeEntry(item)) {
+      const displayReason = this._translateReason(item.reason);
+      return {
+        childName, tone: 'accent', emoji: '❄️', sign: '', pts: '',
+        text: html`<strong>${childName}</strong> <span class="reason">— ${displayReason}</span>`,
+        plain: `${childName} · ${displayReason}`,
+        ago, time,
+        ptsClass: 'accent',
+        undo: null,
+      };
+    }
 
     if (type === "points_added" || type === "points_removed") {
       const isAdd = type === "points_added";
