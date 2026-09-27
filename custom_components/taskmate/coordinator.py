@@ -32,6 +32,7 @@ from .coord_rewards import RewardsMixin
 from .coord_roulette import RouletteMixin
 from .coord_scheduled import ScheduledChangesMixin
 from .coord_sounds import SoundsMixin
+from .coord_tags import TagsMixin
 from .coord_templates import TemplatesMixin
 from .coord_timed import TimedMixin
 from .coord_tts import ReadAloudMixin
@@ -61,6 +62,7 @@ class TaskMateCoordinator(
     GuestsMixin,
     UnlocksMixin,
     SoundsMixin,
+    TagsMixin,
     DataUpdateCoordinator,
 ):
     """Coordinator to manage TaskMate data."""
@@ -80,6 +82,7 @@ class TaskMateCoordinator(
         self._unsub_midnight: Callable[[], None] | None = None
         self._unsub_prune: Callable[[], None] | None = None
         self._unsub_availability: Callable[[], None] | None = None
+        self._unsub_tag_scanned: Callable[[], None] | None = None
         self._tracked_availability_entities: set[str] = set()
         self._tracked_visibility_entities: set[str] = set()
         # Bumped whenever a tracked external entity (child availability, chore
@@ -354,6 +357,9 @@ class TaskMateCoordinator(
         # relevant flips trigger a recompute.
         self._refresh_tracked_availability_entities()
         self._unsub_availability = self.hass.bus.async_listen("state_changed", self._availability_state_changed)
+        # NFC / QR tag completion (#923): a scanned tag linked to a chore
+        # completes it for the scanning child.
+        self._unsub_tag_scanned = self.hass.bus.async_listen("tag_scanned", self._tag_scanned)
         # Surprise-bonus daily roll at 16:00 (opt-in; no-op unless enabled)
         self._unsub_surprise = async_track_time_change(
             self.hass, self._async_surprise_bonus_check, hour=16, minute=0, second=0
@@ -709,8 +715,15 @@ class TaskMateCoordinator(
         """Shutdown the coordinator and clean up listeners."""
         self.cancel_unlock_timers()
         self.notifications.cancel_schedules()
-        for attr in ("_unsub_midnight", "_unsub_prune", "_unsub_availability", "_unsub_surprise", "_unsub_weekly"):
-            if unsub := getattr(self, attr):
+        for attr in (
+            "_unsub_midnight",
+            "_unsub_prune",
+            "_unsub_availability",
+            "_unsub_tag_scanned",
+            "_unsub_surprise",
+            "_unsub_weekly",
+        ):
+            if unsub := getattr(self, attr, None):
                 unsub()
                 setattr(self, attr, None)
         self.disarm_mandatory_schedules()
