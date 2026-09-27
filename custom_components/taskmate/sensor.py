@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from . import images
+from .chore_undo import child_undo_metadata, undo_window_seconds
 from .const import DOMAIN
 from .coord_rewards import reward_is_time_locked
 from .coordinator import TaskMateCoordinator
@@ -122,6 +123,7 @@ def _compute_common(coordinator: TaskMateCoordinator) -> dict:
         "reward_lookup": reward_lookup,
         "season_points": season_points,
         "all_completions": all_completions,
+        "chore_undo_seconds": undo_window_seconds(coordinator.storage),
         "pending_completions": pending_completions,
         "pending_reward_claim_objs": pending_reward_claim_objs,
         "pool_alloc_objs": pool_alloc_objs,
@@ -435,6 +437,10 @@ def _build_todays_completions(common: dict) -> list[dict]:
         }
         if timed_secs > 0:
             rec["timed_duration_seconds"] = timed_secs
+        # Child undo (#918): child_undo_pending / child_undo_until, present only
+        # on a completion the child may still take back, so the attribute
+        # stays small (and empty whenever the window is 0).
+        rec.update(child_undo_metadata(comp, common["all_completions"], common.get("chore_undo_seconds", 0)))
         # Emit the bare (unsigned) photo path. A card's <img> carries no bearer
         # token, so the card signs each path per-viewer via auth/sign_path before
         # rendering — this keeps a self-authenticating URL out of this
@@ -613,6 +619,8 @@ def _build_recent_completions(common: dict, limit: int = 35) -> list[dict]:
                 "completed_at": comp.completed_at.isoformat()
                 if hasattr(comp.completed_at, "isoformat")
                 else str(comp.completed_at),
+                # Star rating the parent gave at approval (#927) — only when rated.
+                **({"rating": comp.quality_rating} if getattr(comp, "quality_rating", 0) else {}),
             }
         )
     return out
@@ -1458,7 +1466,7 @@ class PendingApprovalsSensor(TaskMateBaseSensor):
                 )
 
         mandatory_misses = self.coordinator.mandatory_misses_state()
-        return {
+        attrs = {
             "pending_chore_completions": len(pending_completions),
             "pending_reward_claims": len(pending_rewards),
             "pending_mandatory_misses": len(mandatory_misses),
@@ -1466,3 +1474,10 @@ class PendingApprovalsSensor(TaskMateBaseSensor):
             "reward_claims": reward_details,
             "mandatory_misses": mandatory_misses,
         }
+        # Quality rating (#927): tells approval cards to draw the star picker,
+        # and what each star pays. Absent entirely while the feature is off.
+        if self.coordinator.quality_rating_enabled():
+            attrs["quality_rating"] = {
+                "multipliers": [round(m, 3) for _, m in sorted(self.coordinator.quality_rating_multipliers().items())]
+            }
+        return attrs

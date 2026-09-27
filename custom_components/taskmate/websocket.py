@@ -96,6 +96,7 @@ WS_REPORT_FAIRNESS: Final = "taskmate/reports/fairness"
 WS_REPORT_FRICTION: Final = "taskmate/reports/friction"
 WS_REPORT_PROJECTION: Final = "taskmate/reports/projection"
 WS_REPORT_HEALTH: Final = "taskmate/reports/health"
+WS_REPORT_QUALITY: Final = "taskmate/reports/quality"
 WS_SCHEDULED_LIST: Final = "taskmate/scheduled/list"
 WS_SCHEDULED_ADD: Final = "taskmate/scheduled/add"
 WS_SCHEDULED_REMOVE: Final = "taskmate/scheduled/remove"
@@ -172,6 +173,7 @@ WS_NOTIF_DELETE_CUSTOM: Final = "taskmate/notifications/delete_custom"
 WS_NOTIF_LIST_NOTIFY: Final = "taskmate/notifications/list_notify_services"
 WS_NOTIF_SET_STREAK_CUTOFF: Final = "taskmate/notifications/set_streak_cutoff"
 WS_NOTIF_SET_ESCALATION: Final = "taskmate/notifications/set_escalation"
+WS_NOTIF_SET_PRESENCE_ARRIVAL: Final = "taskmate/notifications/set_presence_arrival"
 WS_NOTIF_SEND_TEST: Final = "taskmate/notifications/send_test"
 WS_NOTIF_SET_NAV_URL: Final = "taskmate/notifications/set_nav_url"
 WS_NOTIF_SET_GROUP: Final = "taskmate/notifications/set_group"
@@ -223,6 +225,7 @@ _AUDIT_EXCLUDE: Final = {
     WS_REPORT_FRICTION,
     WS_REPORT_PROJECTION,
     WS_REPORT_HEALTH,
+    WS_REPORT_QUALITY,
 }
 
 
@@ -317,6 +320,14 @@ def _opt_str(v: Any) -> str:
     return str(v).strip()
 
 
+def _validate_presence_entity(value):
+    """voluptuous validator: '' (off) or a person.* / device_tracker.* entity id (#926)."""
+    value = _opt_str(value)
+    if value and not value.startswith(("person.", "device_tracker.")):
+        raise vol.Invalid("presence_entity must be a person.* or device_tracker.* entity")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # State snapshot
 # ---------------------------------------------------------------------------
@@ -384,10 +395,16 @@ def _build_state_snapshot(coordinator: TaskMateCoordinator) -> dict[str, Any]:
             "points_name": data.get("points_name", "Stars"),
             "points_icon": data.get("points_icon", "mdi:star"),
             "card_design": "classic",
+            # Child undo window (#918): off unless a parent opts in.
+            "chore_undo_seconds": 0,
             # Difficulty multiplier defaults; overridden by stored values below.
             "difficulty_multiplier_easy": 0.5,
             "difficulty_multiplier_medium": 1.0,
             "difficulty_multiplier_hard": 2.0,
+            # Quality-rating multipliers (#927); overridden by stored values.
+            "quality_rating_multiplier_1": 0.75,
+            "quality_rating_multiplier_2": 1.0,
+            "quality_rating_multiplier_3": 1.25,
             **(data.get("settings", {}) or {}),
         },
         "parent_completable": parent_completable,
@@ -416,6 +433,7 @@ async def _ws_get_state(hass, connection, msg, coordinator):
         vol.Optional("unavailability_entity", default=""): str,
         vol.Optional("pause_streak_when_unavailable", default=False): bool,
         vol.Optional("linked_user_id", default=""): str,
+        vol.Optional("presence_entity", default=""): _validate_presence_entity,
     }
 )
 @websocket_api.async_response
@@ -429,6 +447,7 @@ async def _ws_add_child(hass, connection, msg, coordinator):
         unavailability_entity=_opt_str(msg.get("unavailability_entity")),
         pause_streak_when_unavailable=bool(msg.get("pause_streak_when_unavailable", False)),
         linked_user_id=_opt_str(msg.get("linked_user_id")),
+        presence_entity=msg.get("presence_entity", ""),
     )
     connection.send_result(msg["id"], {"id": child.id})
 
@@ -444,6 +463,7 @@ async def _ws_add_child(hass, connection, msg, coordinator):
         vol.Optional("unavailability_entity"): str,
         vol.Optional("pause_streak_when_unavailable"): bool,
         vol.Optional("linked_user_id"): str,
+        vol.Optional("presence_entity"): _validate_presence_entity,
         vol.Optional("is_guest"): bool,
         vol.Optional("guest_expires_on"): str,
     }
@@ -469,6 +489,8 @@ async def _ws_update_child(hass, connection, msg, coordinator):
         existing.pause_streak_when_unavailable = bool(msg["pause_streak_when_unavailable"])
     if "linked_user_id" in msg:
         existing.linked_user_id = _opt_str(msg["linked_user_id"])
+    if "presence_entity" in msg:
+        existing.presence_entity = msg["presence_entity"]
     if "is_guest" in msg or "guest_expires_on" in msg:
         # Routed through the coordinator so the expiry is validated and an
         # archived guest is un-archived when promoted to a family member.
@@ -911,6 +933,18 @@ async def _ws_print_chart(hass, connection, msg, coordinator):
         points_name=coordinator.storage.get_points_name(),
     )
     connection.send_result(msg["id"], {"html": html})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_REPORT_QUALITY,
+        vol.Optional("days"): vol.All(int, vol.Range(min=1, max=90)),
+    }
+)
+@websocket_api.async_response
+@_admin_only
+async def _ws_report_quality(hass, connection, msg, coordinator):
+    connection.send_result(msg["id"], coordinator.quality_report(msg.get("days")))
 
 
 @websocket_api.websocket_command({vol.Required("type"): WS_REPORT_HEALTH})
@@ -1667,6 +1701,7 @@ _ALLOWED_CARD_DESIGNS = {"classic", "playroom", "console", "cleanpro", "accessib
 # Settings stored under storage._data["settings"][key]
 _SUBKEY_SETTINGS = {
     "require_linked_child",
+    "chore_undo_seconds",
     "history_days",
     "streak_reset_mode",
     "card_design",
@@ -1681,6 +1716,10 @@ _SUBKEY_SETTINGS = {
     "difficulty_multiplier_easy",
     "difficulty_multiplier_medium",
     "difficulty_multiplier_hard",
+    "quality_rating_enabled",
+    "quality_rating_multiplier_1",
+    "quality_rating_multiplier_2",
+    "quality_rating_multiplier_3",
     "unlock_allowlist",
     "parent_routing",
     "read_aloud_media_player",
@@ -1854,6 +1893,13 @@ def _validate_vacation_periods(raw: list) -> tuple[list[dict] | None, str | None
     return sorted(periods, key=lambda p: p["start"]), None
 
 
+def _validate_chore_undo_seconds(value: Any) -> int:
+    """A whole number of seconds from 0 to 3600 (#918). Booleans are refused."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 3600:
+        raise vol.Invalid("chore_undo_seconds must be a whole number from 0 to 3600")
+    return value
+
+
 # Extracted to a module constant so the accepted settings keys can be unit-tested
 # (the websocket_command decorator does not expose the compiled schema). Every key
 # accepted here must also be routed in _ws_update_settings below.
@@ -1873,8 +1919,13 @@ _UPDATE_SETTINGS_SCHEMA = {
     vol.Optional("difficulty_multiplier_easy"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
     vol.Optional("difficulty_multiplier_medium"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
     vol.Optional("difficulty_multiplier_hard"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
+    vol.Optional("quality_rating_enabled"): bool,
+    vol.Optional("quality_rating_multiplier_1"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=5.0)),
+    vol.Optional("quality_rating_multiplier_2"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=5.0)),
+    vol.Optional("quality_rating_multiplier_3"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=5.0)),
     vol.Optional("unlock_allowlist"): [str],
     vol.Optional("require_linked_child"): bool,
+    vol.Optional("chore_undo_seconds"): _validate_chore_undo_seconds,
     vol.Optional("parent_routing"): vol.In(["all", "home", "round_robin"]),
     vol.Optional("read_aloud_media_player"): str,
     vol.Optional("read_aloud_tts_entity"): str,
@@ -1999,8 +2050,9 @@ async def _ws_update_settings(hass, connection, msg, coordinator):
 @websocket_api.async_response
 @_admin_only
 async def _ws_complete_bonus_subtask(hass, connection, msg, coordinator):
+    # Ticked from the admin panel, so not the child's to undo (#918).
     completion = await coordinator.async_complete_bonus_subtask(
-        msg["chore_id"], msg["bonus_subtask_id"], msg["child_id"]
+        msg["chore_id"], msg["bonus_subtask_id"], msg["child_id"], by_child=False
     )
     connection.send_result(msg["id"], {"id": completion.id})
 
@@ -2011,12 +2063,14 @@ async def _ws_complete_bonus_subtask(hass, connection, msg, coordinator):
         vol.Required("completion_id"): str,
         # Optional per-approval award (#832) — replaces the chore's own points.
         vol.Optional("points"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+        # Optional 1-3 star quality rating (#927).
+        vol.Optional("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
     }
 )
 @websocket_api.async_response
 @_admin_only
 async def _ws_approve_chore(hass, connection, msg, coordinator):
-    await coordinator.async_approve_chore(msg["completion_id"], points=msg.get("points"))
+    await coordinator.async_approve_chore(msg["completion_id"], points=msg.get("points"), rating=msg.get("rating"))
     connection.send_result(msg["id"], {"completion_id": msg["completion_id"]})
 
 
@@ -2024,12 +2078,13 @@ async def _ws_approve_chore(hass, connection, msg, coordinator):
     {
         vol.Required("type"): WS_APPROVE_ALL_CHORES,
         vol.Optional("completion_ids"): [str],
+        vol.Optional("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
     }
 )
 @websocket_api.async_response
 @_admin_only
 async def _ws_approve_all_chores(hass, connection, msg, coordinator):
-    count = await coordinator.async_approve_chores_bulk(msg.get("completion_ids"))
+    count = await coordinator.async_approve_chores_bulk(msg.get("completion_ids"), rating=msg.get("rating"))
     connection.send_result(msg["id"], {"count": count})
 
 
@@ -2329,6 +2384,7 @@ async def ws_notif_get_state(hass, connection, msg, coordinator):
             "streak_at_risk_cutoff_time": c.storage.get_streak_at_risk_cutoff(),
             "mandatory_escalation_reminder_minutes": c.storage.get_escalation_reminder_minutes(),
             "mandatory_escalation_parent_minutes": c.storage.get_escalation_parent_minutes(),
+            "presence_arrival_min_away": c.storage.get_presence_arrival_min_away(),
             "notification_nav_url": c.storage.get_setting("notification_nav_url", DEFAULT_NOTIFICATION_NAV_URL),
             "notification_group": c.storage.get_setting("notification_group", DEFAULT_NOTIFICATION_GROUP),
         },
@@ -2546,6 +2602,19 @@ async def ws_notif_set_streak_cutoff(hass, connection, msg, coordinator):
 async def ws_notif_set_escalation(hass, connection, msg, coordinator):
     coordinator.storage.set_escalation_minutes(msg["reminder_minutes"], msg["parent_minutes"])
     await coordinator.storage.async_save()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_NOTIF_SET_PRESENCE_ARRIVAL,
+        vol.Required("min_away_minutes"): vol.All(vol.Coerce(int), vol.Range(min=0, max=1440)),
+    }
+)
+@websocket_api.async_response
+@_admin_only
+async def ws_notif_set_presence_arrival(hass, connection, msg, coordinator):
+    await coordinator.notifications.set_presence_arrival_min_away(msg["min_away_minutes"])
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -2796,6 +2865,7 @@ _COMMANDS = (
     _ws_report_friction,
     _ws_report_projection,
     _ws_report_health,
+    _ws_report_quality,
     _ws_templates_export,
     _ws_templates_import,
     _ws_print_chart,
@@ -2862,6 +2932,7 @@ _COMMANDS = (
     ws_notif_set_streak_cutoff,
     ws_notif_send_test,
     ws_notif_set_escalation,
+    ws_notif_set_presence_arrival,
     ws_notif_set_nav_url,
     ws_notif_set_group,
     ws_cal_get_url,

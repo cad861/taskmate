@@ -102,6 +102,7 @@ SERVICE_COMPLETE_CHORE: Final = "complete_chore"
 SERVICE_APPROVE_CHORE: Final = "approve_chore"
 SERVICE_APPROVE_ALL_CHORES: Final = "approve_all_chores"
 SERVICE_REJECT_CHORE: Final = "reject_chore"
+SERVICE_UNDO_CHORE: Final = "undo_chore"
 SERVICE_UNDO_CHORE_APPROVAL: Final = "undo_chore_approval"
 SERVICE_APPLY_MANDATORY_PENALTY: Final = "apply_mandatory_penalty"
 SERVICE_POSTPONE_MANDATORY_CHORE: Final = "postpone_mandatory_chore"
@@ -240,6 +241,15 @@ DIFFICULTY_TIERS: Final = ("easy", "medium", "hard")
 DEFAULT_DIFFICULTY: Final = "medium"
 DEFAULT_DIFFICULTY_MULTIPLIERS: Final = {"easy": 0.5, "medium": 1.0, "hard": 2.0}
 
+# --- Chore quality rating (#927) ---
+# When the "quality_rating_enabled" setting is on, a parent may rate an approval
+# 1-3 stars and the chore's base points are scaled by that star's multiplier
+# (configurable via the "quality_rating_multiplier_<n>" settings keys). An
+# unrated approval pays 100%, so turning the feature on changes nothing until a
+# parent actually picks a star.
+QUALITY_RATINGS: Final = (1, 2, 3)
+DEFAULT_QUALITY_RATING_MULTIPLIERS: Final = {1: 0.75, 2: 1.0, 3: 1.25}
+
 # --- Notification type IDs (v3.9.0) ---
 NOTIF_TYPE_BEDTIME_REMINDER: Final = "bedtime_reminder"
 NOTIF_TYPE_STREAK_AT_RISK: Final = "streak_at_risk"
@@ -256,6 +266,11 @@ NOTIF_TYPE_MANDATORY_PARENT_ALERT: Final = "mandatory_parent_alert"
 NOTIF_TYPE_MONTHLY_REPORT: Final = "monthly_report"
 NOTIF_TYPE_SEASON_CHAMPION: Final = "season_champion"
 NOTIF_TYPE_FAMILY_GOAL_REACHED: Final = "family_goal_reached"
+NOTIF_TYPE_PRESENCE_ARRIVAL: Final = "presence_arrival"
+
+# Presence-aware reminders (#926): the default for how long a child must have
+# been away before arriving home earns a "you're home" nudge.
+DEFAULT_PRESENCE_ARRIVAL_MIN_AWAY: Final = 30
 
 # Default notification tap target. Must match PANEL_URL_PATH in panel.py —
 # a bare /taskmate is the static-files prefix and returns 403, not the panel.

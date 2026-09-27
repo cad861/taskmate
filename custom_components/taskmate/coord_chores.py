@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING
 from homeassistant.util import dt as dt_util
 
 from . import images, photos
-from .const import CHORE_NOTE_MAX_LENGTH, CHORE_SUGGESTED_POINTS_MAX
+from .chore_undo import child_can_undo, undo_window_seconds
+from .const import CHORE_NOTE_MAX_LENGTH, CHORE_SUGGESTED_POINTS_MAX, QUALITY_RATINGS
 from .models import Chore, ChoreCompletion, PointsTransaction
 
 if TYPE_CHECKING:
@@ -395,7 +396,9 @@ class ChoresMixin:
         await self.async_refresh()
         return count
 
-    async def async_approve_chores_bulk(self, completion_ids: list[str] | None = None) -> int:
+    async def async_approve_chores_bulk(
+        self, completion_ids: list[str] | None = None, rating: int | None = None
+    ) -> int:
         """Approve several pending chore completions at once. Returns count approved.
 
         If completion_ids is given, only those (still-pending) completions are
@@ -411,6 +414,9 @@ class ChoresMixin:
         the button reads as broken. The batch refreshes once at the end instead.
         Safe because the per-approval side-effects (badges, quests, challenges,
         the all-done check) all read `storage` directly, never `self.data`.
+
+        ``rating`` (#927) applies the same 1-3 star quality rating to every
+        approval in the batch; see ``async_approve_chore``.
         """
         pending = {c.id for c in self.storage.get_completions() if not c.approved}
         if completion_ids:
@@ -418,9 +424,10 @@ class ChoresMixin:
             targets = [cid for cid in dict.fromkeys(completion_ids) if cid in pending]
         else:
             targets = [c.id for c in self.storage.get_completions() if not c.approved]
+        rated = {"rating": rating} if rating is not None else {}
         count = 0
         for cid in targets:
-            await self.async_approve_chore(cid, refresh=False)
+            await self.async_approve_chore(cid, refresh=False, **rated)
             count += 1
         if count:
             await self.async_refresh()
@@ -885,6 +892,10 @@ class ChoresMixin:
             photo_url=photo_url or "",
             note=note,
             suggested_points=suggested_points,
+            # A child's own submission may be taken back inside the undo
+            # window (#918); one a parent made on their behalf may not, and
+            # nothing made while the window is 0 (off) ever can.
+            child_undo_allowed=not as_parent and undo_window_seconds(self.storage) > 0,
         )
 
         # Record the completion before awarding anything. Awarding can suspend
@@ -1014,9 +1025,13 @@ class ChoresMixin:
         return completion
 
     async def async_complete_bonus_subtask(
-        self, chore_id: str, bonus_subtask_id: str, child_id: str
+        self, chore_id: str, bonus_subtask_id: str, child_id: str, by_child: bool = True
     ) -> ChoreCompletion:
-        """Complete a bonus sub-task (only available after parent chore is completed today)."""
+        """Complete a bonus sub-task (only available after parent chore is completed today).
+
+        ``by_child=False`` marks a completion made from the admin panel, which
+        the child may not undo (#918).
+        """
         chore = self.get_chore(chore_id)
         if not chore:
             raise ValueError(f"Chore {chore_id} not found")
@@ -1074,6 +1089,7 @@ class ChoresMixin:
             points_awarded=subtask.points if not chore.requires_approval else 0,
             submitted_points=subtask.points,
             bonus_subtask_id=bonus_subtask_id,
+            child_undo_allowed=by_child and undo_window_seconds(self.storage) > 0,
         )
 
         # Written before the award for the same reason as the main completion
@@ -1097,7 +1113,13 @@ class ChoresMixin:
         await self.async_refresh()
         return completion
 
-    async def async_approve_chore(self, completion_id: str, refresh: bool = True, points: int | None = None) -> None:
+    async def async_approve_chore(
+        self,
+        completion_id: str,
+        refresh: bool = True,
+        points: int | None = None,
+        rating: int | None = None,
+    ) -> None:
         """Approve a chore completion.
 
         ``refresh=False`` is used by ``async_approve_chores_bulk`` so a batch
@@ -1111,6 +1133,15 @@ class ChoresMixin:
         would for an ordinary approval. ``None`` means "pay what the submission
         was worth when it was made", falling back to the chore's value for
         completions recorded before that was stored.
+
+        ``rating`` is the parent's optional 1-3 star quality rating (#927),
+        honoured only while the ``quality_rating_enabled`` setting is on. It
+        scales the base points by that star's multiplier before the streak and
+        weekend multipliers ride on top, and is stored on the completion. No
+        rating pays 100%. An explicit ``points`` award is already the parent's
+        own valuation, so it is paid as-is and the rating is only recorded.
+        Because the scaled total lands in ``points_awarded``, undo and reject
+        reverse exactly what the rating paid.
         """
         completions = self.storage.get_completions()
         for completion in completions:
@@ -1149,6 +1180,20 @@ class ChoresMixin:
                         pts = self._apply_time_adjustment(
                             chore, self.effective_chore_points(chore), completion.completed_at
                         )
+                    stars = 0
+                    if rating is not None and self.quality_rating_enabled():
+                        try:
+                            stars = int(rating)
+                        except (TypeError, ValueError):
+                            stars = 0
+                        if stars not in QUALITY_RATINGS:
+                            _LOGGER.warning("Ignoring invalid quality rating %r for %s", rating, completion_id)
+                            stars = 0
+                    if stars and points is None:
+                        # Half-up, like the cards' preview (Python's round() is
+                        # half-to-even, so ★ on a 30-point chore would pay 22
+                        # where the card showed 23).
+                        pts = max(0, int(pts * self.quality_rating_multipliers()[stars] + 0.5))
                     if points is not None:
                         # An explicit award overrides every per-chore
                         # calculation above (bonus sub-task, timed rate,
@@ -1170,6 +1215,10 @@ class ChoresMixin:
                     completion.approved = True
                     completion.approved_at = dt_util.now()
                     completion.points_awarded = 0
+                    completion.quality_rating = stars
+                    # A parent has reviewed it: the child can no longer undo
+                    # it, whatever the window says (#918).
+                    completion.child_undo_allowed = False
                     self.storage.update_completion(completion)
 
                     total_awarded = await self._award_points(
@@ -1195,6 +1244,7 @@ class ChoresMixin:
                             "chore_id": completion.chore_id,
                             "completion_id": completion.id,
                             "timestamp": dt_util.now().isoformat(),
+                            **({"quality_rating": stars} if stars else {}),
                         },
                     )
 
@@ -1362,8 +1412,32 @@ class ChoresMixin:
 
         return bonus_completions
 
-    async def async_reject_chore(self, completion_id: str) -> None:
-        """Reject a chore completion and fully reverse all awards if already granted."""
+    async def async_undo_chore(self, completion_id: str) -> None:
+        """A child takes back their own completion (#918).
+
+        Allowed only for a pending submission no parent has reviewed yet, or an
+        auto-approved one still inside the global undo window — see
+        ``chore_undo``. The caller has already checked the linked-child rule
+        against the completion's *stored* child. Everything from the re-read to
+        the reversal inside ``async_reject_chore`` runs without yielding, so a
+        parent's approval or a second undo can't slip in between the check and
+        the reversal.
+        """
+        completions = self.storage.get_completions()
+        completion = next((c for c in completions if c.id == completion_id), None)
+        if completion is None:
+            raise ValueError("This chore has already been undone. Refresh the card.")
+        if not child_can_undo(completion, completions, undo_window_seconds(self.storage)):
+            raise ValueError("This chore can't be undone any more. Ask a parent to undo it.")
+        await self.async_reject_chore(completion_id, event="taskmate_chore_undone")
+
+    async def async_reject_chore(self, completion_id: str, event: str = "taskmate_chore_rejected") -> None:
+        """Reject a chore completion and fully reverse all awards if already granted.
+
+        ``event`` is the bus event fired afterwards; a child's own undo fires
+        ``taskmate_chore_undone`` so automations can tell it from a parent's
+        rejection.
+        """
         completions = self.storage.get_completions()
         target_completion = next((c for c in completions if c.id == completion_id), None)
 
@@ -1389,7 +1463,7 @@ class ChoresMixin:
             child = self.get_child(target_completion.child_id)
             chore = self.get_chore(target_completion.chore_id)
             self.hass.bus.async_fire(
-                "taskmate_chore_rejected",
+                event,
                 {
                     "child_id": target_completion.child_id,
                     "child_name": getattr(child, "name", ""),
@@ -1436,11 +1510,18 @@ class ChoresMixin:
             bc.approved = False
             bc.approved_at = None
             bc.points_awarded = 0
+            bc.quality_rating = 0
+            bc.child_undo_allowed = False
             self.storage.update_completion(bc)
 
         target.approved = False
         target.approved_at = None
         target.points_awarded = 0
+        # The rating belonged to the approval being undone (#927); a
+        # re-approval rates it afresh.
+        target.quality_rating = 0
+        # A parent touched it, so child undo stays locked (#918).
+        target.child_undo_allowed = False
         self.storage.update_completion(target)
 
         # Quest progress advanced on approval, so it has to come back too —

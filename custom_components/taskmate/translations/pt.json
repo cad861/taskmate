@@ -179,6 +179,10 @@
         "points": {
           "name": "Pontos",
           "description": "Atribuir este número de pontos em vez do valor da própria tarefa. Deixe vazio para usar os pontos da tarefa."
+        },
+        "rating": {
+          "name": "Avaliação de qualidade",
+          "description": "Avaliação opcional de 1 a 3 estrelas sobre a qualidade da tarefa. Com as avaliações de qualidade ativadas, os pontos são multiplicados pelo multiplicador dessa estrela; deixe vazio para pagar 100%."
         }
       }
     },
@@ -189,6 +193,10 @@
         "completion_ids": {
           "name": "IDs de conclusão",
           "description": "IDs de conclusão específicos para aprovar; omita para aprovar todas as pendentes"
+        },
+        "rating": {
+          "name": "Avaliação de qualidade",
+          "description": "Avaliação opcional de 1 a 3 estrelas aplicada a todas as tarefas aprovadas por esta chamada (as avaliações de qualidade têm de estar ativadas)."
         }
       }
     },
@@ -199,6 +207,16 @@
         "completion_id": {
           "name": "ID de conclusão",
           "description": "O ID da conclusão da tarefa a rejeitar"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Anular tarefa",
+      "description": "Permite a uma criança retirar a sua própria tarefa — uma submissão pendente até um pai a rever, ou uma tarefa aprovada automaticamente dentro da janela de anulação. Desligado a menos que a janela esteja acima de 0 nas definições do TaskMate; o que um pai já reviu só pode ser anulado por um pai.",
+      "fields": {
+        "completion_id": {
+          "name": "ID de conclusão",
+          "description": "O ID da tarefa concluída pela criança a retirar"
         }
       }
     },

@@ -179,6 +179,10 @@
         "points": {
           "name": "Points",
           "description": "Attribuer ce nombre de points au lieu de la valeur de la tâche. Laisser vide pour utiliser les points de la tâche."
+        },
+        "rating": {
+          "name": "Note de qualité",
+          "description": "Note facultative de 1 à 3 étoiles sur la qualité du travail. Quand les notes de qualité sont activées, les points sont multipliés par le coefficient de cette note ; laissez vide pour verser 100 %."
         }
       }
     },
@@ -189,6 +193,10 @@
         "completion_ids": {
           "name": "Identifiants de complétion",
           "description": "Identifiants de complétion à approuver ; laisser vide pour tout approuver"
+        },
+        "rating": {
+          "name": "Note de qualité",
+          "description": "Note facultative de 1 à 3 étoiles appliquée à chaque tâche approuvée par cet appel (les notes de qualité doivent être activées)."
         }
       }
     },
@@ -199,6 +207,16 @@
         "completion_id": {
           "name": "ID de complétion",
           "description": "L'identifiant de l'exécution à rejeter"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Annuler une tâche",
+      "description": "Permet à un enfant de reprendre sa propre tâche — une soumission en attente tant qu'un parent ne l'a pas examinée, ou une tâche approuvée automatiquement pendant la fenêtre d'annulation. Désactivé tant que la fenêtre n'est pas réglée au-dessus de 0 dans les paramètres TaskMate ; tout ce qu'un parent a examiné doit être annulé par un parent.",
+      "fields": {
+        "completion_id": {
+          "name": "ID de réalisation",
+          "description": "L'ID de la tâche réalisée par l'enfant à reprendre"
         }
       }
     },

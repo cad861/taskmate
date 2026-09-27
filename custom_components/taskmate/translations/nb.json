@@ -179,6 +179,10 @@
         "points": {
           "name": "Poeng",
           "description": "Gi dette antallet poeng i stedet for oppgavens egen verdi. La stå tomt for å bruke oppgavens poeng."
+        },
+        "rating": {
+          "name": "Kvalitetsvurdering",
+          "description": "Valgfri vurdering på 1-3 stjerner av hvor godt oppgaven ble gjort. Når kvalitetsvurdering er slått på, skaleres poengene med stjernens multiplikator; la feltet stå tomt for å gi 100 %."
         }
       }
     },
@@ -189,6 +193,10 @@
         "completion_ids": {
           "name": "Fullførings-ID-er",
           "description": "Bestemte fullførings-ID-er som skal godkjennes; utelat for å godkjenne alle ventende"
+        },
+        "rating": {
+          "name": "Kvalitetsvurdering",
+          "description": "Valgfri vurdering på 1-3 stjerner som gjelder alle oppgaver godkjent med dette kallet (kvalitetsvurdering må være slått på)."
         }
       }
     },
@@ -199,6 +207,16 @@
         "completion_id": {
           "name": "Fullførings-ID",
           "description": "ID-en til oppgavefullføringen som skal avvises"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Angre gjøremål",
+      "description": "La et barn ta tilbake sitt eget gjøremål — en innsending som venter, helt til en forelder har gått gjennom den, eller et automatisk godkjent gjøremål innenfor angrevinduet. Av med mindre vinduet er satt over 0 i TaskMate-innstillingene; alt en forelder har gått gjennom, må en forelder angre.",
+      "fields": {
+        "completion_id": {
+          "name": "Fullførings-ID",
+          "description": "ID-en til barnets fullførte gjøremål som skal tas tilbake"
         }
       }
     },

@@ -15,10 +15,11 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 
 from . import authz
 from .const import (
@@ -35,10 +36,12 @@ from .const import (
     NOTIF_TYPE_MONTHLY_REPORT,
     NOTIF_TYPE_PENDING_CHORE_APPROVAL,
     NOTIF_TYPE_PENDING_REWARD_CLAIM,
+    NOTIF_TYPE_PRESENCE_ARRIVAL,
     NOTIF_TYPE_SEASON_CHAMPION,
     NOTIF_TYPE_STREAK_AT_RISK,
     NOTIF_TYPE_STREAK_MILESTONE,
     NOTIF_TYPE_WEEKLY_DIGEST,
+    QUALITY_RATINGS,
 )
 from .models import NotificationRoute
 from .timewindow import is_within_window, parse_hhmm
@@ -48,6 +51,11 @@ _LOGGER = logging.getLogger(__name__)
 # Appended to actionable notifications sent to non-mobile_app backends, which
 # silently ignore tap actions. Gives those recipients a way to act.
 _APPROVE_IN_PANEL_HINT = "Open the TaskMate panel to approve or reject."
+
+# Mobile action id prefix for "approve with an N-star quality rating" (#927):
+# TASKMATE_RATE_<n>_<completion id>. Distinct from TASKMATE_APPROVE_ so the
+# original Approve/Reject ids keep working unchanged when ratings are off.
+_RATE_ACTION_PREFIX = "TASKMATE_RATE_"
 
 
 def _approval_tag(entry_id: str) -> str:
@@ -87,6 +95,7 @@ NOTIFICATION_TYPES: list[NotificationTypeMeta] = [
     NotificationTypeMeta(NOTIF_TYPE_MONTHLY_REPORT, "parent", False, False, False, False),
     NotificationTypeMeta(NOTIF_TYPE_SEASON_CHAMPION, "both", False, False, False, False),
     NotificationTypeMeta(NOTIF_TYPE_FAMILY_GOAL_REACHED, "both", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_PRESENCE_ARRIVAL, "child", False, False, False, False),
 ]
 
 NOTIFICATION_TYPES_BY_ID: dict[str, NotificationTypeMeta] = {t.id: t for t in NOTIFICATION_TYPES}
@@ -128,6 +137,31 @@ def _validate_group(value: str) -> str:
     return value
 
 
+# Presence-aware reminders (#926): the child-facing nags that wait for a child
+# who is out. Custom reminders are held too (see _make_custom_callback). Good
+# news (badges, level-ups, celebrations) is never held — only the nagging.
+_PRESENCE_DEFERRED_TYPES = frozenset(
+    {
+        NOTIF_TYPE_BEDTIME_REMINDER,
+        NOTIF_TYPE_STREAK_AT_RISK,
+        NOTIF_TYPE_MANDATORY_REMINDER,
+    }
+)
+
+_PRESENCE_HOME_STATES = ("home", "on", "true", "present")
+
+
+def _presence_is_home(state: str | None) -> bool | None:
+    """Read a presence state: True home, False away, None when it can't tell.
+
+    ``unavailable``/``unknown`` are "can't tell" rather than away, so a flaky
+    tracker neither starts an absence nor fakes an arrival.
+    """
+    if state is None or state in ("unavailable", "unknown", ""):
+        return None
+    return str(state).lower() in _PRESENCE_HOME_STATES
+
+
 # Quiet hours reuse the shared time-of-day window helpers (also used by
 # time-locked rewards, #857).
 _parse_hhmm = parse_hhmm
@@ -149,6 +183,12 @@ class NotificationCoordinator:
         self.storage = storage
         self._scheduled_unsubs: list = []  # cancellation handles for time triggers
         self.coordinator: Any = None
+        # Presence-aware reminders (#926). Runtime-only: child_id -> linked
+        # entity, when each child left, and who had a reminder held back.
+        self._presence_unsub = None
+        self._presence_entities: dict[str, str] = {}
+        self._presence_away_since: dict[str, datetime] = {}
+        self._presence_deferred: set[str] = set()
 
     async def fire(
         self,
@@ -196,6 +236,10 @@ class NotificationCoordinator:
                 continue
             notify_service = self._resolve_notify_service(recipient_id)
             if not notify_service:
+                continue
+            if type_id in _PRESENCE_DEFERRED_TYPES and self._defer_if_away(recipient_id):
+                # The child is out (#926): hold the nag for the arrival nudge
+                # instead of buzzing them at the park.
                 continue
             await self._send_to(notify_service, message, meta, context, nav_url, group)
             recipients_fired.append(recipient_id)
@@ -301,6 +345,7 @@ class NotificationCoordinator:
             "month": "January 2026",
             "goal_name": "Movie night fund",
             "goal_reward": "a family movie night",
+            "count": 3,
             "points_name": self.storage.get_points_name(),
         }
         message = "[TEST] " + self._render_template(meta, ctx)
@@ -379,6 +424,7 @@ class NotificationCoordinator:
             NOTIF_TYPE_MONTHLY_REPORT: "TaskMate {month} report:\n{summary}",
             NOTIF_TYPE_SEASON_CHAMPION: "🏆 {child_name} won the {month} leaderboard with {points} {points_name}!",
             NOTIF_TYPE_FAMILY_GOAL_REACHED: "🎉 Family goal reached: {goal_name}! Time for {goal_reward}.",
+            NOTIF_TYPE_PRESENCE_ARRIVAL: "🏠 You're home, {child_name} — {count} chores left today.",
         }
         tpl = context.get("message_template") or templates.get(meta.id, "")
         try:
@@ -425,10 +471,7 @@ class NotificationCoordinator:
                     # `tag` lets us dismiss this push later (clear_approval) once
                     # the item is reviewed — see _approval_tag.
                     push["tag"] = _approval_tag(entry_id)
-                    push["actions"] = [
-                        {"action": f"TASKMATE_APPROVE_{entry_id}", "title": "Approve"},
-                        {"action": f"TASKMATE_REJECT_{entry_id}", "title": "Reject"},
-                    ]
+                    push["actions"] = self._approval_actions(meta.id, entry_id)
             else:
                 data["message"] = f"{message} {_APPROVE_IN_PANEL_HINT}"
 
@@ -460,6 +503,32 @@ class NotificationCoordinator:
             await self.hass.services.async_call(domain, service, data, blocking=False)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("notify call failed for %s: %s", notify_service, err)
+
+    def _approval_actions(self, type_id: str, entry_id: str) -> list[dict[str, str]]:
+        """Mobile action buttons for a pending-approval push.
+
+        With quality ratings on (#927) a chore approval offers the three star
+        ratings instead of a plain Approve, so a parent can rate from the lock
+        screen. Reject goes last: Android shows at most three actions, so the
+        ratings take priority there and Reject stays in the panel/card. With
+        the feature off — and always for reward claims — the push keeps the
+        original Approve/Reject ids, so older pushes still in flight resolve.
+        """
+        coordinator = getattr(self, "coordinator", None)
+        rated = (
+            type_id == NOTIF_TYPE_PENDING_CHORE_APPROVAL
+            and coordinator is not None
+            and coordinator.quality_rating_enabled()
+        )
+        if rated:
+            return [
+                *({"action": f"{_RATE_ACTION_PREFIX}{n}_{entry_id}", "title": "★" * n} for n in QUALITY_RATINGS),
+                {"action": f"TASKMATE_REJECT_{entry_id}", "title": "Reject"},
+            ]
+        return [
+            {"action": f"TASKMATE_APPROVE_{entry_id}", "title": "Approve"},
+            {"action": f"TASKMATE_REJECT_{entry_id}", "title": "Reject"},
+        ]
 
     async def clear_approval(self, type_id: str, entry_id: str) -> None:
         """Dismiss the mobile push for a reviewed approval (chore or reward).
@@ -537,7 +606,20 @@ class NotificationCoordinator:
             _LOGGER.warning("Ignoring TaskMate mobile action from a non-parent user")
             return
 
-        if action.startswith("TASKMATE_APPROVE_"):
+        if action.startswith(_RATE_ACTION_PREFIX):
+            # TASKMATE_RATE_<n>_<completion id> (#927): approve with a rating.
+            stars, _, entry_id = action[len(_RATE_ACTION_PREFIX) :].partition("_")
+            try:
+                rating = int(stars)
+            except ValueError:
+                _LOGGER.info("Mobile action %s — malformed rating", action)
+                return
+
+            async def _approve_rated(completion_id: str) -> None:
+                await coordinator.async_approve_chore(completion_id, rating=rating)
+
+            await self._review_from_mobile(action, entry_id, _approve_rated, coordinator.async_approve_reward)
+        elif action.startswith("TASKMATE_APPROVE_"):
             await self._review_from_mobile(
                 action,
                 action[len("TASKMATE_APPROVE_") :],
@@ -687,6 +769,8 @@ class NotificationCoordinator:
                 notify_service = self._resolve_notify_service(recipient_id)
                 if not notify_service:
                     continue
+                if self._defer_if_away(recipient_id):
+                    continue  # held for the arrival nudge (#926)
                 child_name = ""
                 if recipient_id.startswith("child:"):
                     child = self.storage.get_child(recipient_id.split(":", 1)[1])
@@ -723,6 +807,161 @@ class NotificationCoordinator:
             )
 
         return _cb
+
+    # ------------------------------------------------------------------
+    # Presence-aware reminders (#926)
+    # ------------------------------------------------------------------
+
+    def child_is_away(self, child_id: str) -> bool:
+        """True only when the child's presence entity positively says "not home".
+
+        No entity, a missing entity, or an unavailable/unknown one all read as
+        home: a broken tracker must not silence every reminder.
+        """
+        entity_id = self._presence_entities.get(child_id)
+        if entity_id is None:
+            child = self.storage.get_child(child_id)
+            entity_id = (getattr(child, "presence_entity", "") or "").strip() if child else ""
+        if not entity_id:
+            return False
+        state = self.hass.states.get(entity_id)
+        return _presence_is_home(getattr(state, "state", None)) is False
+
+    def _defer_if_away(self, recipient_id: str) -> bool:
+        """Hold a reminder for an away child; True means "don't send it now"."""
+        if not recipient_id.startswith("child:"):
+            return False
+        child_id = recipient_id.split(":", 1)[1]
+        if not self.child_is_away(child_id):
+            return False
+        self._presence_deferred.add(child_id)
+        return True
+
+    def sync_presence_tracking(self) -> None:
+        """(Re)subscribe to the children's presence entities if they changed.
+
+        Cheap enough to call on every coordinator refresh: it compares the
+        child -> entity map and only resubscribes on a difference, so adding,
+        editing, removing or importing a child all pick it up.
+        """
+        wanted: dict[str, str] = {}
+        for child in self.storage.get_children():
+            entity_id = (getattr(child, "presence_entity", "") or "").strip()
+            if entity_id:
+                wanted[child.id] = entity_id
+        if wanted == self._presence_entities and (self._presence_unsub is not None or not wanted):
+            return
+
+        self.cancel_presence_tracking()
+        # A child whose entity changed (or was removed) starts from scratch —
+        # an absence measured on the old tracker says nothing about the new one.
+        for child_id in list(self._presence_away_since):
+            if wanted.get(child_id) != self._presence_entities.get(child_id):
+                self._presence_away_since.pop(child_id, None)
+        self._presence_deferred &= set(wanted)
+        self._presence_entities = wanted
+        if not wanted:
+            return
+
+        from homeassistant.util import dt as dt_util
+
+        # Seed absences already under way (e.g. across a restart) from the
+        # entity's own last_changed, so the min-away rule still holds.
+        for child_id, entity_id in wanted.items():
+            if child_id in self._presence_away_since:
+                continue
+            state = self.hass.states.get(entity_id)
+            if _presence_is_home(getattr(state, "state", None)) is False:
+                since = getattr(state, "last_changed", None)
+                self._presence_away_since[child_id] = since if isinstance(since, datetime) else dt_util.now()
+
+        self._presence_unsub = async_track_state_change_event(
+            self.hass,
+            sorted(set(wanted.values())),
+            self._presence_state_changed,
+        )
+
+    def cancel_presence_tracking(self) -> None:
+        """Drop the presence subscription (idempotent; also used on unload)."""
+        if self._presence_unsub is not None:
+            with contextlib.suppress(Exception):
+                self._presence_unsub()
+            self._presence_unsub = None
+
+    @callback
+    def _presence_state_changed(self, event) -> None:
+        data = getattr(event, "data", None) or {}
+        entity_id = data.get("entity_id")
+        new_state = data.get("new_state")
+        is_home = _presence_is_home(getattr(new_state, "state", None))
+        if is_home is None:
+            return  # flaky tracker: keep whatever we last knew
+
+        from homeassistant.util import dt as dt_util
+
+        now = dt_util.now()
+        for child_id, tracked in self._presence_entities.items():
+            if tracked != entity_id:
+                continue
+            if not is_home:
+                # Moving between zones (school -> park) is one absence.
+                self._presence_away_since.setdefault(child_id, now)
+                continue
+            # Consume the absence here, synchronously, so a burst of "home"
+            # updates (GPS jitter) can only ever produce one nudge.
+            away_since = self._presence_away_since.pop(child_id, None)
+            deferred = child_id in self._presence_deferred
+            self._presence_deferred.discard(child_id)
+            if away_since is None and not deferred:
+                continue
+            self.hass.async_create_task(self.async_arrival_nudge(child_id, away_since, deferred, now))
+
+    async def async_arrival_nudge(
+        self,
+        child_id: str,
+        away_since: datetime | None,
+        deferred: bool,
+        now: datetime,
+    ) -> bool:
+        """Send one "you're home — N chores left" nudge. Returns True if fired.
+
+        Fires when the child was out for at least the configured minimum, or
+        when a reminder was held back while they were out (however short the
+        trip — held reminders are deferred, never dropped). Held reminders
+        collapse into this single nudge rather than replaying one by one.
+        Quiet hours still apply, via ``fire()``.
+        """
+        child = self.storage.get_child(child_id)
+        if child is None:
+            return False
+        if not deferred:
+            min_away = timedelta(minutes=self.storage.get_presence_arrival_min_away())
+            if away_since is None or now - away_since < min_away:
+                return False
+        count = self._outstanding_chore_count(child_id)
+        if count <= 0:
+            return False
+        await self.fire(
+            NOTIF_TYPE_PRESENCE_ARRIVAL,
+            {"child_name": child.name, "child_id": child_id, "count": count},
+            only_recipients={f"child:{child_id}"},
+        )
+        return True
+
+    def _outstanding_chore_count(self, child_id: str) -> int:
+        """How many chores the child still owes today (what their card shows)."""
+        coordinator = getattr(self, "coordinator", None)
+        due = getattr(coordinator, "get_due_chores_for_child", None) if coordinator else None
+        if callable(due):
+            try:
+                return len(due(child_id))
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Due-chore lookup failed for %s", child_id, exc_info=True)
+        return 1 if self._has_outstanding_chores_today(child_id) else 0
+
+    async def set_presence_arrival_min_away(self, minutes: int) -> None:
+        self.storage.set_presence_arrival_min_away(minutes)
+        await self.storage.async_save()
 
     # ------------------------------------------------------------------
     # CRUD wrappers — persist + reload schedules as needed

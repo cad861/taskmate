@@ -117,6 +117,24 @@ class TaskMateCoordinator(
         except (ValueError, TypeError):
             return default
 
+    def quality_rating_enabled(self) -> bool:
+        """Whether parents may rate approvals 1-3 stars (#927). Off by default."""
+        v = self.storage.get_setting("quality_rating_enabled", False)
+        return v is True or str(v).lower() == "true"
+
+    def quality_rating_multipliers(self) -> dict[int, float]:
+        """The points multiplier for each star rating, from settings (#927)."""
+        from .const import DEFAULT_QUALITY_RATING_MULTIPLIERS
+
+        out: dict[int, float] = {}
+        for rating, default in DEFAULT_QUALITY_RATING_MULTIPLIERS.items():
+            try:
+                value = float(self.storage.get_setting(f"quality_rating_multiplier_{rating}", default))
+            except (ValueError, TypeError):
+                value = default
+            out[rating] = max(0.0, value)
+        return out
+
     def effective_chore_points(self, chore) -> int:
         """Base chore points scaled by its difficulty multiplier (never negative)."""
         from .const import DEFAULT_DIFFICULTY
@@ -715,6 +733,7 @@ class TaskMateCoordinator(
         """Shutdown the coordinator and clean up listeners."""
         self.cancel_unlock_timers()
         self.notifications.cancel_schedules()
+        self.notifications.cancel_presence_tracking()
         for attr in (
             "_unsub_midnight",
             "_unsub_prune",
@@ -810,6 +829,10 @@ class TaskMateCoordinator(
         # change up in this same tick.
         await self._async_expire_deadline_chores(refresh=False)
         self._refresh_tracked_availability_entities()
+        # Presence-aware reminders (#926): follow child presence-entity edits.
+        # A no-op unless the child -> entity map actually changed.
+        if notifications := getattr(self, "notifications", None):
+            notifications.sync_presence_tracking()
         version = self.storage.data_version
         cached = getattr(self, "_data_snapshot_cache", None)
         if cached is not None and cached[0] == version:
@@ -847,6 +870,7 @@ class TaskMateCoordinator(
         unavailability_entity: str = "",
         pause_streak_when_unavailable: bool = False,
         linked_user_id: str = "",
+        presence_entity: str = "",
     ) -> Child:
         """Add a new child."""
         child = Child(
@@ -857,6 +881,7 @@ class TaskMateCoordinator(
             unavailability_entity=unavailability_entity,
             pause_streak_when_unavailable=pause_streak_when_unavailable,
             linked_user_id=linked_user_id,
+            presence_entity=presence_entity,
         )
         self.storage.add_child(child)
         await self.storage.async_save()

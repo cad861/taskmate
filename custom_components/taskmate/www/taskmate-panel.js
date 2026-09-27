@@ -602,6 +602,12 @@ class TaskMatePanel extends HTMLElement {
       this._loadFriction(this._frictionDays);
       return;
     }
+    if (act === "quality-window") {
+      this._qualityDays = Number(t.dataset.id);
+      this._quality = null;
+      this._loadQuality(this._qualityDays);
+      return;
+    }
     if (act === "insights-window") {
       this._insightDays = Number(t.dataset.id);
       this._fairness = null;
@@ -778,6 +784,16 @@ class TaskMatePanel extends HTMLElement {
     // Activity / approvals
     if (act === "approve-all-chores") { this._doApproveAll(); return; }
     if (act === "approve-chore")  { this._doApprove("chore", t.dataset.id); return; }
+    if (act === "rate-chore") {
+      // Quality rating (#927): pick a star, tap it again to clear. Approve
+      // then pays the chosen rating; no pick pays 100%.
+      const ratings = this._ratings || (this._ratings = {});
+      const n = Number(t.dataset.rating);
+      if (ratings[t.dataset.id] === n) delete ratings[t.dataset.id];
+      else ratings[t.dataset.id] = n;
+      this._render();
+      return;
+    }
     if (act === "reject-chore")   { this._doReject("chore", t.dataset.id); return; }
     if (act === "approve-reward") { this._doApprove("reward", t.dataset.id); return; }
     if (act === "reject-reward")  { this._doReject("reward", t.dataset.id); return; }
@@ -976,6 +992,10 @@ class TaskMatePanel extends HTMLElement {
     }
     if (t.dataset.act === "notif-set-escalation") {
       this._notifSetEscalation(t.dataset.escField, t.value);
+      return;
+    }
+    if (t.dataset.act === "notif-set-presence-arrival") {
+      this._notifSetPresenceArrival(t.value);
       return;
     }
     if (t.dataset.act === "notif-update-custom") {
@@ -1183,10 +1203,39 @@ class TaskMatePanel extends HTMLElement {
   async _doApprove(kind, id) {
     const wsType = kind === "chore" ? "taskmate/approve_chore" : "taskmate/approve_reward";
     const idField = kind === "chore" ? "completion_id" : "claim_id";
-    const { ok, err } = await this._callWS({ type: wsType, [idField]: id });
+    const msg = { type: wsType, [idField]: id };
+    const rating = kind === "chore" && this._ratingOn() ? (this._ratings || {})[id] : 0;
+    if (rating) msg.rating = rating;
+    const { ok, err } = await this._callWS(msg);
     if (!ok) { this._showToast("err", this._t("panel.toast_approve_failed", {error: err})); return; }
+    if (this._ratings) delete this._ratings[id];
     await this._fetchState();
     this._showToast("ok", this._t("panel.toast_approved"));
+  }
+
+  // Quality rating (#927) — on only when the setting is.
+  _ratingOn() {
+    const v = this._state?.settings?.quality_rating_enabled;
+    return v === true || v === "true";
+  }
+
+  // Three-star picker for one pending completion. Each star's tooltip says
+  // what it pays, so the multiplier is visible where the choice is made.
+  _ratingPicker(completionId) {
+    const s = this._state?.settings || {};
+    const defaults = { 1: 0.75, 2: 1.0, 3: 1.25 };
+    const sel = (this._ratings || {})[completionId] || 0;
+    return `
+      <div class="tm-stars" role="group" aria-label="${this._esc(this._t("panel.rating_label"))}">
+        ${[1, 2, 3].map(n => {
+          const mult = Number(s["quality_rating_multiplier_" + n] ?? defaults[n]);
+          const percent = Math.round((Number.isFinite(mult) ? mult : defaults[n]) * 100);
+          const label = this._t("panel.rating_star_title", { count: n, percent });
+          return `<button type="button" class="tm-star ${n <= sel ? "tm-star-on" : ""}" data-act="rate-chore"
+                    data-id="${this._esc(completionId)}" data-rating="${n}" aria-pressed="${n === sel}"
+                    title="${this._esc(label)}" aria-label="${this._esc(label)}">${n <= sel ? "★" : "☆"}</button>`;
+        }).join("")}
+      </div>`;
   }
 
   async _doApproveAll() {
@@ -1241,13 +1290,14 @@ class TaskMatePanel extends HTMLElement {
         unavailability_entity: c.unavailability_entity || "",
         pause_streak_when_unavailable: !!c.pause_streak_when_unavailable,
         linked_user_id: c.linked_user_id || "",
+        presence_entity: c.presence_entity || "",
       } });
     } else {
       this._openDialog({ kind: "child", mode: "add", data: {
         name: "", avatar: "mdi:account-circle", availability_entity: "",
         availability_inverted: false, unavailability_entity: "",
         pause_streak_when_unavailable: false,
-        linked_user_id: "",
+        linked_user_id: "", presence_entity: "",
       } });
     }
   }
@@ -1292,11 +1342,13 @@ class TaskMatePanel extends HTMLElement {
       ? { type: "taskmate/add_child", name: d.name.trim(), avatar: d.avatar || "mdi:account-circle",
           availability_entity: d.availability_entity || "", availability_inverted: !!d.availability_inverted,
           unavailability_entity: d.unavailability_entity || "",
-          pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "" }
+          pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "",
+          presence_entity: d.presence_entity || "" }
       : { type: "taskmate/update_child", child_id: d.id, name: d.name.trim(), avatar: d.avatar || "mdi:account-circle",
           availability_entity: d.availability_entity || "", availability_inverted: !!d.availability_inverted,
           unavailability_entity: d.unavailability_entity || "",
-          pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "" };
+          pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "",
+          presence_entity: d.presence_entity || "" };
     const { ok, err } = await this._callWS(payload);
     if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", {error: err})); return; }
     this._closeDialog(true);
@@ -2328,6 +2380,14 @@ class TaskMatePanel extends HTMLElement {
     root.querySelectorAll("ha-icon-picker[data-setting]").forEach(el => {
       payload[el.dataset.setting] = el.value || "";
     });
+    // Child undo window (#918): whole seconds, 0 (off) to 3600.
+    if ("chore_undo_seconds" in payload) {
+      const secs = payload.chore_undo_seconds;
+      if (!Number.isInteger(secs) || secs < 0 || secs > 3600) {
+        this._showToast("err", this._t("panel.settings_chore_undo_invalid"));
+        return;
+      }
+    }
     // Non-admin parent role (#661): collect the ticked HA users.
     const parentBoxes = root.querySelectorAll("input[type=checkbox][data-parent-user]");
     if (parentBoxes.length) {
@@ -2424,6 +2484,13 @@ class TaskMatePanel extends HTMLElement {
     const n = Math.max(1, Math.min(1440, Math.round(Number(value) || cur[field])));
     cur[field] = n;
     await this._callWS({ type: "taskmate/notifications/set_escalation", reminder_minutes: cur.reminder_minutes, parent_minutes: cur.parent_minutes });
+    await this._fetchState();
+  }
+
+  async _notifSetPresenceArrival(value) {
+    const n = Math.max(0, Math.min(1440, Math.round(Number(value))));
+    const { ok, err } = await this._callWS({ type: "taskmate/notifications/set_presence_arrival", min_away_minutes: Number.isFinite(n) ? n : 30 });
+    if (!ok) this._showToast("err", this._t("panel.toast_save_failed", { error: err }));
     await this._fetchState();
   }
 
@@ -2849,7 +2916,7 @@ class TaskMatePanel extends HTMLElement {
     const view = this._insightView || "fairness";
     const switcher = `
       <div class="tm-chip-row" style="margin-bottom:14px">
-        ${["fairness", "friction", "projection", "health"].map(v => `
+        ${["fairness", "friction", "projection", ...(this._ratingOn() || view === "quality" ? ["quality"] : []), "health"].map(v => `
           <button type="button" class="tm-chip-btn ${v === view ? "tm-chip-on" : ""}"
                   data-act="insights-view" data-id="${v}">
             ${this._t("panel.insights_view_" + v)}
@@ -2859,6 +2926,7 @@ class TaskMatePanel extends HTMLElement {
     if (view === "friction") return switcher + this._renderFrictionReport();
     if (view === "projection") return switcher + this._renderProjectionReport();
     if (view === "health") return switcher + this._renderHealthReport();
+    if (view === "quality") return switcher + this._renderQualityReport();
     return switcher + this._renderFairnessReport();
   }
 
@@ -3147,6 +3215,85 @@ class TaskMatePanel extends HTMLElement {
     `;
   }
 
+  /**
+   * Quality ratings (#927): average star rating per child and per chore.
+   * Unrated approvals are left out of the averages, not counted as ★★.
+   */
+  _renderQualityReport() {
+    const days = this._qualityDays || 30;
+    const report = this._quality;
+    if (!report) {
+      this._loadQuality(days);
+      return `<div class="tm-card"><div class="tm-empty">${this._t("panel.insights_loading")}</div></div>`;
+    }
+    const stars = (avg) => {
+      if (avg === null || avg === undefined) return `<span class="tm-meta">—</span>`;
+      const full = Math.round(avg);
+      return `<span class="tm-q-stars" aria-hidden="true">${"★".repeat(full)}<span class="tm-q-off">${"☆".repeat(3 - full)}</span></span>
+              <span class="tm-numeric">${avg.toFixed(1)}</span>`;
+    };
+    const table = (title, rows) => `
+      <h3 class="tm-section-title" style="margin-top:16px">${this._esc(title)}</h3>
+      <div class="tm-table-wrap">
+        <table class="tm-table tm-quality">
+          <thead><tr>
+            <th></th>
+            <th>${this._t("panel.insights_quality_col_average")}</th>
+            <th>${this._t("panel.insights_quality_col_rated")}</th>
+            <th>★</th><th>★★</th><th>★★★</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr class="tm-row">
+                <td><strong>${this._esc(r.name)}</strong></td>
+                <td>${stars(r.average)}</td>
+                <td class="tm-numeric">${r.rated} / ${r.total}</td>
+                <td class="tm-numeric">${r.counts["1"]}</td>
+                <td class="tm-numeric">${r.counts["2"]}</td>
+                <td class="tm-numeric">${r.counts["3"]}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    return `
+      <div class="tm-card">
+        <div class="tm-card-head">
+          <h2>${this._t("panel.insights_quality_title")}</h2>
+          <div class="tm-chip-row">
+            ${[7, 30, 90].map(d => `
+              <button type="button" class="tm-chip-btn ${d === days ? "tm-chip-on" : ""}"
+                      data-act="quality-window" data-id="${d}">
+                ${this._t("panel.insights_last_days", { days: d })}
+              </button>
+            `).join("")}
+          </div>
+        </div>
+        <span class="tm-field-hint">${this._t("panel.insights_quality_intro", { start: report.start, end: report.end })}</span>
+        ${report.enabled ? "" : `<div class="tm-verdict tm-verdict-warn">${this._t("panel.insights_quality_disabled")}</div>`}
+        ${!report.rated_completions ? `
+          <div class="tm-empty">${this._t("panel.insights_quality_none")}</div>
+        ` : `
+          <div class="tm-verdict tm-verdict-ok">${this._t("panel.insights_quality_overall", {
+            average: Number(report.average).toFixed(1), rated: report.rated_completions, total: report.total_completions,
+          })}</div>
+          ${table(this._t("panel.insights_quality_by_child"), report.children)}
+          ${table(this._t("panel.insights_quality_by_chore"), report.chores.filter(r => r.rated > 0))}
+        `}
+      </div>
+    `;
+  }
+
+  async _loadQuality(days) {
+    if (this._qualityLoading) return;
+    this._qualityLoading = true;
+    const { ok, res, err } = await this._callWS({ type: "taskmate/reports/quality", days });
+    this._qualityLoading = false;
+    if (!ok) { this._showToast("err", err); return; }
+    this._quality = res;
+    this._render();
+  }
+
   async _loadFairness(days) {
     if (this._fairnessLoading) return;
     this._fairnessLoading = true;
@@ -3339,6 +3486,7 @@ class TaskMatePanel extends HTMLElement {
                     <div class="tm-meta">${this._timeAgo(c.completed_at)} · ${chorePoints} ${this._t("panel.activity_points")}</div>
                   </div>
                   <div class="tm-approval-actions">
+                    ${this._ratingOn() ? this._ratingPicker(c.id) : ""}
                     <button type="button" class="tm-btn tm-btn-sm" data-act="reject-chore" data-id="${this._esc(c.id)}">${this._t("panel.activity_reject")}</button>
                     <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-chore" data-id="${this._esc(c.id)}">${this._t("panel.activity_approve")}</button>
                   </div>
@@ -4618,6 +4766,10 @@ class TaskMatePanel extends HTMLElement {
               <div class="tm-setting-label">${this._t("panel.settings_require_linked_child_label")}<small>${this._t("panel.settings_require_linked_child_hint")}</small></div>
               <ha-switch data-setting="require_linked_child" ${s.require_linked_child ? "checked" : ""}></ha-switch>
             </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_chore_undo_label")}<small>${this._t("panel.settings_chore_undo_hint")}</small></div>
+              <input type="number" class="tm-input" min="0" max="3600" step="1" data-setting="chore_undo_seconds" aria-label="${this._esc(this._t("panel.settings_chore_undo_label"))}" value="${this._num(s.chore_undo_seconds, 0)}">
+            </div>
           </div>
         </div>
 
@@ -4648,6 +4800,18 @@ class TaskMatePanel extends HTMLElement {
                 <label>${this._t("panel.difficulty_easy")}<input type="number" class="tm-input" step="0.1" min="0" max="10" data-setting="difficulty_multiplier_easy" value="${this._num(s.difficulty_multiplier_easy, 0.5)}"></label>
                 <label>${this._t("panel.difficulty_medium")}<input type="number" class="tm-input" step="0.1" min="0" max="10" data-setting="difficulty_multiplier_medium" value="${this._num(s.difficulty_multiplier_medium, 1.0)}"></label>
                 <label>${this._t("panel.difficulty_hard")}<input type="number" class="tm-input" step="0.1" min="0" max="10" data-setting="difficulty_multiplier_hard" value="${this._num(s.difficulty_multiplier_hard, 2.0)}"></label>
+              </div>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_quality_rating_label")}<small>${this._t("panel.settings_quality_rating_hint")}</small></div>
+              <ha-switch data-setting="quality_rating_enabled" ${s.quality_rating_enabled ? "checked" : ""}></ha-switch>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_quality_rating_multipliers_label")}<small>${this._t("panel.settings_quality_rating_multipliers_hint")}</small></div>
+              <div class="tm-difficulty-mults">
+                <label>★<input type="number" class="tm-input" step="0.05" min="0" max="5" data-setting="quality_rating_multiplier_1" value="${this._num(s.quality_rating_multiplier_1, 0.75)}"></label>
+                <label>★★<input type="number" class="tm-input" step="0.05" min="0" max="5" data-setting="quality_rating_multiplier_2" value="${this._num(s.quality_rating_multiplier_2, 1.0)}"></label>
+                <label>★★★<input type="number" class="tm-input" step="0.05" min="0" max="5" data-setting="quality_rating_multiplier_3" value="${this._num(s.quality_rating_multiplier_3, 1.25)}"></label>
               </div>
             </div>
             <div class="tm-setting-row">
@@ -5057,6 +5221,15 @@ class TaskMatePanel extends HTMLElement {
                   ${this._t("panel.notif_escalation_minutes_suffix")}
                 </div>
               ` : ""}
+              ${t.id === "presence_arrival" ? `
+                <div class="tm-meta" style="margin-top:6px;display:flex;align-items:center;gap:8px">
+                  ${this._t("panel.notif_presence_min_away_label")}
+                  <span style="display:inline-flex;align-items:center;gap:8px;white-space:nowrap">
+                    <input type="number" min="0" max="1440" class="tm-notif-time-input" value="${this._esc(String(settings.presence_arrival_min_away ?? 30))}" data-act="notif-set-presence-arrival" style="display:inline;margin:0;width:70px">
+                    ${this._t("panel.notif_escalation_minutes_suffix")}
+                  </span>
+                </div>
+              ` : ""}
               ${t.id === "mandatory_parent_alert" ? `
                 <div class="tm-meta" style="margin-top:6px;display:flex;align-items:center;gap:8px">
                   ${this._t("panel.notif_escalation_parent_label")}
@@ -5388,6 +5561,8 @@ class TaskMatePanel extends HTMLElement {
           this._t("panel.child_unavailability_hint")),
         hasAway ? this._switch(this._t("panel.child_pause_streak_label"), "pause_streak_when_unavailable", d.pause_streak_when_unavailable,
           this._t("panel.child_pause_streak_hint")) : "",
+        this._entityPickerField(this._t("panel.child_presence_label"), "presence_entity", d.presence_entity, ["person", "device_tracker"],
+          this._t("panel.child_presence_hint")),
         this._select(
           this._t("panel.child_link_user_label"), "linked_user_id", d.linked_user_id || "",
           [{ v: "", l: this._t("panel.child_link_user_none") }].concat(
@@ -7427,7 +7602,24 @@ class TaskMatePanel extends HTMLElement {
       .tm-approval-body { flex: 1; min-width: 0; }
       .tm-approval-photo img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; display: block; }
       .tm-approval-line { font-size: 13px; }
-      .tm-approval-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .tm-approval-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; margin-left: auto; }
+      /* Let the actions drop below the text on a narrow screen instead of
+         crushing it into a one-word column (the star picker made it worse). */
+      .tm-approval-item { flex-wrap: wrap; }
+      .tm-approval-body { flex: 1 1 180px; }
+      /* Quality rating star picker (#927) */
+      .tm-stars { display: inline-flex; gap: 2px; margin-right: 4px; }
+      .tm-star {
+        background: none; border: 0; padding: 2px 3px; cursor: pointer;
+        font-size: 20px; line-height: 1; color: var(--tm-text-muted, #888);
+        border-radius: 6px;
+      }
+      .tm-star:hover { color: #f5b301; }
+      .tm-star.tm-star-on { color: #f5b301; }
+      .tm-star:focus-visible { outline: 2px solid var(--tm-accent); outline-offset: 1px; }
+      .tm-q-stars { color: #f5b301; letter-spacing: 1px; margin-right: 6px; }
+      .tm-q-off { color: var(--tm-text-muted, #888); }
+      .tm-quality td, .tm-quality th { font-size: 13px; }
 
       .tm-timeline { display: flex; flex-direction: column; }
       .tm-timeline-row {

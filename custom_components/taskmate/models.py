@@ -56,6 +56,17 @@ def parse_datetime(value: str | datetime | None) -> datetime | None:
     return None
 
 
+def parse_quality_rating(value: Any) -> int:
+    """Parse a stored 1-3 star quality rating (#927); anything else is 0 (unrated)."""
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        rating = int(value)
+    except (ValueError, TypeError, OverflowError):
+        return 0
+    return rating if 1 <= rating <= 3 else 0
+
+
 def parse_optional_points(value: Any) -> int | None:
     """Parse a stored points figure, or None for "not recorded".
 
@@ -213,6 +224,7 @@ class Child:
     linked_user_id: str = ""  # HA user id; when set, only that user (or an admin) may self-serve as this child
     quiet_hours_start: str = ""  # "HH:MM" — start of do-not-disturb window; empty = no quiet hours
     quiet_hours_end: str = ""  # "HH:MM" — end of do-not-disturb window; start>end means overnight
+    presence_entity: str = ""  # person./device_tracker.; while not home, reminders wait for arrival (#926)
     level: int = 1  # cached XP level (derived from total_points_earned)
     # Guest profiles (#690): a visiting cousin gets a temporary child that
     # expires on its own and stays out of the family leaderboard.
@@ -249,6 +261,7 @@ class Child:
             linked_user_id=data.get("linked_user_id", ""),
             quiet_hours_start=data.get("quiet_hours_start", ""),
             quiet_hours_end=data.get("quiet_hours_end", ""),
+            presence_entity=str(data.get("presence_entity", "") or ""),
             level=int(data.get("level", 1) or 1),
             id=data.get("id") or generate_id(),
         )
@@ -281,6 +294,7 @@ class Child:
             "linked_user_id": self.linked_user_id,
             "quiet_hours_start": self.quiet_hours_start,
             "quiet_hours_end": self.quiet_hours_end,
+            "presence_entity": self.presence_entity,
             "level": self.level,
             "id": self.id,
         }
@@ -776,6 +790,13 @@ class ChoreCompletion:
     # and weekend multipliers that _award_points adds on top. None on records
     # written before the field existed.
     submitted_points: int | None = None
+    # Parent's 1-3 star quality rating given at approval (#927); 0 = unrated.
+    quality_rating: int = 0
+    # True only on a completion a child submitted themselves, so the child
+    # may take it back inside the global undo window (#918). A parent's
+    # review clears it for good, and records written before the field existed
+    # load as False: they stay parent-only.
+    child_undo_allowed: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChoreCompletion:
@@ -797,11 +818,13 @@ class ChoreCompletion:
             suggested_points=int(data.get("suggested_points", 0) or 0),
             id=data.get("id") or generate_id(),
             submitted_points=parse_optional_points(data.get("submitted_points")),
+            quality_rating=parse_quality_rating(data.get("quality_rating")),
+            child_undo_allowed=data.get("child_undo_allowed") is True,
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        data = {
             "chore_id": self.chore_id,
             "child_id": self.child_id,
             "completed_at": format_datetime(self.completed_at),
@@ -815,7 +838,13 @@ class ChoreCompletion:
             "suggested_points": self.suggested_points,
             "id": self.id,
             "submitted_points": self.submitted_points,
+            "quality_rating": self.quality_rating,
         }
+        # Written only when set: every completion ever made is stored, and the
+        # flag is False on nearly all of them.
+        if self.child_undo_allowed:
+            data["child_undo_allowed"] = True
+        return data
 
 
 @dataclass
