@@ -65,13 +65,15 @@ from .const import (
     DEFAULT_TIME_PERIODS,
     DIFFICULTY_TIERS,
     DOMAIN,
+    MAX_CHORE_TAGS,
     MAX_TIME_PERIODS,
     SCHEDULE_MODES,
+    TAG_ID_MAX_LENGTH,
     TIME_CATEGORY_ICONS,
     is_valid_completion_sound,
 )
 from .coordinator import TaskMateCoordinator
-from .models import BonusSubTask, Reward
+from .models import BonusSubTask, Reward, normalize_tag_ids
 from .sounds import MAX_NAME_LEN as MAX_SOUND_NAME_LEN
 
 _LOGGER = logging.getLogger(__name__)
@@ -636,7 +638,23 @@ _CHORE_EDITABLE_FIELDS = {
     "timed_rate_points",
     "timed_rate_minutes",
     "timed_max_daily_minutes",
+    "tag_ids",
 }
+
+
+def _tag_id_list(value):
+    """Validate the NFC / QR tag ids linked to a chore (#923).
+
+    Raises rather than returning a falsy value — voluptuous treats a callable
+    as a coercer (see ``_image_url_or_blank``).
+    """
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise vol.Invalid("tag_ids must be a list of strings")
+    if any(len(v.strip()) > TAG_ID_MAX_LENGTH for v in value):
+        raise vol.Invalid(f"Tag ids are limited to {TAG_ID_MAX_LENGTH} characters")
+    if len({v.strip() for v in value if v.strip()}) > MAX_CHORE_TAGS:
+        raise vol.Invalid(f"A chore can be linked to at most {MAX_CHORE_TAGS} tags")
+    return normalize_tag_ids(value)
 
 
 def _chore_payload_schema(*, require_name: bool):
@@ -701,6 +719,7 @@ def _chore_payload_schema(*, require_name: bool):
         vol.Optional("timed_rate_points"): vol.All(int, vol.Range(min=1)),
         vol.Optional("timed_rate_minutes"): vol.All(int, vol.Range(min=1)),
         vol.Optional("timed_max_daily_minutes"): vol.All(int, vol.Range(min=0)),
+        vol.Optional("tag_ids"): _tag_id_list,
     }
 
 

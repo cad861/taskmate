@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .const import MAX_CHORE_TAGS, TAG_ID_MAX_LENGTH
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -97,6 +99,24 @@ def format_datetime(dt: datetime | None) -> str | None:
     utc_dt = dt.astimezone(timezone.utc)
     # Use isoformat but replace +00:00 with Z for cleaner output
     return utc_dt.isoformat().replace("+00:00", "Z")
+
+
+def normalize_tag_ids(raw: Any) -> list[str]:
+    """Clean a chore's linked HA tag ids (#923).
+
+    Ids are compared exactly against ``tag_scanned`` events, so surrounding
+    whitespace (easy to paste in with a free-text id) would silently never
+    match. Blanks and duplicates are dropped, order is kept, and the list is
+    capped so a crafted import can't bloat the store.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()[:TAG_ID_MAX_LENGTH]
+        if text and text not in out:
+            out.append(text)
+    return out[:MAX_CHORE_TAGS]
 
 
 def optional_float(value: Any) -> float | None:
@@ -406,6 +426,9 @@ class Chore:
     timed_rate_points: int = 10  # points awarded per rate window
     timed_rate_minutes: int = 5  # rate window size in minutes
     timed_max_daily_minutes: int = 0  # 0 = unlimited; caps total daily duration
+    # NFC / QR tag completion (#923): HA tag ids that complete this chore when
+    # scanned in the companion app. Empty = no tag linked.
+    tag_ids: list[str] = field(default_factory=list)
     id: str = field(default_factory=generate_id)
 
     @classmethod
@@ -481,6 +504,7 @@ class Chore:
             timed_rate_points=data.get("timed_rate_points", 10),
             timed_rate_minutes=max(1, int(data.get("timed_rate_minutes", 5) or 5)),
             timed_max_daily_minutes=max(0, int(data.get("timed_max_daily_minutes", 0) or 0)),
+            tag_ids=normalize_tag_ids(data.get("tag_ids", [])),
             id=data.get("id") or generate_id(),
         )
 
@@ -543,6 +567,7 @@ class Chore:
             "timed_rate_points": self.timed_rate_points,
             "timed_rate_minutes": self.timed_rate_minutes,
             "timed_max_daily_minutes": self.timed_max_daily_minutes,
+            "tag_ids": self.tag_ids,
             "id": self.id,
         }
 

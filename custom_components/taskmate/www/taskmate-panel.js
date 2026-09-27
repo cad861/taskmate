@@ -104,6 +104,9 @@ const SCHEDULED_FIELDS = [
   ] },
 ];
 
+// Mirrors MAX_CHORE_TAGS in const.py — the WS schema rejects more (#923).
+const MAX_CHORE_TAGS = 10;
+
 // Adverse HA weather conditions a chore can be blocked by. The pleasant ones
 // (sunny, clear-night, partlycloudy) are deliberately omitted — nobody rains
 // off "mow the lawn" because it's sunny.
@@ -588,6 +591,8 @@ class TaskMatePanel extends HTMLElement {
     if (act === "toggle-depends")    { this._toggleArrayField("depends_on", t.dataset.id); return; }
     if (act === "toggle-calendar")   { this._toggleArrayField("publish_calendar_entities", t.dataset.id); return; }
     if (act === "toggle-weather-condition") { this._toggleArrayField("weather_block_conditions", t.dataset.id); return; }
+    if (act === "toggle-tag")        { this._toggleArrayField("tag_ids", t.dataset.id); return; }
+    if (act === "add-tag")           { this._addTypedTag(); return; }
     if (act === "insights-view") {
       this._insightView = t.dataset.id;
       this._render();
@@ -1313,6 +1318,31 @@ class TaskMatePanel extends HTMLElement {
     }
   }
 
+  /** HA's tag registry for the chore editor's NFC / QR picker (#923). */
+  async _ensureHaTags() {
+    if (this._haTags) return;
+    // tag/list fails when HA's tag integration isn't loaded — the picker then
+    // offers typed ids only.
+    const { ok, res } = await this._callWS({ type: "tag/list" });
+    this._haTags = (ok && Array.isArray(res) ? res : [])
+      .map(tag => ({ id: String(tag.id || tag.tag_id || ""), name: tag.name || "" }))
+      .filter(tag => tag.id);
+  }
+
+  _addTypedTag() {
+    if (!this._dialog || !this._dialog.data) return;
+    const input = this.querySelector("[data-role='tag-input']");
+    const value = input ? input.value.trim() : "";
+    if (!value) return;
+    const tags = this._dialog.data.tag_ids || [];
+    if (tags.includes(value)) { input.value = ""; return; }
+    if (tags.length >= MAX_CHORE_TAGS) {
+      this._showToast("err", this._t("panel.chore_tags_limit", {max: MAX_CHORE_TAGS}));
+      return;
+    }
+    this._toggleArrayField("tag_ids", value);
+  }
+
   async _ensureHaUsers() {
     if (this._haUsers) return;
     const { ok, res } = await this._callWS({ type: "taskmate/list_ha_users" });
@@ -1509,7 +1539,13 @@ class TaskMatePanel extends HTMLElement {
       publish_calendar_entities: [],
       depends_on: [],
       bonus_subtasks: [],
+      tag_ids: [],
     };
+    // NFC / QR tags (#923): the picker lists HA's tag registry. Load it once in
+    // the background — the dialog opens straight away and repaints when it lands.
+    if (!this._haTags) {
+      this._ensureHaTags().then(() => { if (this._dialog && this._dialog.kind === "chore") this._render(); });
+    }
     if (id) {
       const c = (this._state.chores || []).find(x => x.id === id);
       if (!c) return;
@@ -1519,6 +1555,7 @@ class TaskMatePanel extends HTMLElement {
         due_days: [...(c.due_days || [])],
         publish_calendar_entities: [...(c.publish_calendar_entities || [])],
         depends_on: [...(c.depends_on || [])],
+        tag_ids: [...(c.tag_ids || [])],
         bonus_subtasks: (c.bonus_subtasks || []).map(b => ({...b})),
         visibility_operator: c.visibility_operator || "none",
         weather_block_conditions: [...(c.weather_block_conditions || [])],
@@ -1756,6 +1793,7 @@ class TaskMatePanel extends HTMLElement {
       require_photo: !!d.require_photo,
       open_ended: !!d.open_ended,
       publish_calendar_entities: d.publish_calendar_entities || [],
+      tag_ids: d.tag_ids || [],
       bonus_subtasks: (d.bonus_subtasks || []).filter(b => b.name && b.name.trim()).map(b => ({
         name: b.name.trim(), points: Number(b.points) || 5,
         description: b.description || "", ...(b.id ? {id: b.id} : {}),
@@ -5703,6 +5741,7 @@ class TaskMatePanel extends HTMLElement {
             <button type="button" class="tm-btn" data-act="add-bonus-subtask" style="margin-top:4px">${this._t("panel.btn_add_bonus_subtask")}</button>
           </div>
         </details>`,
+        this._renderChoreTags(d),
         `<details class="tm-advanced" data-section="visibility"${this._dialog._openAdvanced?.has("visibility") ? " open" : ""}>
           <summary>${this._t("panel.chore_advanced_visibility")}</summary>
           <div>
@@ -5760,6 +5799,46 @@ class TaskMatePanel extends HTMLElement {
       `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
        <button type="button" class="tm-btn tm-btn-raised" data-act="save-chore">${this._t("panel.btn_save")}</button>`
     );
+  }
+
+  /**
+   * NFC / QR tags (#923): pick from HA's tag registry or type an id. Scanning a
+   * linked tag in the companion app completes the chore for the scanning child.
+   */
+  _renderChoreTags(d) {
+    const selected = d.tag_ids || [];
+    const registry = this._haTags || [];
+    const known = new Set(registry.map(tag => tag.id));
+    // Typed ids that aren't in the registry still need a chip, or they could
+    // never be removed.
+    const typed = selected.filter(id => !known.has(id));
+    const chip = (id, label) => `
+      <button type="button" class="tm-chip-btn ${selected.includes(id) ? "tm-chip-on" : ""}" data-act="toggle-tag" data-id="${this._esc(id)}" title="${this._esc(id)}">
+        <ha-icon icon="mdi:nfc-variant" style="--mdc-icon-size:16px;margin-right:4px"></ha-icon>${this._esc(label || id)}
+      </button>`;
+    const cantTag = d.require_photo || d.open_ended || d.task_type === "timed";
+    const open = this._dialog._openAdvanced?.has("tags");
+    return `<details class="tm-advanced" data-section="tags"${open ? " open" : ""}>
+      <summary>${this._t("panel.chore_advanced_tags")}${selected.length ? ` <span class="tm-sched-count">${selected.length}</span>` : ""}</summary>
+      <div>
+        <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_tags_intro")}</span>
+        ${registry.length || typed.length ? `
+          <div class="tm-chip-row">
+            ${registry.map(tag => chip(tag.id, tag.name)).join("")}
+            ${typed.map(id => chip(id, id)).join("")}
+          </div>
+        ` : `<span class="tm-field-hint">${this._t("panel.chore_tags_none")}</span>`}
+        <div class="tm-field-row" style="grid-template-columns:1fr auto;align-items:end;gap:6px;margin-top:8px">
+          <div class="tm-field" style="margin:0">
+            <span class="tm-field-label">${this._t("panel.chore_tags_typed_label")}</span>
+            <input class="tm-input" type="text" data-role="tag-input" maxlength="100" placeholder="${this._t("panel.chore_tags_typed_placeholder")}">
+          </div>
+          <button type="button" class="tm-btn" data-act="add-tag">${this._t("panel.btn_add_tag")}</button>
+        </div>
+        <span class="tm-field-hint">${this._t("panel.chore_tags_hint")}</span>
+        ${cantTag ? `<span class="tm-field-hint" style="display:block;margin-top:6px;color:var(--tm-warning, #b26a00)">${this._t("panel.chore_tags_blocked_hint")}</span>` : ""}
+      </div>
+    </details>`;
   }
 
   /**
