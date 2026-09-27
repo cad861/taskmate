@@ -182,6 +182,14 @@ class Child:
     last_completion_date: str | None = None  # ISO date string of last chore completion (for streak tracking)
     streak_paused: bool = False  # True if streak is paused due to missed day (pause mode)
     streak_milestones_achieved: list[int] = field(default_factory=list)
+    # Streak freeze tokens (#925): each one covers one missed day so the streak
+    # survives it. `streak_freeze_dates` are the ISO days a token has covered
+    # (only the ones after the last completion matter, so it stays short), and
+    # `streak_freeze_earned_at` is the streak length that last earned a token,
+    # so undoing that day's completion can take the token back.
+    streak_freezes: int = 0
+    streak_freeze_dates: list[str] = field(default_factory=list)
+    streak_freeze_earned_at: int = 0
     awarded_perfect_weeks: list[str] = field(default_factory=list)
     availability_entity: str = ""  # HA entity id; empty = always available
     availability_inverted: bool = False  # When True, _AVAILABLE_STATES means UNAVAILABLE
@@ -216,6 +224,9 @@ class Child:
             last_completion_date=data.get("last_completion_date"),
             streak_paused=data.get("streak_paused", False),
             streak_milestones_achieved=list(data.get("streak_milestones_achieved", [])),
+            streak_freezes=max(0, int(data.get("streak_freezes", 0) or 0)),
+            streak_freeze_dates=[str(d) for d in (data.get("streak_freeze_dates") or []) if d],
+            streak_freeze_earned_at=max(0, int(data.get("streak_freeze_earned_at", 0) or 0)),
             awarded_perfect_weeks=list(data.get("awarded_perfect_weeks", [])),
             is_guest=bool(data.get("is_guest", False)),
             guest_expires_on=str(data.get("guest_expires_on", "") or ""),
@@ -248,6 +259,9 @@ class Child:
             "last_completion_date": self.last_completion_date,
             "streak_paused": self.streak_paused,
             "streak_milestones_achieved": self.streak_milestones_achieved,
+            "streak_freezes": self.streak_freezes,
+            "streak_freeze_dates": list(self.streak_freeze_dates),
+            "streak_freeze_earned_at": self.streak_freeze_earned_at,
             "awarded_perfect_weeks": self.awarded_perfect_weeks,
             "is_guest": self.is_guest,
             "guest_expires_on": self.guest_expires_on,
@@ -566,9 +580,16 @@ class Reward:
     available_days: list[int] = field(default_factory=list)
     available_from: str = ""
     available_until: str = ""
+    # Streak freeze (#925): approving a claim hands the child one streak-freeze
+    # token instead of anything physical. Always a fixed cost like any reward.
+    streak_freeze: bool = False
     id: str = field(default_factory=generate_id)
 
     def __post_init__(self) -> None:
+        # A streak freeze belongs to the one child who bought it, so it can
+        # never be a shared jackpot.
+        if self.streak_freeze:
+            self.is_jackpot = False
         # Jackpots are inherently pooled (#552): everyone deposits into the shared
         # jar, so pool mode is always on. Enforced here so every construction path
         # — WS add, service add, and storage load (legacy migration) — stays
@@ -603,6 +624,7 @@ class Reward:
             available_days=_clean_weekdays(data.get("available_days")),
             available_from=str(data.get("available_from", "") or ""),
             available_until=str(data.get("available_until", "") or ""),
+            streak_freeze=bool(data.get("streak_freeze", False)),
             id=data.get("id") or generate_id(),
         )
 
@@ -628,6 +650,7 @@ class Reward:
             "available_days": list(self.available_days),
             "available_from": self.available_from,
             "available_until": self.available_until,
+            "streak_freeze": self.streak_freeze,
             "id": self.id,
         }
 

@@ -818,6 +818,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Ajuster les gels de série",
+      "description": "Donne des gels de série à un enfant (nombre positif) ou en retire (négatif). Un ajout ne dépasse jamais la limite streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant dont les gels changent"
+        },
+        "amount": {
+          "name": "Nombre",
+          "description": "Gels à ajouter (positif) ou à retirer (négatif)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Reporter la tâche obligatoire",
       "description": "Accorde à une tâche obligatoire manquée une autre période (ou demain) sans pénalité et supprime l'élément à vérifier.",

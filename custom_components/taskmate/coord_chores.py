@@ -1282,7 +1282,10 @@ class ChoresMixin:
                         for c in completions
                     )
                     if not other_same_day:
+                        streak_before_undo = child.current_streak or 0
                         child.current_streak = max(0, child.current_streak - 1)
+                        # A streak freeze this completion earned goes too (#925).
+                        self._reverse_streak_freeze_earn(child, streak_before_undo)
                         if getattr(child, "last_completion_date", None) == reject_date.isoformat():
                             remaining = [
                                 dt_util.as_local(c.completed_at).date()

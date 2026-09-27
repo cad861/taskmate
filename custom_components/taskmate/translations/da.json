@@ -818,6 +818,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Justér streak-frys",
+      "description": "Giv et barn streak-frys (positivt antal) eller fjern nogle (negativt). En tildeling går aldrig over grænsen streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "Barn-ID",
+          "description": "ID'et på barnet, hvis frys ændres"
+        },
+        "amount": {
+          "name": "Antal",
+          "description": "Frys der skal tilføjes (positivt) eller fjernes (negativt)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Udskyd obligatorisk pligt",
       "description": "Giv en misset obligatorisk pligt en ny periode (eller i morgen) uden straf, og ryd gennemgangspunktet.",

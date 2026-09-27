@@ -1000,6 +1000,7 @@ _REWARD_FIELDS = {
     "available_days",
     "available_from",
     "available_until",
+    "streak_freeze",
 }
 
 
@@ -1025,6 +1026,7 @@ def _reward_payload_schema(*, require_name: bool):
         vol.Optional("available_days"): [vol.All(int, vol.Range(min=0, max=6))],
         vol.Optional("available_from"): _validate_hhmm_or_empty,
         vol.Optional("available_until"): _validate_hhmm_or_empty,
+        vol.Optional("streak_freeze"): bool,
     }
 
 
@@ -1069,6 +1071,7 @@ async def _ws_add_reward(hass, connection, msg, coordinator):
         available_days=sorted(set(msg.get("available_days", []) or [])),
         available_from=msg.get("available_from", "") or "",
         available_until=msg.get("available_until", "") or "",
+        streak_freeze=msg.get("streak_freeze", False),
     )
     coordinator.storage.add_reward(reward)
     await coordinator.storage.async_save()
@@ -1659,6 +1662,8 @@ _SUBKEY_SETTINGS = {
     "quick_point_amounts",
     "streak_requires_all_chores",
     "perfect_week_requires_all_chores",
+    "streak_freeze_max",
+    "streak_freeze_earn_every",
     "difficulty_multiplier_easy",
     "difficulty_multiplier_medium",
     "difficulty_multiplier_hard",
@@ -1851,6 +1856,8 @@ _UPDATE_SETTINGS_SCHEMA = {
     vol.Optional("perfect_week_bonus"): vol.All(int, vol.Range(min=0)),
     vol.Optional("streak_requires_all_chores"): bool,
     vol.Optional("perfect_week_requires_all_chores"): bool,
+    vol.Optional("streak_freeze_max"): vol.All(vol.Coerce(int), vol.Range(min=0, max=10)),
+    vol.Optional("streak_freeze_earn_every"): vol.All(vol.Coerce(int), vol.Range(min=0, max=365)),
     vol.Optional("difficulty_multiplier_easy"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
     vol.Optional("difficulty_multiplier_medium"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
     vol.Optional("difficulty_multiplier_hard"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),

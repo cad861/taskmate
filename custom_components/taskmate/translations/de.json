@@ -818,6 +818,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Serienschutz anpassen",
+      "description": "Gibt einem Kind Serienschutz (positive Anzahl) oder nimmt welchen weg (negative). Eine Gutschrift überschreitet nie die Grenze streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, dessen Serienschutz sich ändert"
+        },
+        "amount": {
+          "name": "Anzahl",
+          "description": "Hinzuzufügender (positiv) oder zu entfernender (negativ) Serienschutz"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Pflichtaufgabe verschieben",
       "description": "Gewährt einer verpassten Pflichtaufgabe ohne Strafe einen weiteren Zeitraum (oder morgen) und entfernt den Prüfeintrag.",

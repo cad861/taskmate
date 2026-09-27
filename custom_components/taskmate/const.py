@@ -103,6 +103,7 @@ SERVICE_REMOVE_POINTS: Final = "remove_points"
 SERVICE_UNDO_TRANSACTION: Final = "undo_transaction"
 SERVICE_TEST_NOTIFICATION: Final = "test_notification"
 SERVICE_GIFT_POINTS: Final = "gift_points"
+SERVICE_ADJUST_STREAK_FREEZES: Final = "adjust_streak_freezes"
 SERVICE_RECORD_ALLOWANCE_PAYOUT: Final = "record_allowance_payout"
 SERVICE_REQUEST_SWAP: Final = "request_swap"
 SERVICE_SPIN_ROULETTE: Final = "spin_roulette"
@@ -245,6 +246,7 @@ NOTIF_TYPE_MANDATORY_PARENT_ALERT: Final = "mandatory_parent_alert"
 NOTIF_TYPE_MONTHLY_REPORT: Final = "monthly_report"
 NOTIF_TYPE_SEASON_CHAMPION: Final = "season_champion"
 NOTIF_TYPE_FAMILY_GOAL_REACHED: Final = "family_goal_reached"
+NOTIF_TYPE_STREAK_FREEZE_USED: Final = "streak_freeze_used"
 
 # Default notification tap target. Must match PANEL_URL_PATH in panel.py —
 # a bare /taskmate is the static-files prefix and returns 403, not the panel.
