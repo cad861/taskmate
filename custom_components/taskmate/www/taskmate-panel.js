@@ -3051,7 +3051,9 @@ class TaskMatePanel extends HTMLElement {
       this._zoneCache[name] = html;
       const el = this.querySelector(`[data-zone="${name}"]`);
       if (!el) { this._shellReady = false; this._render(); return; }
+      const hadDialog = !!el.querySelector(".tm-scrim");
       el.innerHTML = html;
+      this._markDialogEntry(el, hadDialog);
       anyChanged = true;
       if (name === "palette") paletteChanged = true;
     }
@@ -3068,6 +3070,17 @@ class TaskMatePanel extends HTMLElement {
     }
 
     this._applyDesign();
+  }
+
+  // A dialog plays its opening animation only when it first appears (#974).
+  // Zones are rebuilt wholesale whenever their HTML changes, so an animation
+  // on .tm-scrim / .tm-dialog replayed on every redraw — twice per picture
+  // upload. The class goes on the DOM, not into the HTML, so the zone cache
+  // is unaffected and later rebuilds come up without it.
+  _markDialogEntry(zone, hadDialog) {
+    if (hadDialog) return;
+    const scrim = zone.querySelector(".tm-scrim");
+    if (scrim) scrim.classList.add("tm-enter");
   }
 
   // The admin panel intentionally stays CLASSIC regardless of the global card
@@ -9452,8 +9465,8 @@ class TaskMatePanel extends HTMLElement {
         display: flex; align-items: flex-start; justify-content: center;
         padding: 60px 20px; z-index: 100;
         overflow-y: auto;
-        animation: tm-scrim-in 0.18s var(--tm-easing);
       }
+      .tm-scrim.tm-enter { animation: tm-scrim-in 0.18s var(--tm-easing); }
       @keyframes tm-scrim-in { from { opacity: 0; } to { opacity: 1; } }
       .tm-dialog {
         background: var(--tm-surface-0);
@@ -9464,8 +9477,8 @@ class TaskMatePanel extends HTMLElement {
         display: flex; flex-direction: column;
         max-height: calc(100vh - 120px);
         overflow: hidden;
-        animation: tm-dialog-in 0.2s var(--tm-easing);
       }
+      .tm-scrim.tm-enter > .tm-dialog { animation: tm-dialog-in 0.2s var(--tm-easing); }
       .tm-dialog.tm-dialog-wide { max-width: 860px; }
       @keyframes tm-dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
 
@@ -9480,8 +9493,8 @@ class TaskMatePanel extends HTMLElement {
         height: 100%; max-height: none;
         border-radius: 0; border-width: 0 0 0 1px;
         box-shadow: -16px 0 40px rgba(0, 0, 0, 0.18);
-        animation: tm-drawer-in 0.22s var(--tm-easing);
       }
+      .tm-scrim.tm-enter > .tm-dialog.tm-drawer { animation: tm-drawer-in 0.22s var(--tm-easing); }
       @keyframes tm-drawer-in { from { transform: translateX(100%); } to { transform: none; } }
       .tm-drawer .tm-dialog-body { flex: 1; padding-top: 4px; }
       .tm-drawer-sec { padding-bottom: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--tm-border-soft); }
@@ -9492,7 +9505,7 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-drawer-delete { margin-right: auto; color: var(--tm-danger); display: inline-flex; align-items: center; gap: 4px; }
       .tm-drawer-delete ha-icon { --mdc-icon-size: 18px; }
-      @media (prefers-reduced-motion: reduce) { .tm-dialog.tm-drawer { animation: none; } }
+      @media (prefers-reduced-motion: reduce) { .tm-scrim.tm-enter > .tm-dialog.tm-drawer { animation: none; } }
 
       .tm-dialog-head {
         padding: 18px 22px;
