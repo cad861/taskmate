@@ -432,7 +432,18 @@ def _build_state_snapshot(coordinator: TaskMateCoordinator) -> dict[str, Any]:
         "parent_completable": parent_completable,
         # Kiosk (#930): which children have a PIN — never the hash itself.
         "kiosk_pin_children": coordinator.storage.get_kiosk_pin_child_ids(),
+        # Today page (#966): each child's chores today + the last 7 days.
+        "today": _today_state(coordinator),
     }
+
+
+def _today_state(coordinator) -> dict | None:
+    """Today page data; a failure here must not break the rest of the panel."""
+    try:
+        return coordinator.daily_progress_state()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("TaskMate: could not build the Today board")
+        return None
 
 
 @websocket_api.websocket_command({vol.Required("type"): WS_GET_STATE})

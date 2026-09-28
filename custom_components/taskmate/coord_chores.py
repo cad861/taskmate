@@ -11,7 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from . import images, photos
 from .chore_undo import child_can_undo, undo_window_seconds
-from .const import CHORE_NOTE_MAX_LENGTH, CHORE_SUGGESTED_POINTS_MAX, QUALITY_RATINGS
+from .const import CHORE_NOTE_MAX_LENGTH, CHORE_SUGGESTED_POINTS_MAX, DAILY_PROGRESS_KEEP_DAYS, QUALITY_RATINGS
 from .coord_teamwork import teamwork_config_error
 from .models import Chore, ChoreCompletion, PointsTransaction
 
@@ -1897,6 +1897,97 @@ class ChoresMixin:
                     continue
                 out.append(chore)
         return out
+
+    def get_today_board(self) -> dict:
+        """Every chore each child has today and where it stands (#966).
+
+        Feeds the admin panel's Today page. Unlike ``get_due_chores_for_child``
+        (outstanding only) this keeps the chores already done, so the panel can
+        show done/total. A chore is on a child's board when it is still
+        completable today, when they completed it today (a finished recurring
+        chore is no longer "available", but it was still today's), or when a
+        mandatory miss is waiting for it today.
+
+        Status per chore: ``done`` (approved, up to the daily limit), ``pending``
+        (up to the limit, some awaiting approval), ``missed`` (a pending
+        mandatory miss for today) or ``todo``.
+        """
+        today = dt_util.as_local(dt_util.now()).date()
+        today_iso = today.isoformat()
+        missed = {(m.child_id, m.chore_id) for m in self.storage.get_mandatory_misses() if m.due_date == today_iso}
+        children = []
+        with self.availability_build_scope():
+            done_today: dict[tuple[str, str], list[bool]] = {}
+            for c in self._cached_completions():
+                if getattr(c, "bonus_subtask_id", ""):
+                    continue
+                try:
+                    if dt_util.as_local(c.completed_at).date() != today:
+                        continue
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                done_today.setdefault((c.child_id, c.chore_id), []).append(bool(c.approved))
+            chores = self.storage.get_chores()
+            for child in self.storage.get_children():
+                items = []
+                for chore in chores:
+                    flags = done_today.get((child.id, chore.id), [])
+                    limit = max(int(getattr(chore, "daily_limit", 1) or 1), 1)
+                    open_today = (
+                        len(flags) < limit
+                        and self._is_chore_completable_by_child(chore, child.id)
+                        and not self.weekly_target_met(chore, child.id)
+                    )
+                    if open_today:
+                        status = "missed" if (child.id, chore.id) in missed else "todo"
+                    elif flags:
+                        status = "done" if all(flags) else "pending"
+                    elif (child.id, chore.id) in missed:
+                        status = "missed"
+                    else:
+                        continue
+                    items.append({"chore_id": chore.id, "status": status, "count": len(flags), "limit": limit})
+                children.append(
+                    {
+                        "child_id": child.id,
+                        "due": len(items),
+                        "done": sum(1 for i in items if i["status"] in ("done", "pending")),
+                        "chores": items,
+                    }
+                )
+        return {"date": today_iso, "children": children}
+
+    async def async_record_daily_progress(self, _now=None) -> None:
+        """Store today's done/total per child for the Today page's week view (#966).
+
+        Runs just before midnight, while "today" is still the day being recorded;
+        the scheduled-chore rules only know about the current day, so a past
+        day's total can't be worked out afterwards.
+        """
+        board = self.get_today_board()
+        cutoff = (dt_util.as_local(dt_util.now()).date() - timedelta(days=DAILY_PROGRESS_KEEP_DAYS)).isoformat()
+        for entry in board["children"]:
+            self.storage.upsert_daily_progress(entry["child_id"], board["date"], entry["due"], entry["done"], cutoff)
+        await self.storage.async_save()
+
+    def daily_progress_state(self, days: int = 7) -> dict:
+        """Last ``days`` days of stored done/total per child, today included live."""
+        board = self.get_today_board()
+        today = date.fromisoformat(board["date"])
+        dates = [(today - timedelta(days=n)).isoformat() for n in range(days - 1, -1, -1)]
+        out = {}
+        for child in self.storage.get_children():
+            stored = {e.get("date"): e for e in self.storage.get_daily_progress(child.id)}
+            live = next((e for e in board["children"] if e["child_id"] == child.id), None)
+            if live:
+                stored[board["date"]] = {"due": live["due"], "done": live["done"]}
+            out[child.id] = [
+                {"date": d, "due": stored[d].get("due", 0), "done": stored[d].get("done", 0)}
+                if d in stored
+                else {"date": d}
+                for d in dates
+            ]
+        return {"board": board, "history": out}
 
     async def _async_expire_dated_chores(self) -> None:
         """Soft-disable any enabled chore whose expires_on date has passed."""

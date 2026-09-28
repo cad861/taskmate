@@ -51,7 +51,8 @@ class TestPanelBusyState:
 
     def test_button_is_disabled_and_relabelled_while_busy(self):
         assert 'data-act="approve-all-chores"' in PANEL
-        button = PANEL[PANEL.index('data-act="approve-all-chores"') - 400 :]
+        at = PANEL.index('data-act="approve-all-chores"')
+        button = PANEL[PANEL.rindex("<button", 0, at) :]
         button = button[: button.index("</button>")]
         assert "_approvingAll" in button, "the button never consults the busy flag"
         assert "disabled" in button

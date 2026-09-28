@@ -103,6 +103,9 @@ MAX_TIME_PERIODS: Final = 24
 # Open-ended chores (#832): the child describes the work and suggests what it
 # was worth. Both are child-entered free input, so they're bounded before storage.
 CHORE_NOTE_MAX_LENGTH: Final = 200
+
+# Admin panel Today page (#966): days of per-child done/total snapshots kept.
+DAILY_PROGRESS_KEEP_DAYS: Final = 30
 CHORE_SUGGESTED_POINTS_MAX: Final = 999
 
 # NFC / QR tag completion (#923): a chore lists the HA tag ids that complete it.
