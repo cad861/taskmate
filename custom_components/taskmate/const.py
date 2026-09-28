@@ -48,6 +48,15 @@ BOUNTY_LAPSE_WARNING_MINUTES: Final = 15
 # Approved bounties stay on the card as "Recently completed" this long.
 BOUNTY_RECENT_HOURS: Final = 24
 
+# Chore auctions (#982): children bid the fewest points they'd accept for one
+# occurrence of a chore; the lowest bid wins it at that price.
+AUCTION_STATUSES: Final = ["open", "closed", "cancelled"]
+AUCTION_POINTS_MAX: Final = 100000
+# Eligible children get the "closing soon" push this long before bidding ends.
+AUCTION_REMINDER_MINUTES: Final = 60
+# Closed auctions stay on the children's cards as results this long.
+AUCTION_RESULTS_HOURS: Final = 24
+
 # Default values
 DEFAULT_POINTS_NAME: Final = "Stars"
 DEFAULT_POINTS_ICON: Final = "mdi:star"
@@ -315,6 +324,11 @@ NOTIF_TYPE_RECAP_READY: Final = "recap_ready"
 # Reject reasons (#976): tells a child a chore or reward claim was sent back,
 # with the parent's reason when one was given.
 NOTIF_TYPE_ITEM_REJECTED: Final = "item_rejected"
+# Chore auctions (#982): an auction opened, bidding closes within the hour,
+# and the result (or a cancellation).
+NOTIF_TYPE_AUCTION_OPENED: Final = "auction_opened"
+NOTIF_TYPE_AUCTION_CLOSING: Final = "auction_closing"
+NOTIF_TYPE_AUCTION_RESULT: Final = "auction_result"
 # Surprise inspections (#981): the child hears an inspection is coming (only
 # when they're told) and that it passed; the parent is reminded 30 minutes
 # before an undecided inspection closes.

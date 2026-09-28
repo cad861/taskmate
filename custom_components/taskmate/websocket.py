@@ -234,6 +234,8 @@ WS_CONFIG_IMPORT: Final = "taskmate/config/import"
 # Everything else routed through @_admin_only mutates state and is logged.
 _AUDIT_EXCLUDE: Final = {
     WS_GET_STATE,
+    # Chore auctions (#982): the start sheet's read-only occurrence lookup.
+    "taskmate/auctions/occurrences",
     WS_NOTIF_GET_STATE,
     WS_NOTIF_LIST_NOTIFY,
     WS_TEMPLATES_LIST,
@@ -281,6 +283,7 @@ def _audit_target(coordinator, msg: dict) -> str:
         "type_id",
         "transaction_id",
         "bounty_id",
+        "auction_id",
         "inspection_id",
     ):
         if msg.get(key):
@@ -404,6 +407,9 @@ def _build_state_snapshot(coordinator: TaskMateCoordinator) -> dict[str, Any]:
         # Bounty board (#931): every bounty, history included — the panel
         # splits them into Active / Waiting approval / History.
         "bounties": list(data.get("bounties", [])),
+        # Chore auctions (#982): every auction with its bids — parents see the
+        # amounts, and a won occurrence carries how the chore itself is going.
+        "auctions": coordinator.auctions_state(),
         "pool_allocations": list(data.get("pool_allocations", [])),
         "wishes": coordinator.wishlist_state(),  # wishlist (#932), images signed
         "timed_sessions": list(data.get("timed_sessions", [])),
@@ -3197,14 +3203,15 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     if hass.data.get(DOMAIN, {}).get(WS_REGISTERED):
         _LOGGER.debug("TaskMate WS commands already registered, skipping")
         return
-    # Imported here: kiosk.py and websocket_recaps.py build on this module's
-    # _admin_only / _get_coordinator helpers.
+    # Imported here: kiosk.py, websocket_recaps.py and websocket_auctions.py
+    # build on this module's _admin_only / _get_coordinator helpers.
     from .kiosk import KIOSK_COMMANDS
+    from .websocket_auctions import AUCTION_COMMANDS
     from .websocket_inspections import INSPECTION_COMMANDS
     from .websocket_recaps import RECAP_COMMANDS
     from .websocket_setup import SETUP_COMMANDS
 
-    extra = (*KIOSK_COMMANDS, *RECAP_COMMANDS, *INSPECTION_COMMANDS, *SETUP_COMMANDS)
+    extra = (*KIOSK_COMMANDS, *RECAP_COMMANDS, *INSPECTION_COMMANDS, *SETUP_COMMANDS, *AUCTION_COMMANDS)
     for cmd in (*_COMMANDS, *extra):
         websocket_api.async_register_command(hass, cmd)
     hass.data.setdefault(DOMAIN, {})[WS_REGISTERED] = True

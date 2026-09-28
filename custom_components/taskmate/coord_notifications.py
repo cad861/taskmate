@@ -26,6 +26,9 @@ from .const import (
     DEFAULT_NOTIFICATION_GROUP,
     DEFAULT_NOTIFICATION_NAV_URL,
     NOTIF_TYPE_ALL_CHORES_DONE,
+    NOTIF_TYPE_AUCTION_CLOSING,
+    NOTIF_TYPE_AUCTION_OPENED,
+    NOTIF_TYPE_AUCTION_RESULT,
     NOTIF_TYPE_BADGE_EARNED,
     NOTIF_TYPE_BEDTIME_REMINDER,
     NOTIF_TYPE_BIRTHDAY,
@@ -141,6 +144,12 @@ NOTIFICATION_TYPES: list[NotificationTypeMeta] = [
     # Reject reasons (#976): the child hears their chore / claim was sent
     # back, with the parent's reason. Off until turned on.
     NotificationTypeMeta(NOTIF_TYPE_ITEM_REJECTED, "child", False, False, False, False),
+    # Chore auctions (#982), all opt-in: an auction opened and bidding closing
+    # within the hour go to the children who may bid (when the parent ticks
+    # "tell children"); the result goes to them and to the parents.
+    NotificationTypeMeta(NOTIF_TYPE_AUCTION_OPENED, "child", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_AUCTION_CLOSING, "child", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_AUCTION_RESULT, "both", False, False, False, False),
     # Surprise inspections (#981): the child hears one is coming (when they're
     # told) and that it passed — both off until turned on. The parent's
     # reminder before an undecided inspection closes quietly is on: it only
@@ -498,6 +507,9 @@ class NotificationCoordinator:
             NOTIF_TYPE_BOUNTY_CLAIM_LAPSING: "⏳ {child_name}, {minutes} minutes left to finish '{bounty_name}' before it goes back on the board.",
             NOTIF_TYPE_RECAP_READY: "✨ Your {period} recap is ready, {child_name}! Tap to watch it.",
             NOTIF_TYPE_ITEM_REJECTED: "↩️ {child_name}, '{item_name}' was sent back{reason_text}",
+            NOTIF_TYPE_AUCTION_OPENED: "🔨 New auction: {chore_name} on {date}, up to {max_points} {points_name}. Lowest bid wins!",
+            NOTIF_TYPE_AUCTION_CLOSING: "⏳ {child_name}, bidding on '{chore_name}' closes in {minutes} minutes.",
+            NOTIF_TYPE_AUCTION_RESULT: "🔨 Auction closed: {result_text}",
             NOTIF_TYPE_INSPECTION_STARTED: "🔍 {child_name}, a grown-up is coming to inspect '{chore_name}' before {until}. Keep it looking great for +{bonus} {points_name}!",
             NOTIF_TYPE_INSPECTION_PASSED: "🌟 Inspection passed, {child_name}! '{chore_name}' looked great: +{bonus} {points_name}{note_text}",
             NOTIF_TYPE_INSPECTION_REMINDER: "🔍 {child_name}'s '{chore_name}' inspection closes in {minutes} minutes — pass or fail it before {until}.",
