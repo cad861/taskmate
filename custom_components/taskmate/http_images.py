@@ -92,7 +92,11 @@ class TaskMateImageUploadView(HomeAssistantView):
             _LOGGER.error("Failed to store chore image: %s", err)
             return self.json_message("Could not store image", HTTPStatus.INTERNAL_SERVER_ERROR)
 
-        return self.json({"image_url": f"{images.URL_PREFIX}/{name}"})
+        # Signed, like every image URL the panel gets from state: the editor
+        # previews it in an <img>, which can't send the bearer token, so a bare
+        # URL 401s and HA logs a failed login (#970). Saving strips the
+        # signature again (normalize_taskmate_image_url, #827).
+        return self.json({"image_url": images.sign_image_url(self.hass, f"{images.URL_PREFIX}/{name}")})
 
 
 class TaskMateImageServeView(HomeAssistantView):
