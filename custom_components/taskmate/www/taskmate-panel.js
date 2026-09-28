@@ -1176,13 +1176,21 @@ class TaskMatePanel extends HTMLElement {
     if (!this._dialog) return;
     if (!t.dataset || !t.dataset.field) return;
     const v = e.detail && "value" in e.detail ? e.detail.value : t.value;
-    this._dialog.data[t.dataset.field] = v == null ? "" : v;
+    this._setDialogField(t.dataset.field, v == null ? "" : v);
+  }
+
+  // Dialog field write that understands row paths like "catalog[2].icon" (#972).
+  _setDialogField(field, value) {
+    const m = field.match(/^(\w+)\[(\d+)\]\.(\w+)$/);
+    if (!m) { this._dialog.data[field] = value; return; }
+    const row = (this._dialog.data[m[1]] || [])[Number(m[2])];
+    if (row) row[m[3]] = value;
   }
 
   _syncIconPickers() {
     if (!this._dialog) return;
     this.querySelectorAll("ha-icon-picker[data-field]").forEach(el => {
-      if (el.value != null) this._dialog.data[el.dataset.field] = el.value;
+      if (el.value != null) this._setDialogField(el.dataset.field, el.value);
     });
   }
 
@@ -2733,8 +2741,8 @@ class TaskMatePanel extends HTMLElement {
         return;
       }
     }
-    // Non-admin parent role (#661): collect the ticked HA users.
-    const parentBoxes = root.querySelectorAll("input[type=checkbox][data-parent-user]");
+    // Non-admin parent role (#661): collect the switched-on HA users.
+    const parentBoxes = root.querySelectorAll("[data-parent-user]");
     if (parentBoxes.length) {
       payload.parent_user_ids = Array.from(parentBoxes)
         .filter(el => el.checked)
@@ -5468,7 +5476,9 @@ class TaskMatePanel extends HTMLElement {
   _criteriaLabel(criteria, combinator = "AND") {
     if (!criteria || !criteria.length) return this._t("badge.manual_award_only");
     const joinKey = combinator === "OR" ? "badge.criteria_or" : "badge.criteria_and";
-    return criteria.map(c => `${this._t("badge.criteria_" + c.metric)} ${this._esc(c.operator)} ${this._num(c.value)}`).join(` ${this._t(joinKey)} `);
+    // Plain text: both callers escape the whole label, so escaping the
+    // operator here too rendered ">=" as a literal "&gt;=" (#972).
+    return criteria.map(c => `${this._t("badge.criteria_" + c.metric)} ${c.operator} ${this._num(c.value)}`).join(` ${this._t(joinKey)} `);
   }
 
   _badgeName(b) {
@@ -6243,7 +6253,7 @@ class TaskMatePanel extends HTMLElement {
           <h3>${this._t("panel.settings_sounds_title")}</h3>
           <p class="tm-meta">${this._t("panel.settings_sounds_hint")}</p>
         </div></div>
-        <div class="tm-section-body">
+        <div class="tm-section-body tm-section-pad">
           ${list.length ? `
             <div class="tm-sound-list">
               ${list.map(s => `
@@ -6321,11 +6331,11 @@ class TaskMatePanel extends HTMLElement {
           </div></div>
           <div class="tm-section-body">
             ${(this._haUsers || []).filter(u => !u.is_admin).map(u => `
-              <label class="tm-setting-row tm-role-row">
+              <div class="tm-setting-row">
                 <div class="tm-setting-label">${this._esc(u.name)}</div>
-                <input type="checkbox" class="tm-role-check" data-parent-user="${this._esc(u.id)}" ${(s.parent_user_ids || []).includes(u.id) ? "checked" : ""}>
-              </label>`).join("")
-              || `<p class="tm-meta">${this._t("panel.settings_parents_empty")}</p>`}
+                <ha-switch data-parent-user="${this._esc(u.id)}" aria-label="${this._esc(u.name)}" ${(s.parent_user_ids || []).includes(u.id) ? "checked" : ""}></ha-switch>
+              </div>`).join("")
+              || `<div class="tm-section-pad"><p class="tm-meta">${this._t("panel.settings_parents_empty")}</p></div>`}
             <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_require_linked_child_label")}<small>${this._t("panel.settings_require_linked_child_hint")}</small></div>
               <ha-switch data-setting="require_linked_child" ${s.require_linked_child ? "checked" : ""}></ha-switch>
@@ -6627,7 +6637,8 @@ class TaskMatePanel extends HTMLElement {
               <input type="text" class="tm-input" maxlength="8" data-setting="allowance_currency" value="${this._esc(s.allowance_currency || "")}" placeholder="£">
             </div>
             ${(this._state.allowance_payouts || []).length ? `
-              <h4 style="margin:12px 0 4px">${this._t("panel.allowance_ledger")}</h4>
+              <div class="tm-section-pad">
+              <h4 class="tm-subhead">${this._t("panel.allowance_ledger")}</h4>
               <div class="tm-table-wrap"><table class="tm-table"><tbody>
                 ${(this._state.allowance_payouts || []).slice(0, 10).map(p => `
                   <tr>
@@ -6637,6 +6648,7 @@ class TaskMatePanel extends HTMLElement {
                   </tr>
                 `).join("")}
               </tbody></table></div>
+              </div>
             ` : ""}
           </div>
         </div>
@@ -6711,7 +6723,7 @@ class TaskMatePanel extends HTMLElement {
             ${ns.recipients.children.map(c => {
               const cid = c.id.replace(/^child:/, "");
               return `
-              <div class="tm-row" data-quiet-row style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
+              <div class="tm-notif-recipient" data-quiet-row style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
                 <div style="flex:1;min-width:120px"><strong>${this._esc(c.name)}</strong></div>
                 <select class="tm-notif-select" data-act="notif-set-child-notify" data-child-id="${this._esc(cid)}">
                   ${optTags(c.notify_service)}
@@ -6729,7 +6741,7 @@ class TaskMatePanel extends HTMLElement {
           <div>
             <h4>${this._t("panel.notif_recipients_parents")}</h4>
             ${ns.recipients.parents.map(p => `
-              <div class="tm-row" style="display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
+              <div class="tm-notif-recipient" style="display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
                 <input type="text" value="${this._esc(p.name)}" data-act="notif-rename-parent" data-parent-id="${this._esc(p.id)}" style="flex:1;min-width:60px;background:transparent;border:none;color:inherit;font-size:14px;font-weight:500">
                 <select class="tm-notif-select" data-act="notif-set-parent-notify" data-parent-id="${this._esc(p.id)}">
                   ${optTags(p.notify_service)}
@@ -7775,10 +7787,9 @@ class TaskMatePanel extends HTMLElement {
     ];
     const rowHtml = rows.map((a, i) => `
       <div class="tm-avatar-row">
-        <div class="tm-avatar-row-icon">${this._mdi(a.icon || "mdi:account-circle")}</div>
         <div class="tm-avatar-row-fields">
           <input class="tm-input" type="text" data-field="catalog[${i}].label" value="${this._esc(a.label || "")}" placeholder="${this._t("panel.avatar_label_ph")}">
-          <input class="tm-input" type="text" data-field="catalog[${i}].icon" value="${this._esc(a.icon || "")}" placeholder="mdi:rocket-launch">
+          <ha-icon-picker class="tm-avatar-picker" data-field="catalog[${i}].icon" data-current="${this._esc(a.icon || "")}"></ha-icon-picker>
           <select class="tm-select" data-field="catalog[${i}].unlock_type">
             ${typeOpts.map(o => `<option value="${o.v}" ${(a.unlock_type || "free") === o.v ? "selected" : ""}>${this._esc(o.l)}</option>`).join("")}
           </select>
@@ -7794,7 +7805,9 @@ class TaskMatePanel extends HTMLElement {
         `<button type="button" class="tm-btn tm-btn-sm" data-act="avatar-add-row" style="margin-top:10px;">＋ ${this._t("panel.avatar_add_row")}</button>`,
       ].join(""),
       `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
-       <button type="button" class="tm-btn tm-btn-raised" data-act="save-avatar-catalog">${this._t("panel.btn_save")}</button>`
+       <button type="button" class="tm-btn tm-btn-raised" data-act="save-avatar-catalog">${this._t("panel.btn_save")}</button>`,
+      // Four fields per row plus the icon picker need more than 560px (#972).
+      { wide: true }
     );
   }
 
@@ -8034,10 +8047,10 @@ class TaskMatePanel extends HTMLElement {
 
   // ---- form helpers ----------------------------------------------------
   // `drawer: true` opens it as a full-height panel on the right (#968).
-  _dialogShell(title, body, footer, { drawer = false } = {}) {
+  _dialogShell(title, body, footer, { drawer = false, wide = false } = {}) {
     return `
       <div class="tm-scrim ${drawer ? "tm-scrim-drawer" : ""}" data-act="scrim">
-        <div class="tm-dialog ${drawer ? "tm-drawer" : ""}" role="dialog" aria-modal="true" aria-label="${this._esc(title)}">
+        <div class="${["tm-dialog", drawer && "tm-drawer", wide && "tm-dialog-wide"].filter(Boolean).join(" ")}" role="dialog" aria-modal="true" aria-label="${this._esc(title)}">
           <header class="tm-dialog-head">
             <h2>${this._esc(title)}</h2>
             <button type="button" class="tm-icon-btn" data-act="close-dialog" title="${this._t("panel.tooltip_close")}">&times;</button>
@@ -9169,8 +9182,8 @@ class TaskMatePanel extends HTMLElement {
       .tm-quest-step-name { flex: 1; font-size: 13px; }
       .tm-avatar-rows { display: flex; flex-direction: column; gap: 10px; }
       .tm-avatar-row { display: flex; align-items: center; gap: 8px; }
-      .tm-avatar-row-icon { flex: 0 0 32px; font-size: 24px; color: var(--tm-accent-text); }
-      .tm-avatar-row-fields { flex: 1; display: grid; grid-template-columns: 1.2fr 1.2fr 1fr 0.7fr; gap: 6px; }
+      .tm-avatar-row-fields { flex: 1; display: grid; grid-template-columns: 1fr 1.5fr 1.3fr 0.6fr; gap: 6px; align-items: center; }
+      .tm-avatar-picker { display: block; min-width: 0; }
       @media (max-width: 600px) { .tm-avatar-row-fields { grid-template-columns: 1fr 1fr; } }
       .tm-pill-alternating, .tm-pill-random, .tm-pill-balanced { background: var(--tm-accent-soft); color: var(--tm-accent-text); border-color: var(--tm-accent-border); }
       .tm-pill-first_come { background: var(--tm-gold-soft); color: var(--tm-gold); border-color: color-mix(in srgb, var(--tm-gold), transparent 75%); }
@@ -9323,6 +9336,12 @@ class TaskMatePanel extends HTMLElement {
       .tm-section-head h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
       .tm-section-head p  { margin: 0; color: var(--tm-text-faint); font-size: 12.5px; }
       .tm-section-body { padding: 0; }
+      /* Section content that isn't a .tm-setting-row pads itself (#972). */
+      .tm-section-pad { padding: 14px 20px 16px; border-top: 1px solid var(--tm-border-soft); }
+      .tm-section-body.tm-section-pad, .tm-section-body > .tm-section-pad:first-child { border-top: 0; padding-top: 4px; }
+      .tm-section-pad > p.tm-meta { margin: 0 0 12px; }
+      .tm-section-pad > p.tm-meta:last-child { margin-bottom: 0; }
+      .tm-subhead { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
       .tm-setting-row {
         display: grid; grid-template-columns: 280px 1fr;
         gap: 20px; align-items: center;
@@ -9330,11 +9349,6 @@ class TaskMatePanel extends HTMLElement {
         border-top: 1px solid var(--tm-border-soft);
       }
       .tm-setting-row:first-child { border-top: 0; }
-      .tm-role-row { grid-template-columns: 1fr auto; cursor: pointer; }
-      .tm-role-check {
-        width: 20px; height: 20px; margin: 0;
-        justify-self: end; accent-color: var(--tm-accent); cursor: pointer;
-      }
       .tm-setting-label { color: var(--tm-text); font-size: 13px; font-weight: 500; }
       .tm-setting-label small { display: block; color: var(--tm-text-faint); font-weight: 400; font-size: 12px; margin-top: 2px; }
       .tm-difficulty-mults { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -9382,7 +9396,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-btn-on { background: var(--primary-color, #5b8def); color: #fff; }
       .tm-audit-row {
         display: grid;
-        grid-template-columns: 180px 130px 180px 1fr;
+        grid-template-columns: 170px 120px minmax(0, 1.3fr) minmax(0, 1fr);
         gap: 12px;
         padding: 8px 20px;
         border-top: 1px solid var(--tm-border-soft);
@@ -9392,6 +9406,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-audit-head { font-weight: 600; color: var(--tm-text-faint); }
       .tm-audit-when, .tm-audit-user { color: var(--tm-text-faint); }
       .tm-audit-action { font-family: var(--code-font-family, monospace); }
+      .tm-audit-action, .tm-audit-target { min-width: 0; overflow-wrap: anywhere; }
       @media (max-width: 700px) {
         .tm-audit-row { grid-template-columns: 1fr 1fr; }
         .tm-audit-head { display: none; }
@@ -9451,6 +9466,7 @@ class TaskMatePanel extends HTMLElement {
         overflow: hidden;
         animation: tm-dialog-in 0.2s var(--tm-easing);
       }
+      .tm-dialog.tm-dialog-wide { max-width: 860px; }
       @keyframes tm-dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
 
       /* Side-panel editor (#968): full height on the right, page visible behind. */
@@ -10323,7 +10339,6 @@ class TaskMatePanel extends HTMLElement {
         .tm-scrim { padding: 0; }
         .tm-dialog-body .tm-field-row { grid-template-columns: 1fr; }
         .tm-setting-row { grid-template-columns: 1fr; gap: 6px; padding: 12px 16px; }
-        .tm-role-row { grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
         .tm-section-head, .tm-setting-row { padding-left: 16px; padding-right: 16px; }
         .tm-timeline-row { grid-template-columns: 1fr auto; }
         .tm-timeline-time, .tm-timeline-icon { display: none; }
