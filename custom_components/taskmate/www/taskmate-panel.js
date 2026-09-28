@@ -1295,6 +1295,11 @@ class TaskMatePanel extends HTMLElement {
     }[kind];
     const { ok, err } = await this._callWS({ type: wsType, [idField]: id });
     if (!ok) { this._showToast("err", this._t("panel.toast_delete_failed", {error: err})); return; }
+    // Deleted from inside its own editor (#968): the editor has nothing left to edit.
+    if (this._dialog && this._dialog.data && this._dialog.data.id === id) {
+      this._dialog = null;
+      this._dialogInitialHash = null;
+    }
     await this._fetchState();
     this._showToast("ok", this._t("panel.toast_deleted"));
   }
@@ -4399,6 +4404,13 @@ class TaskMatePanel extends HTMLElement {
       return;
     }
     if (!this._palette) {
+      // Esc closes an open editor even when focus isn't inside the panel —
+      // after tapping a board chip it sits on the page, which the panel's own
+      // keydown listener never hears (#968).
+      if (e.key === "Escape" && this._dialog && !(e.composedPath && e.composedPath().includes(this))) {
+        this._closeDialog();
+        return;
+      }
       if (e.key === "/" && !this._dialog && !e.ctrlKey && !e.metaKey && !e.altKey && !this._isTypingTarget(e)) {
         e.preventDefault();
         this._openPalette();
@@ -7181,188 +7193,207 @@ class TaskMatePanel extends HTMLElement {
 
     const isTimedTask = d.task_type === "timed";
 
+    // Fields grouped under headings, opened as a side panel (#968).
+    const section = (key, parts) => `
+      <section class="tm-drawer-sec">
+        <h3 class="tm-drawer-sec-h">${this._t(`panel.chore_sec_${key}`)}</h3>
+        ${parts.join("")}
+      </section>`;
+
     return this._dialogShell(this._dialog.mode === "add" ? this._t("panel.dialog_add_chore") : this._t("panel.dialog_edit_chore"),
       [
-        this._field(this._t("panel.chore_name_label"), "name", d.name, "text"),
-        `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_description_label"), "description", d.description, "text")}
-          ${this._iconPickerField(this._t("panel.chore_icon_label"), "icon", d.icon)}
-        ${this._choreImageField(d.image_url || "")}
-        </div>`,
-        this._select(this._t("panel.chore_task_type_label"), "task_type", d.task_type || "standard", [
-          { v: "standard", l: this._t("panel.chore_task_type_standard") },
-          { v: "timed", l: this._t("panel.chore_task_type_timed") },
-        ], "", true),
-        isTimedTask ? `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_points_per_window_label"), "timed_rate_points", d.timed_rate_points || 10, "number")}
-          ${this._field(this._t("panel.chore_window_minutes_label"), "timed_rate_minutes", d.timed_rate_minutes || 5, "number")}
-        </div>
-        <div class="tm-field-row">
-          ${this._field(this._t("panel.chore_daily_cap_label"), "timed_max_daily_minutes", d.timed_max_daily_minutes || 0, "number")}
-          ${this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
-        </div>` : `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_points_label"), "points", d.points, "number")}
-          ${d.assignment_mode === "first_come" ? "" : this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
-        </div>`,
-        this._select(this._t("panel.chore_assignment_mode_label"), "assignment_mode", d.assignment_mode, ASSIGNMENT_MODES,
-          this._t("panel.chore_assignment_mode_hint"), true),
-        !isUnassigned ? (children.length > 0 ? `
-          <div class="tm-field">
-            <span class="tm-field-label">${this._t("panel.chore_assign_label")}</span>
-            <div class="tm-chip-row">
-              ${children.map(c => `
-                <button type="button" class="tm-chip-btn ${(d.assigned_to || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-assigned" data-id="${this._esc(c.id)}">
-                  ${this._esc(c.name)}
-                </button>
-              `).join("")}
-            </div>
-            <span class="tm-field-hint">${this._t("panel.chore_assign_hint")}</span>
-          </div>
-        ` : `<div class="tm-field"><span class="tm-field-hint">${this._t("panel.chore_assign_no_children")}</span></div>`) : "",
-        (this._state.chores || []).filter(x => x.id !== d.id).length > 0 ? `
-          <div class="tm-field">
-            <span class="tm-field-label">${this._t("panel.chore_depends_label")}</span>
-            <div class="tm-chip-row">
-              ${(this._state.chores || []).filter(x => x.id !== d.id).map(c => `
-                <button type="button" class="tm-chip-btn ${(d.depends_on || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-depends" data-id="${this._esc(c.id)}">
-                  ${this._esc(c.name)}
-                </button>
-              `).join("")}
-            </div>
-            <span class="tm-field-hint">${this._t("panel.chore_depends_hint")}</span>
-          </div>
-        ` : "",
-        showRotation && children.length > 0 ? this._select(
-          this._t("panel.chore_rotation_label"), "manual_start_child_id", d.manual_start_child_id,
-          [{ v: "", l: this._t("panel.chore_rotation_no_override") }, ...children.map(c => ({ v: c.id, l: c.name }))],
-          this._t("panel.chore_rotation_hint")
-        ) : "",
-        this._select(this._t("panel.chore_time_category_label"), "time_category", d.time_category, this._timeCategoryOptions()),
-        this._field(this._t("panel.chore_claim_allowance_label"), "claim_allowance_minutes", d.claim_allowance_minutes, "number",
-          this._t("panel.chore_claim_allowance_hint")),
-        this._select(this._t("panel.chore_schedule_mode_label"), "schedule_mode", d.schedule_mode, SCHEDULE_MODES, "", true),
-        showSpecificDays ? `
-          <div class="tm-field">
-            <span class="tm-field-label">${this._t("panel.chore_days_label")}</span>
-            <div class="tm-day-row">
-              ${DAYS.map(day => `
-                <button type="button" class="tm-day-btn ${(d.due_days || []).includes(day.v) ? "tm-day-on" : ""}" data-act="toggle-day" data-day="${day.v}">${this._t(day.lk)}</button>
-              `).join("")}
-            </div>
-          </div>
-          ${this._field(this._t("panel.chore_weekly_target_label"), "weekly_target", d.weekly_target || 0, "number",
-            this._t("panel.chore_weekly_target_hint"))}
-        ` : "",
-        showRecurring ? `
-          <div class="tm-field-row">
-            ${this._select(this._t("panel.chore_recurrence_label"), "recurrence", d.recurrence, RECURRENCES)}
-            ${this._field(this._t("panel.chore_recurrence_day_label"), "recurrence_day", d.recurrence_day, "text", this._t("panel.chore_recurrence_day_hint"))}
+        section("basics", [
+          this._field(this._t("panel.chore_name_label"), "name", d.name, "text"),
+          `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_description_label"), "description", d.description, "text")}
+            ${this._iconPickerField(this._t("panel.chore_icon_label"), "icon", d.icon)}
+          ${this._choreImageField(d.image_url || "")}
+          </div>`,
+          this._select(this._t("panel.chore_task_type_label"), "task_type", d.task_type || "standard", [
+            { v: "standard", l: this._t("panel.chore_task_type_standard") },
+            { v: "timed", l: this._t("panel.chore_task_type_timed") },
+          ], "", true),
+          isTimedTask ? `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_points_per_window_label"), "timed_rate_points", d.timed_rate_points || 10, "number")}
+            ${this._field(this._t("panel.chore_window_minutes_label"), "timed_rate_minutes", d.timed_rate_minutes || 5, "number")}
           </div>
           <div class="tm-field-row">
-            ${this._dateField(this._t("panel.chore_recurrence_start_label"), "recurrence_start", d.recurrence_start, this._t("panel.chore_recurrence_start_hint"))}
-            ${this._select(this._t("panel.chore_first_occurrence_label"), "first_occurrence_mode", d.first_occurrence_mode, FIRST_OCCURRENCE)}
-          </div>
-        ` : "",
-        this._soundField(d.completion_sound),
-        this._select(this._t("panel.chore_difficulty_label"), "difficulty", d.difficulty || "medium", [
-          { v: "easy", l: this._t("panel.difficulty_easy") },
-          { v: "medium", l: this._t("panel.difficulty_medium") },
-          { v: "hard", l: this._t("panel.difficulty_hard") },
+            ${this._field(this._t("panel.chore_daily_cap_label"), "timed_max_daily_minutes", d.timed_max_daily_minutes || 0, "number")}
+            ${this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
+          </div>` : `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_points_label"), "points", d.points, "number")}
+            ${d.assignment_mode === "first_come" ? "" : this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
+          </div>`,
+          this._select(this._t("panel.chore_difficulty_label"), "difficulty", d.difficulty || "medium", [
+            { v: "easy", l: this._t("panel.difficulty_easy") },
+            { v: "medium", l: this._t("panel.difficulty_medium") },
+            { v: "hard", l: this._t("panel.difficulty_hard") },
+          ]),
+          this._soundField(d.completion_sound),
         ]),
-        this._dateField(this._t("panel.chore_expires_label"), "expires_on", d.expires_on, this._t("panel.chore_expires_hint")),
-        `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_due_time_label"), "due_time", d.due_time, "time", this._t("panel.chore_due_time_hint"))}
-          ${this._field(this._t("panel.chore_early_bonus_label"), "early_bonus", d.early_bonus, "number")}
-          ${this._field(this._t("panel.chore_late_penalty_label"), "late_penalty", d.late_penalty, "number")}
-        </div>`,
-        this._switch(this._t("panel.chore_approval_label"), "requires_approval", d.requires_approval),
-        this._switch(this._t("panel.chore_require_photo_label"), "require_photo", d.require_photo,
-          this._t("panel.chore_require_photo_hint")),
-        this._switch(this._t("panel.chore_open_ended_label"), "open_ended", d.open_ended,
-          this._t("panel.chore_open_ended_hint")),
-        this._switch(this._t("panel.chore_require_availability"), "require_availability", d.require_availability,
-          this._t("panel.chore_require_availability_hint")),
-        this._switch(this._t("panel.chore_mandatory_label"), "mandatory", d.mandatory,
-          this._t("panel.chore_mandatory_hint"), true),
-        d.mandatory ? this._field(this._t("panel.chore_mandatory_penalty_label"), "mandatory_penalty_points",
-          d.mandatory_penalty_points, "number", this._t("panel.chore_mandatory_penalty_hint")) : "",
-        isTimedTask ? "" : this._renderChoreTeamwork(d),
-        memberInGroup ? `
-          <div class="tm-field">
-            <span class="tm-field-hint">${this._t("panel.chore_group_hint", {name: this._esc(memberInGroup.name), policy: memberInGroup.policy})}</span>
-          </div>
-        ` : "",
-        `<details class="tm-advanced" data-section="bonus_subtasks"${this._dialog._openAdvanced?.has("bonus_subtasks") ? " open" : ""}>
-          <summary>${this._t("panel.chore_advanced_bonus_subtasks")}</summary>
-          <div>
-            <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_advanced_bonus_subtasks_hint")}</span>
-            ${(d.bonus_subtasks || []).map((b, idx) => `
-              <div class="tm-field-row" style="align-items:flex-end;gap:6px;margin-bottom:6px">
-                <div class="tm-field" style="flex:2;margin:0"><input class="tm-input" placeholder="${this._t("panel.chore_subtask_name_placeholder")}" value="${this._esc(b.name)}" data-field="bonus_subtasks[${idx}].name"></div>
-                <div class="tm-field" style="flex:0 0 70px;margin:0"><input class="tm-input" type="number" min="0" placeholder="${this._t("panel.chore_subtask_points_placeholder")}" value="${this._num(b.points)}" data-field="bonus_subtasks[${idx}].points"></div>
-                <button type="button" class="tm-btn tm-btn-icon" data-act="remove-bonus-subtask" data-idx="${idx}" title="${this._t("panel.tooltip_remove")}" style="padding:6px 10px">✕</button>
-              </div>
-            `).join("")}
-            <button type="button" class="tm-btn" data-act="add-bonus-subtask" style="margin-top:4px">${this._t("panel.btn_add_bonus_subtask")}</button>
-          </div>
-        </details>`,
-        this._renderChoreTags(d),
-        `<details class="tm-advanced" data-section="visibility"${this._dialog._openAdvanced?.has("visibility") ? " open" : ""}>
-          <summary>${this._t("panel.chore_advanced_visibility")}</summary>
-          <div>
-            ${this._entityPickerField(this._t("panel.chore_vis_entity_label"), "visibility_entity", d.visibility_entity, ["binary_sensor", "sensor", "switch", "input_boolean", "input_select"],
-              this._t("panel.chore_vis_entity_hint"))}
-            <div class="tm-field-row">
-              ${this._select(this._t("panel.chore_vis_operator_label"), "visibility_operator", d.visibility_operator, VISIBILITY_OPS)}
-              ${this._field(this._t("panel.chore_vis_value_label"), "visibility_state", d.visibility_state, "text", this._t("panel.chore_vis_value_hint"))}
-            </div>
+        section("who", [
+          this._select(this._t("panel.chore_assignment_mode_label"), "assignment_mode", d.assignment_mode, ASSIGNMENT_MODES,
+            this._t("panel.chore_assignment_mode_hint"), true),
+          !isUnassigned ? (children.length > 0 ? `
             <div class="tm-field">
-              <span class="tm-field-label">${this._t("panel.chore_calendar_label")}</span>
-              ${calendarEntities.length === 0 ? `<span class="tm-field-hint">${this._t("panel.chore_calendar_no_entities")}</span>` : `
-                <div class="tm-chip-row">
-                  ${calendarEntities.map(cid => `
-                    <button type="button" class="tm-chip-btn ${(d.publish_calendar_entities || []).includes(cid) ? "tm-chip-on" : ""}" data-act="toggle-calendar" data-id="${this._esc(cid)}">
-                      ${this._esc(cid)}
-                    </button>
-                  `).join("")}
-                </div>
-                <span class="tm-field-hint">${this._t("panel.chore_calendar_hint")}</span>
-              `}
+              <span class="tm-field-label">${this._t("panel.chore_assign_label")}</span>
+              <div class="tm-chip-row">
+                ${children.map(c => `
+                  <button type="button" class="tm-chip-btn ${(d.assigned_to || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-assigned" data-id="${this._esc(c.id)}">
+                    ${this._esc(c.name)}
+                  </button>
+                `).join("")}
+              </div>
+              <span class="tm-field-hint">${this._t("panel.chore_assign_hint")}</span>
             </div>
-            ${this._switch(this._t("panel.chore_enabled_label"), "enabled", d.enabled !== false)}
-          </div>
-        </details>`,
-        this._dialog.mode === "edit" ? this._renderScheduledChanges(d) : "",
-        `<details class="tm-advanced" data-section="weather"${this._dialog._openAdvanced?.has("weather") ? " open" : ""}>
-          <summary>${this._t("panel.chore_advanced_weather")}</summary>
-          <div>
-            <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_weather_intro")}</span>
-            ${this._entityPickerField(this._t("panel.chore_weather_entity_label"), "weather_entity", d.weather_entity, ["weather"],
-              this._t("panel.chore_weather_entity_hint"))}
-            ${d.weather_entity ? `
-              <div class="tm-field">
-                <span class="tm-field-label">${this._t("panel.chore_weather_conditions_label")}</span>
-                <div class="tm-chip-row">
-                  ${WEATHER_CONDITIONS.map(w => `
-                    <button type="button" class="tm-chip-btn ${(d.weather_block_conditions || []).includes(w.v) ? "tm-chip-on" : ""}" data-act="toggle-weather-condition" data-id="${w.v}">
-                      <ha-icon icon="${w.icon}" style="--mdc-icon-size:16px;margin-right:4px"></ha-icon>${this._t("weather.condition_" + w.v.replace(/-/g, "_"))}
-                    </button>
-                  `).join("")}
+          ` : `<div class="tm-field"><span class="tm-field-hint">${this._t("panel.chore_assign_no_children")}</span></div>`) : "",
+          showRotation && children.length > 0 ? this._select(
+            this._t("panel.chore_rotation_label"), "manual_start_child_id", d.manual_start_child_id,
+            [{ v: "", l: this._t("panel.chore_rotation_no_override") }, ...children.map(c => ({ v: c.id, l: c.name }))],
+            this._t("panel.chore_rotation_hint")
+          ) : "",
+        ]),
+        section("when", [
+          this._select(this._t("panel.chore_time_category_label"), "time_category", d.time_category, this._timeCategoryOptions()),
+          this._field(this._t("panel.chore_claim_allowance_label"), "claim_allowance_minutes", d.claim_allowance_minutes, "number",
+            this._t("panel.chore_claim_allowance_hint")),
+          this._select(this._t("panel.chore_schedule_mode_label"), "schedule_mode", d.schedule_mode, SCHEDULE_MODES, "", true),
+          showSpecificDays ? `
+            <div class="tm-field">
+              <span class="tm-field-label">${this._t("panel.chore_days_label")}</span>
+              <div class="tm-day-row">
+                ${DAYS.map(day => `
+                  <button type="button" class="tm-day-btn ${(d.due_days || []).includes(day.v) ? "tm-day-on" : ""}" data-act="toggle-day" data-day="${day.v}">${this._t(day.lk)}</button>
+                `).join("")}
+              </div>
+            </div>
+            ${this._field(this._t("panel.chore_weekly_target_label"), "weekly_target", d.weekly_target || 0, "number",
+              this._t("panel.chore_weekly_target_hint"))}
+          ` : "",
+          showRecurring ? `
+            <div class="tm-field-row">
+              ${this._select(this._t("panel.chore_recurrence_label"), "recurrence", d.recurrence, RECURRENCES)}
+              ${this._field(this._t("panel.chore_recurrence_day_label"), "recurrence_day", d.recurrence_day, "text", this._t("panel.chore_recurrence_day_hint"))}
+            </div>
+            <div class="tm-field-row">
+              ${this._dateField(this._t("panel.chore_recurrence_start_label"), "recurrence_start", d.recurrence_start, this._t("panel.chore_recurrence_start_hint"))}
+              ${this._select(this._t("panel.chore_first_occurrence_label"), "first_occurrence_mode", d.first_occurrence_mode, FIRST_OCCURRENCE)}
+            </div>
+          ` : "",
+          this._dateField(this._t("panel.chore_expires_label"), "expires_on", d.expires_on, this._t("panel.chore_expires_hint")),
+          `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_due_time_label"), "due_time", d.due_time, "time", this._t("panel.chore_due_time_hint"))}
+            ${this._field(this._t("panel.chore_early_bonus_label"), "early_bonus", d.early_bonus, "number")}
+            ${this._field(this._t("panel.chore_late_penalty_label"), "late_penalty", d.late_penalty, "number")}
+          </div>`,
+          (this._state.chores || []).filter(x => x.id !== d.id).length > 0 ? `
+            <div class="tm-field">
+              <span class="tm-field-label">${this._t("panel.chore_depends_label")}</span>
+              <div class="tm-chip-row">
+                ${(this._state.chores || []).filter(x => x.id !== d.id).map(c => `
+                  <button type="button" class="tm-chip-btn ${(d.depends_on || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-depends" data-id="${this._esc(c.id)}">
+                    ${this._esc(c.name)}
+                  </button>
+                `).join("")}
+              </div>
+              <span class="tm-field-hint">${this._t("panel.chore_depends_hint")}</span>
+            </div>
+          ` : "",
+        ]),
+        section("checking", [
+          this._switch(this._t("panel.chore_approval_label"), "requires_approval", d.requires_approval),
+          this._switch(this._t("panel.chore_require_photo_label"), "require_photo", d.require_photo,
+            this._t("panel.chore_require_photo_hint")),
+          this._switch(this._t("panel.chore_open_ended_label"), "open_ended", d.open_ended,
+            this._t("panel.chore_open_ended_hint")),
+          this._switch(this._t("panel.chore_require_availability"), "require_availability", d.require_availability,
+            this._t("panel.chore_require_availability_hint")),
+          this._switch(this._t("panel.chore_mandatory_label"), "mandatory", d.mandatory,
+            this._t("panel.chore_mandatory_hint"), true),
+          d.mandatory ? this._field(this._t("panel.chore_mandatory_penalty_label"), "mandatory_penalty_points",
+            d.mandatory_penalty_points, "number", this._t("panel.chore_mandatory_penalty_hint")) : "",
+        ]),
+        section("more", [
+          isTimedTask ? "" : this._renderChoreTeamwork(d),
+          memberInGroup ? `
+            <div class="tm-field">
+              <span class="tm-field-hint">${this._t("panel.chore_group_hint", {name: this._esc(memberInGroup.name), policy: memberInGroup.policy})}</span>
+            </div>
+          ` : "",
+          `<details class="tm-advanced" data-section="bonus_subtasks"${this._dialog._openAdvanced?.has("bonus_subtasks") ? " open" : ""}>
+            <summary>${this._t("panel.chore_advanced_bonus_subtasks")}</summary>
+            <div>
+              <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_advanced_bonus_subtasks_hint")}</span>
+              ${(d.bonus_subtasks || []).map((b, idx) => `
+                <div class="tm-field-row" style="align-items:flex-end;gap:6px;margin-bottom:6px">
+                  <div class="tm-field" style="flex:2;margin:0"><input class="tm-input" placeholder="${this._t("panel.chore_subtask_name_placeholder")}" value="${this._esc(b.name)}" data-field="bonus_subtasks[${idx}].name"></div>
+                  <div class="tm-field" style="flex:0 0 70px;margin:0"><input class="tm-input" type="number" min="0" placeholder="${this._t("panel.chore_subtask_points_placeholder")}" value="${this._num(b.points)}" data-field="bonus_subtasks[${idx}].points"></div>
+                  <button type="button" class="tm-btn tm-btn-icon" data-act="remove-bonus-subtask" data-idx="${idx}" title="${this._t("panel.tooltip_remove")}" style="padding:6px 10px">✕</button>
                 </div>
-                <span class="tm-field-hint">${this._t("panel.chore_weather_conditions_hint")}</span>
-              </div>
+              `).join("")}
+              <button type="button" class="tm-btn" data-act="add-bonus-subtask" style="margin-top:4px">${this._t("panel.btn_add_bonus_subtask")}</button>
+            </div>
+          </details>`,
+          this._renderChoreTags(d),
+          `<details class="tm-advanced" data-section="visibility"${this._dialog._openAdvanced?.has("visibility") ? " open" : ""}>
+            <summary>${this._t("panel.chore_advanced_visibility")}</summary>
+            <div>
+              ${this._entityPickerField(this._t("panel.chore_vis_entity_label"), "visibility_entity", d.visibility_entity, ["binary_sensor", "sensor", "switch", "input_boolean", "input_select"],
+                this._t("panel.chore_vis_entity_hint"))}
               <div class="tm-field-row">
-                ${this._field(this._t("panel.chore_weather_temp_min_label"), "weather_temp_min", d.weather_temp_min, "number", this._t("panel.chore_weather_temp_min_hint"))}
-                ${this._field(this._t("panel.chore_weather_temp_max_label"), "weather_temp_max", d.weather_temp_max, "number", this._t("panel.chore_weather_temp_max_hint"))}
+                ${this._select(this._t("panel.chore_vis_operator_label"), "visibility_operator", d.visibility_operator, VISIBILITY_OPS)}
+                ${this._field(this._t("panel.chore_vis_value_label"), "visibility_state", d.visibility_state, "text", this._t("panel.chore_vis_value_hint"))}
               </div>
-              ${this._field(this._t("panel.chore_weather_wind_max_label"), "weather_wind_max", d.weather_wind_max, "number", this._t("panel.chore_weather_wind_max_hint"))}
-              <span class="tm-field-hint">${this._t("panel.chore_weather_failopen_hint")}</span>
-            ` : ""}
-          </div>
-        </details>`,
+              <div class="tm-field">
+                <span class="tm-field-label">${this._t("panel.chore_calendar_label")}</span>
+                ${calendarEntities.length === 0 ? `<span class="tm-field-hint">${this._t("panel.chore_calendar_no_entities")}</span>` : `
+                  <div class="tm-chip-row">
+                    ${calendarEntities.map(cid => `
+                      <button type="button" class="tm-chip-btn ${(d.publish_calendar_entities || []).includes(cid) ? "tm-chip-on" : ""}" data-act="toggle-calendar" data-id="${this._esc(cid)}">
+                        ${this._esc(cid)}
+                      </button>
+                    `).join("")}
+                  </div>
+                  <span class="tm-field-hint">${this._t("panel.chore_calendar_hint")}</span>
+                `}
+              </div>
+              ${this._switch(this._t("panel.chore_enabled_label"), "enabled", d.enabled !== false)}
+            </div>
+          </details>`,
+          this._dialog.mode === "edit" ? this._renderScheduledChanges(d) : "",
+          `<details class="tm-advanced" data-section="weather"${this._dialog._openAdvanced?.has("weather") ? " open" : ""}>
+            <summary>${this._t("panel.chore_advanced_weather")}</summary>
+            <div>
+              <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_weather_intro")}</span>
+              ${this._entityPickerField(this._t("panel.chore_weather_entity_label"), "weather_entity", d.weather_entity, ["weather"],
+                this._t("panel.chore_weather_entity_hint"))}
+              ${d.weather_entity ? `
+                <div class="tm-field">
+                  <span class="tm-field-label">${this._t("panel.chore_weather_conditions_label")}</span>
+                  <div class="tm-chip-row">
+                    ${WEATHER_CONDITIONS.map(w => `
+                      <button type="button" class="tm-chip-btn ${(d.weather_block_conditions || []).includes(w.v) ? "tm-chip-on" : ""}" data-act="toggle-weather-condition" data-id="${w.v}">
+                        <ha-icon icon="${w.icon}" style="--mdc-icon-size:16px;margin-right:4px"></ha-icon>${this._t("weather.condition_" + w.v.replace(/-/g, "_"))}
+                      </button>
+                    `).join("")}
+                  </div>
+                  <span class="tm-field-hint">${this._t("panel.chore_weather_conditions_hint")}</span>
+                </div>
+                <div class="tm-field-row">
+                  ${this._field(this._t("panel.chore_weather_temp_min_label"), "weather_temp_min", d.weather_temp_min, "number", this._t("panel.chore_weather_temp_min_hint"))}
+                  ${this._field(this._t("panel.chore_weather_temp_max_label"), "weather_temp_max", d.weather_temp_max, "number", this._t("panel.chore_weather_temp_max_hint"))}
+                </div>
+                ${this._field(this._t("panel.chore_weather_wind_max_label"), "weather_wind_max", d.weather_wind_max, "number", this._t("panel.chore_weather_wind_max_hint"))}
+                <span class="tm-field-hint">${this._t("panel.chore_weather_failopen_hint")}</span>
+              ` : ""}
+            </div>
+          </details>`,
+        ]),
       ].join(""),
-      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
-       <button type="button" class="tm-btn tm-btn-raised" data-act="save-chore">${this._t("panel.btn_save")}</button>`
+      `${this._dialog.mode === "edit" && d.id ? `<button type="button" class="tm-btn tm-drawer-delete" data-act="delete-chore" data-id="${this._esc(d.id)}"><ha-icon icon="mdi:delete-outline"></ha-icon>${this._t("panel.btn_delete")}</button>` : ""}
+       <button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="save-chore">${this._t("panel.btn_save")}</button>`,
+      { drawer: true }
     );
   }
 
@@ -8002,10 +8033,11 @@ class TaskMatePanel extends HTMLElement {
   }
 
   // ---- form helpers ----------------------------------------------------
-  _dialogShell(title, body, footer) {
+  // `drawer: true` opens it as a full-height panel on the right (#968).
+  _dialogShell(title, body, footer, { drawer = false } = {}) {
     return `
-      <div class="tm-scrim" data-act="scrim">
-        <div class="tm-dialog">
+      <div class="tm-scrim ${drawer ? "tm-scrim-drawer" : ""}" data-act="scrim">
+        <div class="tm-dialog ${drawer ? "tm-drawer" : ""}" role="dialog" aria-modal="true" aria-label="${this._esc(title)}">
           <header class="tm-dialog-head">
             <h2>${this._esc(title)}</h2>
             <button type="button" class="tm-icon-btn" data-act="close-dialog" title="${this._t("panel.tooltip_close")}">&times;</button>
@@ -9420,6 +9452,31 @@ class TaskMatePanel extends HTMLElement {
         animation: tm-dialog-in 0.2s var(--tm-easing);
       }
       @keyframes tm-dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+      /* Side-panel editor (#968): full height on the right, page visible behind. */
+      .tm-scrim.tm-scrim-drawer {
+        padding: 0; overflow: hidden;
+        justify-content: flex-end; align-items: stretch;
+        background: rgba(0, 0, 0, 0.32);
+      }
+      .tm-dialog.tm-drawer {
+        width: min(520px, 100vw); max-width: none; box-sizing: border-box;
+        height: 100%; max-height: none;
+        border-radius: 0; border-width: 0 0 0 1px;
+        box-shadow: -16px 0 40px rgba(0, 0, 0, 0.18);
+        animation: tm-drawer-in 0.22s var(--tm-easing);
+      }
+      @keyframes tm-drawer-in { from { transform: translateX(100%); } to { transform: none; } }
+      .tm-drawer .tm-dialog-body { flex: 1; padding-top: 4px; }
+      .tm-drawer-sec { padding-bottom: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--tm-border-soft); }
+      .tm-drawer-sec:last-child { border-bottom: 0; margin-bottom: 0; }
+      .tm-drawer-sec-h {
+        margin: 12px 0 12px; font-size: 11.5px; font-weight: 600;
+        letter-spacing: 0.06em; text-transform: uppercase; color: var(--tm-text-muted);
+      }
+      .tm-drawer-delete { margin-right: auto; color: var(--tm-danger); display: inline-flex; align-items: center; gap: 4px; }
+      .tm-drawer-delete ha-icon { --mdc-icon-size: 18px; }
+      @media (prefers-reduced-motion: reduce) { .tm-dialog.tm-drawer { animation: none; } }
 
       .tm-dialog-head {
         padding: 18px 22px;
