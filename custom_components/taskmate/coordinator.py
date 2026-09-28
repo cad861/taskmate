@@ -116,6 +116,7 @@ class TaskMateCoordinator(
         self.entry_id = entry_id
         self._unsub_midnight: Callable[[], None] | None = None
         self._unsub_prune: Callable[[], None] | None = None
+        self._unsub_daily_progress: Callable[[], None] | None = None
         self._unsub_availability: Callable[[], None] | None = None
         self._unsub_tag_scanned: Callable[[], None] | None = None
         self._tracked_availability_entities: set[str] = set()
@@ -407,6 +408,10 @@ class TaskMateCoordinator(
         # Schedule midnight streak check at 00:00:05
         self._unsub_midnight = async_track_time_change(
             self.hass, self._async_midnight_streak_check, hour=0, minute=0, second=5
+        )
+        # Record each child's done/total for the day just before it ends (#966)
+        self._unsub_daily_progress = async_track_time_change(
+            self.hass, self._async_daily_progress_tick, hour=23, minute=59, second=0
         )
         # Schedule daily history pruning at 00:01:00
         self._unsub_prune = async_track_time_change(self.hass, self._async_scheduled_prune, hour=0, minute=1, second=0)
@@ -780,6 +785,7 @@ class TaskMateCoordinator(
         for attr in (
             "_unsub_midnight",
             "_unsub_prune",
+            "_unsub_daily_progress",
             "_unsub_availability",
             "_unsub_tag_scanned",
             "_unsub_surprise",
@@ -793,6 +799,11 @@ class TaskMateCoordinator(
         # Flush any pending debounced save so an entry unload/reload can't drop
         # the last mutation (PERF-3).
         await self.storage.async_save_now()
+
+    @callback
+    def _async_daily_progress_tick(self, now: datetime) -> None:
+        """Scheduled callback at 23:59 to snapshot the day's chore progress."""
+        self.hass.async_create_task(self.async_record_daily_progress(now))
 
     @callback
     def _async_midnight_streak_check(self, now: datetime) -> None:
@@ -963,6 +974,7 @@ class TaskMateCoordinator(
         self.storage.remove_last_completed_for_child(child_id)
         self.storage.remove_pool_allocations_for_child(child_id)
         self.storage.remove_career_score_history_for_child(child_id)
+        self.storage.remove_daily_progress_for_child(child_id)
         self.storage.remove_quest_progress_for_child(child_id)
         self.storage.remove_challenge_progress_for_child(child_id)
         # Drop pending swap requests either side of this child (#785) — a

@@ -124,6 +124,10 @@ class TaskMateStorage:
         if "career_score_history" not in self._data:
             self._data["career_score_history"] = {}
 
+        # Per-child daily done/total for the admin panel's Today page (#966)
+        if "daily_progress" not in self._data:
+            self._data["daily_progress"] = {}
+
         # Ensure templates store exists
         if "templates" not in self._data:
             self._data["templates"] = []
@@ -1993,6 +1997,22 @@ class TaskMateStorage:
         """Remove all career score history for a child."""
         history = self._data.get("career_score_history", {})
         history.pop(child_id, None)
+
+    # Daily progress (#966): {child_id: [{"date", "due", "done"}]}
+    def get_daily_progress(self, child_id: str) -> list[dict]:
+        """Stored daily done/total entries for a child, oldest first."""
+        return list(self._data.get("daily_progress", {}).get(child_id, []))
+
+    def upsert_daily_progress(self, child_id: str, date_str: str, due: int, done: int, cutoff: str) -> None:
+        """Record one day's done/total for a child and drop entries before ``cutoff``."""
+        history = self._data.setdefault("daily_progress", {})
+        entries = [e for e in history.get(child_id, []) if e.get("date") != date_str and e.get("date", "") >= cutoff]
+        entries.append({"date": date_str, "due": due, "done": done})
+        history[child_id] = sorted(entries, key=lambda e: e["date"])
+
+    def remove_daily_progress_for_child(self, child_id: str) -> None:
+        """Drop a deleted child's daily progress history."""
+        self._data.get("daily_progress", {}).pop(child_id, None)
 
     def prune_all_done_flags(self, keep_date: str) -> None:
         """Drop all-chores-done flags for dates other than keep_date.
