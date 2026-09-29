@@ -1794,5 +1794,19 @@
   "panel.sound_delete": "Delete",
   "panel.sound_delete_confirm": "Delete the sound “{name}”? Any chore using it goes back to the default sound.",
   "panel.sound_deleted": "Sound deleted",
-  "panel.sound_deleted_reset": "Sound deleted. {count} chore(s) reset to the default sound."
+  "panel.sound_deleted_reset": "Sound deleted. {count} chore(s) reset to the default sound.",
+  "sticker.card_name": "TaskMate Sticker Chart",
+  "sticker.card_description": "One sticker per approved chore towards a daily or weekly goal",
+  "sticker.default_title": "Sticker Chart",
+  "sticker.period_day": "Today",
+  "sticker.period_week": "This week",
+  "sticker.no_children": "No children to show",
+  "sticker.progress": "{count} / {goal} stickers",
+  "sticker.goal_reached": "Goal reached!",
+  "sticker.error.entity_required": "Please define an entity",
+  "sticker.editor.title": "Title",
+  "sticker.editor.goal": "Goal period",
+  "sticker.editor.goal_week": "This week",
+  "sticker.editor.goal_day": "Today",
+  "sticker.editor.goal_count": "Stickers needed"
 }
