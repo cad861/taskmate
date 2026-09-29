@@ -2855,5 +2855,19 @@
   "panel.recaps_preview_btn": "Forhåndsvis",
   "panel.recaps_preview_done": "Forhåndsvisning lavet — åbn tilbageblikskortet for at se den",
   "notification.recap_ready.name": "Tilbageblik klar",
-  "notification.recap_ready.description": "Fortæller hvert barn, og forældrene i én samlet besked, at et nyt tilbageblik er klar. Sendes på tidspunktet fra Indstillinger → Tilbageblik."
+  "notification.recap_ready.description": "Fortæller hvert barn, og forældrene i én samlet besked, at et nyt tilbageblik er klar. Sendes på tidspunktet fra Indstillinger → Tilbageblik.",
+  "sticker.card_name": "TaskMate klistermærkeskema",
+  "sticker.card_description": "Ét klistermærke pr. godkendt opgave mod et dags- eller ugemål",
+  "sticker.default_title": "Klistermærkeskema",
+  "sticker.period_day": "I dag",
+  "sticker.period_week": "Denne uge",
+  "sticker.no_children": "Ingen børn at vise",
+  "sticker.progress": "{count} / {goal} klistermærker",
+  "sticker.goal_reached": "Målet er nået!",
+  "sticker.error.entity_required": "Angiv en entitet",
+  "sticker.editor.title": "Titel",
+  "sticker.editor.goal": "Målperiode",
+  "sticker.editor.goal_week": "Denne uge",
+  "sticker.editor.goal_day": "I dag",
+  "sticker.editor.goal_count": "Klistermærker der kræves"
 }

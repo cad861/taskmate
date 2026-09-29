@@ -2855,5 +2855,19 @@
   "panel.recaps_preview_btn": "Pré-visualizar",
   "panel.recaps_preview_done": "Pré-visualização criada — abra o cartão Resumo para a ver",
   "notification.recap_ready.name": "Resumo pronto",
-  "notification.recap_ready.description": "Avisa cada criança, e os pais numa só mensagem agrupada, de que há um novo resumo para ver. Enviado à hora definida em Definições → Resumos."
+  "notification.recap_ready.description": "Avisa cada criança, e os pais numa só mensagem agrupada, de que há um novo resumo para ver. Enviado à hora definida em Definições → Resumos.",
+  "sticker.card_name": "Quadro de Autocolantes TaskMate",
+  "sticker.card_description": "Um autocolante por tarefa aprovada rumo a uma meta diária ou semanal",
+  "sticker.default_title": "Quadro de Autocolantes",
+  "sticker.period_day": "Hoje",
+  "sticker.period_week": "Esta semana",
+  "sticker.no_children": "Nenhuma criança para mostrar",
+  "sticker.progress": "{count} / {goal} autocolantes",
+  "sticker.goal_reached": "Meta atingida!",
+  "sticker.error.entity_required": "Defina uma entidade",
+  "sticker.editor.title": "Título",
+  "sticker.editor.goal": "Período da meta",
+  "sticker.editor.goal_week": "Esta semana",
+  "sticker.editor.goal_day": "Hoje",
+  "sticker.editor.goal_count": "Autocolantes necessários"
 }

@@ -2855,5 +2855,19 @@
   "panel.recaps_preview_btn": "Vorschau",
   "panel.recaps_preview_done": "Vorschau erstellt — öffne die Rückblick-Karte, um sie anzusehen",
   "notification.recap_ready.name": "Rückblick fertig",
-  "notification.recap_ready.description": "Sagt jedem Kind und den Eltern in einer gebündelten Nachricht, dass ein neuer Rückblick bereitsteht. Gesendet zur Uhrzeit aus Einstellungen → Rückblicke."
+  "notification.recap_ready.description": "Sagt jedem Kind und den Eltern in einer gebündelten Nachricht, dass ein neuer Rückblick bereitsteht. Gesendet zur Uhrzeit aus Einstellungen → Rückblicke.",
+  "sticker.card_name": "TaskMate Sticker-Chart",
+  "sticker.card_description": "Ein Sticker pro genehmigter Aufgabe auf dem Weg zum Tages- oder Wochenziel",
+  "sticker.default_title": "Sticker-Chart",
+  "sticker.period_day": "Heute",
+  "sticker.period_week": "Diese Woche",
+  "sticker.no_children": "Keine Kinder vorhanden",
+  "sticker.progress": "{count} / {goal} Sticker",
+  "sticker.goal_reached": "Ziel erreicht!",
+  "sticker.error.entity_required": "Bitte eine Entität angeben",
+  "sticker.editor.title": "Titel",
+  "sticker.editor.goal": "Zielzeitraum",
+  "sticker.editor.goal_week": "Diese Woche",
+  "sticker.editor.goal_day": "Heute",
+  "sticker.editor.goal_count": "Benötigte Sticker"
 }

@@ -157,6 +157,31 @@ def _inspection_redo_ids(coordinator) -> set[str]:
         return set()
 
 
+def _sticker_counts(common: dict) -> dict[str, dict[str, int]]:
+    """Approved completions per child for today and the current Mon-Sun week.
+
+    Counted over every stored completion, not the capped `recent_completions`
+    list, so the sticker chart card's goals stay accurate for busy families.
+    """
+    today = dt_util.now().date()
+    week_start = today - timedelta(days=today.weekday())
+    counts: dict[str, dict[str, int]] = {}
+    for comp in common["all_completions"]:
+        if not comp.approved:
+            continue
+        comp_dt = comp.completed_at
+        if hasattr(comp_dt, "astimezone"):
+            comp_dt = dt_util.as_local(comp_dt)
+        comp_date = comp_dt.date() if hasattr(comp_dt, "date") else comp_dt
+        if comp_date < week_start or comp_date > today:
+            continue
+        entry = counts.setdefault(comp.child_id, {"today": 0, "week": 0})
+        entry["week"] += 1
+        if comp_date == today:
+            entry["today"] += 1
+    return counts
+
+
 def _build_children_summary(coordinator: TaskMateCoordinator, common: dict) -> list[dict]:
     """Build compact per-child summary used on the overview sensor."""
     children = common["children"]
@@ -164,6 +189,7 @@ def _build_children_summary(coordinator: TaskMateCoordinator, common: dict) -> l
     committed = common["committed_points_by_child"]
     allocated = common["total_allocated_by_child"]
     season = common["season_points"]
+    stickers = _sticker_counts(common)
     freezes_on = _safe_int(((common.get("data") or {}).get("settings") or {}).get("streak_freeze_max"), 2) > 0
     summary = []
     for c in children:
@@ -210,6 +236,8 @@ def _build_children_summary(coordinator: TaskMateCoordinator, common: dict) -> l
                 # only needs to account for pending-claim commitments.
                 "spendable_balance": max(0, c.points - committed_amount),
                 "chore_order": c.chore_order,
+                "stickers_today": stickers.get(c.id, {}).get("today", 0),
+                "stickers_week": stickers.get(c.id, {}).get("week", 0),
                 "current_streak": getattr(c, "current_streak", 0) or 0,
                 "best_streak": getattr(c, "best_streak", 0) or 0,
                 "season_points": int(season.get(c.id, 0)),

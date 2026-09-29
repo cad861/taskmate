@@ -2855,5 +2855,19 @@
   "panel.recaps_preview_btn": "Aperçu",
   "panel.recaps_preview_done": "Aperçu créé — ouvrez la carte Récap pour le regarder",
   "notification.recap_ready.name": "Récap prêt",
-  "notification.recap_ready.description": "Prévient chaque enfant, et les parents en un seul message groupé, qu'un nouveau récap est prêt. Envoyé à l'heure définie dans Paramètres → Récaps."
+  "notification.recap_ready.description": "Prévient chaque enfant, et les parents en un seul message groupé, qu'un nouveau récap est prêt. Envoyé à l'heure définie dans Paramètres → Récaps.",
+  "sticker.card_name": "Tableau d'autocollants TaskMate",
+  "sticker.card_description": "Un autocollant par tâche approuvée pour atteindre un objectif quotidien ou hebdomadaire",
+  "sticker.default_title": "Tableau d'autocollants",
+  "sticker.period_day": "Aujourd'hui",
+  "sticker.period_week": "Cette semaine",
+  "sticker.no_children": "Aucun enfant à afficher",
+  "sticker.progress": "{count} / {goal} autocollants",
+  "sticker.goal_reached": "Objectif atteint !",
+  "sticker.error.entity_required": "Veuillez définir une entité",
+  "sticker.editor.title": "Titre",
+  "sticker.editor.goal": "Période de l'objectif",
+  "sticker.editor.goal_week": "Cette semaine",
+  "sticker.editor.goal_day": "Aujourd'hui",
+  "sticker.editor.goal_count": "Autocollants nécessaires"
 }

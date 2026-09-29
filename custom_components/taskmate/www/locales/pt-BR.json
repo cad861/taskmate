@@ -2855,5 +2855,19 @@
   "panel.recaps_preview_btn": "Visualizar",
   "panel.recaps_preview_done": "Prévia criada — abra o cartão Resumo para assisti-la",
   "notification.recap_ready.name": "Resumo pronto",
-  "notification.recap_ready.description": "Avisa cada criança, e os responsáveis em uma só mensagem agrupada, que há um novo resumo para assistir. Enviado no horário definido em Configurações → Resumos."
+  "notification.recap_ready.description": "Avisa cada criança, e os responsáveis em uma só mensagem agrupada, que há um novo resumo para assistir. Enviado no horário definido em Configurações → Resumos.",
+  "sticker.card_name": "Quadro de Adesivos TaskMate",
+  "sticker.card_description": "Um adesivo por tarefa aprovada rumo a uma meta diária ou semanal",
+  "sticker.default_title": "Quadro de Adesivos",
+  "sticker.period_day": "Hoje",
+  "sticker.period_week": "Esta semana",
+  "sticker.no_children": "Nenhuma criança para mostrar",
+  "sticker.progress": "{count} / {goal} adesivos",
+  "sticker.goal_reached": "Meta atingida!",
+  "sticker.error.entity_required": "Defina uma entidade",
+  "sticker.editor.title": "Título",
+  "sticker.editor.goal": "Período da meta",
+  "sticker.editor.goal_week": "Esta semana",
+  "sticker.editor.goal_day": "Hoje",
+  "sticker.editor.goal_count": "Adesivos necessários"
 }

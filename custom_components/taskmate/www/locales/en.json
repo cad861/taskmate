@@ -2855,5 +2855,19 @@
   "panel.recaps_preview_btn": "Preview",
   "panel.recaps_preview_done": "Preview built — open the recap card to watch it",
   "notification.recap_ready.name": "Recap ready",
-  "notification.recap_ready.description": "Tells each child, and parents in one grouped message, that a new recap is ready to watch. Sent at the recap send time set in Settings → Recaps."
+  "notification.recap_ready.description": "Tells each child, and parents in one grouped message, that a new recap is ready to watch. Sent at the recap send time set in Settings → Recaps.",
+  "sticker.card_name": "TaskMate Sticker Chart",
+  "sticker.card_description": "One sticker per approved chore towards a daily or weekly goal",
+  "sticker.default_title": "Sticker Chart",
+  "sticker.period_day": "Today",
+  "sticker.period_week": "This week",
+  "sticker.no_children": "No children to show",
+  "sticker.progress": "{count} / {goal} stickers",
+  "sticker.goal_reached": "Goal reached!",
+  "sticker.error.entity_required": "Please define an entity",
+  "sticker.editor.title": "Title",
+  "sticker.editor.goal": "Goal period",
+  "sticker.editor.goal_week": "This week",
+  "sticker.editor.goal_day": "Today",
+  "sticker.editor.goal_count": "Stickers needed"
 }
