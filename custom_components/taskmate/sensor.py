@@ -166,7 +166,7 @@ def _sticker_counts(common: dict) -> dict[str, dict[str, int]]:
     today = dt_util.now().date()
     week_start = today - timedelta(days=today.weekday())
     counts: dict[str, dict[str, int]] = {}
-    for comp in common["all_completions"]:
+    for comp in common.get("all_completions") or []:
         if not comp.approved:
             continue
         comp_dt = comp.completed_at
