@@ -102,26 +102,6 @@ class TaskMateStickerChartCard extends LitElement {
     return { entity: "sensor.taskmate_overview", goal: "week" };
   }
 
-  // Local-date key (YYYY-MM-DD) in the HA time zone.
-  _dayKey(value, tz) {
-    return new Date(value).toLocaleDateString("en-CA", { timeZone: tz });
-  }
-
-  // Set of day keys that count towards the current goal period.
-  _periodDays(tz, goal) {
-    const todayKey = this._dayKey(Date.now(), tz);
-    if (goal === "day") return new Set([todayKey]);
-    const today = new Date(todayKey + "T12:00:00"); // noon avoids DST edges
-    const offset = today.getDay() === 0 ? -6 : 1 - today.getDay(); // Monday start
-    const days = new Set();
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() + offset + i);
-      days.add(d.toLocaleDateString("en-CA"));
-    }
-    return days;
-  }
-
   render() {
     if (!this.hass || !this.config) return html``;
 
@@ -137,7 +117,6 @@ class TaskMateStickerChartCard extends LitElement {
       return html`<ha-card><div class="msg">${this._t("common.unavailable")}</div></ha-card>`;
     }
 
-    const tz = this.hass.config?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const attrs = (window.__taskmate_attrs && window.__taskmate_attrs(this.hass, this.config.entity)) || entity.attributes || {};
     const { goal, goal_count: target } = this.config;
     const icon = attrs.points_icon || "mdi:star";
@@ -145,15 +124,11 @@ class TaskMateStickerChartCard extends LitElement {
     let children = Array.isArray(attrs.children) ? attrs.children : [];
     if (this.config.child_id) children = children.filter((c) => c.id === this.config.child_id);
 
-    const days = this._periodDays(tz, goal);
-    const seen = new Set();
+    // Counted by the backend over every completion; recent_completions is
+    // capped globally and would undercount busy families.
+    const field = goal === "day" ? "stickers_today" : "stickers_week";
     const counts = {};
-    for (const c of attrs.recent_completions || attrs.todays_completions || []) {
-      if (!c || !c.approved || !c.completed_at || seen.has(c.completion_id)) continue;
-      seen.add(c.completion_id);
-      if (!days.has(this._dayKey(c.completed_at, tz))) continue;
-      counts[c.child_id] = (counts[c.child_id] || 0) + 1;
-    }
+    children.forEach((c) => { counts[c.id] = Number(c[field]) || 0; });
 
     return html`
       <ha-card>
