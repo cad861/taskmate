@@ -108,7 +108,7 @@ def test_the_service_gates_past_days_to_parents():
     from pathlib import Path
 
     src = (Path(__file__).parents[1] / "custom_components/taskmate/__init__.py").read_text()
-    block = src[src.index('completed_date = call.data.get("completed_date")'):]
+    block = src[src.index('completed_date = call.data.get("completed_date")') :]
     block = block[: block.index("if as_parent:")]
     assert "await _async_require_parent(hass, call)" in block
     assert "async_complete_chore_on_date" in block
@@ -126,9 +126,13 @@ def test_the_panel_offers_it_on_each_child():
 
 def test_completions_on_date_lists_only_that_day():
     rows = [
-        ChoreCompletion(chore_id="bed", child_id="millie", completed_at=datetime(2026, 9, 14, 8, tzinfo=UTC), approved=True),
+        ChoreCompletion(
+            chore_id="bed", child_id="millie", completed_at=datetime(2026, 9, 14, 8, tzinfo=UTC), approved=True
+        ),
         ChoreCompletion(chore_id="bed", child_id="millie", completed_at=datetime(2026, 9, 15, 8, tzinfo=UTC)),
-        ChoreCompletion(chore_id="bed", child_id="millie", completed_at=datetime(2026, 9, 14, 9, tzinfo=UTC), bonus_subtask_id="x"),
+        ChoreCompletion(
+            chore_id="bed", child_id="millie", completed_at=datetime(2026, 9, 14, 9, tzinfo=UTC), bonus_subtask_id="x"
+        ),
     ]
     coord, _ = _setup(_bed(), rows)
     out = coord.completions_on_date(MONDAY)

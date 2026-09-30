@@ -30,8 +30,8 @@ def test_card_is_registered_for_serving():
 def test_card_is_offered_in_the_lovelace_picker():
     assert 'type: "taskmate-sticker-chart-card"' in CARD
     assert "window.customCards" in CARD
-    assert "customElements.define(\"taskmate-sticker-chart-card\"" in CARD
-    assert "customElements.define(\"taskmate-sticker-chart-card-editor\"" in CARD
+    assert 'customElements.define("taskmate-sticker-chart-card"' in CARD
+    assert 'customElements.define("taskmate-sticker-chart-card-editor"' in CARD
 
 
 def test_reads_through_the_companion_sensor_resolver():
