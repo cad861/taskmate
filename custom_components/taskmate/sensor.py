@@ -222,9 +222,9 @@ def _build_children_summary(coordinator: TaskMateCoordinator, common: dict) -> l
                 "total_chores_completed": getattr(c, "total_chores_completed", 0) or 0,
                 "avatar": getattr(c, "avatar", "mdi:account-circle") or "mdi:account-circle",
                 # The child's photo, or "" — cards fall back to `avatar`.
-                "avatar_image": common["child_avatar_images"].get(c.id, ""),
-                "week_points_earned": common["child_week_progress"].get(c.id, {}).get("earned", 0),
-                "week_points_available": common["child_week_progress"].get(c.id, {}).get("available", 0),
+                "avatar_image": common.get("child_avatar_images", {}).get(c.id, ""),
+                "week_points_earned": common.get("child_week_progress", {}).get(c.id, {}).get("earned", 0),
+                "week_points_available": common.get("child_week_progress", {}).get(c.id, {}).get("available", 0),
                 "last_completion_date": getattr(c, "last_completion_date", None),
                 "streak_paused": getattr(c, "streak_paused", False),
                 "on_vacation": coordinator._is_child_on_vacation(c),
