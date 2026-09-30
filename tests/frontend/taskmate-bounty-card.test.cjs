@@ -28,7 +28,7 @@ function hassWith(bounties) {
     calls,
     callService: async (domain, service, data) => { calls.push({ domain, service, data }); },
     states: {
-      [ENTITY]: { state: "ok", attributes: { children: CHILDREN, bounties } },
+      [ENTITY]: { state: "ok", attributes: { children: CHILDREN, bounties, points_name: "Gems", points_icon: "mdi:diamond-stone" } },
     },
   };
 }
@@ -96,7 +96,7 @@ test("claiming asks first, then calls claim_bounty for this child", async () => 
   assert.equal(card._dialog.kind, "claim");
   const view = render(card.render());
   assert.ok(view.markup.includes(localize("bounty.claim_title", { title: "Wash the car" })));
-  await button(view, localize("bounty.claim_it", { points: 50 })).click();
+  await button(view, localize("bounty.claim_it", { points: 50, unit: "Gems" })).click();
   assert.deepEqual(plain(card.hass.calls), [{ domain: "taskmate", service: "claim_bounty", data: { bounty_id: "b1", child_id: "k1" } }]);
   assert.equal(card._dialog, null);
 });
@@ -128,7 +128,7 @@ test("a submitted bounty waits for a grown-up, with undo while it's allowed", as
   const b = open({ status: "pending", claimed_by: "k1", completion_id: "c1", undo: true });
   const card = cardFor([b]);
   const view = render(card.render());
-  assert.ok(view.markup.includes(localize("bounty.waiting", { points: 50 })));
+  assert.ok(view.markup.includes(localize("bounty.waiting", { points: 50, unit: "Gems" })));
   await button(view, localize("bounty.undo")).click();
   assert.deepEqual(plain(card.hass.calls[0]), { domain: "taskmate", service: "undo_chore", data: { completion_id: "c1" } });
   delete b.undo;
@@ -138,7 +138,7 @@ test("a submitted bounty waits for a grown-up, with undo while it's allowed", as
 test("a completed bounty shows under Recently completed", () => {
   const view = render(cardFor([open({ status: "completed", claimed_by: "k1", points_awarded: 60 })]).render());
   assert.ok(view.markup.includes(localize("bounty.recent")));
-  assert.ok(view.markup.includes(localize("bounty.you_earned", { points: 60 })));
+  assert.ok(view.markup.includes(localize("bounty.you_earned", { points: 60, unit: "Gems" })));
 });
 
 test("the expiry counts down, and says so when there is none", () => {
@@ -235,4 +235,17 @@ test("panel turns the expiry quick picks into future instants", () => {
     assert.ok(t.getTime() > now && t.getHours() === 20, mode);
   }
   assert.equal(new Date(panel._bountyExpiryIso({ exp_mode: "weekend" })).getDay(), 0);
+});
+
+test("a bounty is priced in the family's own currency, not a fixed star", () => {
+  const price = render(cardFor([open()]).render()).markup;
+  assert.ok(price.includes("Gems"), "the currency name is shown");
+  assert.ok(price.includes("mdi:diamond-stone"), "the currency icon is shown");
+  assert.ok(!price.includes("\u2605"), "no hardcoded star");
+  const claimed = open({ status: "claimed", claimed_by: "k1", claimed_at: iso(-H), claim_until: iso(H) });
+  for (const markup of [
+    render(cardFor([open({ status: "pending", claimed_by: "k1" })]).render()).markup,
+    render(cardFor([open({ status: "completed", claimed_by: "k1", points_awarded: 60 })]).render()).markup,
+    render(cardFor([claimed]).render()).markup,
+  ]) assert.ok(!markup.includes("\u2605"), "no hardcoded star");
 });

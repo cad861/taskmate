@@ -7086,7 +7086,7 @@ class TaskMatePanel extends HTMLElement {
         <div class="tm-meta">${this._esc(name(b.claimed_by))}${comp ? ` · ${this._timeAgo(comp.completed_at)}` : ""}</div>`;
     } else if (b.status === "completed") {
       status = `<span class="tm-pill tm-pill-success">${this._t("panel.bounty_status_completed")}</span>
-        <div class="tm-meta">${this._t("panel.bounty_completed_meta", { name: this._esc(name(b.claimed_by)), points: this._num(b.points_awarded || b.points) })}</div>`;
+        <div class="tm-meta">${this._t("panel.bounty_completed_meta", { name: this._esc(name(b.claimed_by)), points: this._num(b.points_awarded || b.points), points_name: this._esc((this._state.settings && this._state.settings.points_name) || this._t("common.points")) })}</div>`;
     } else if (b.status === "expired") {
       status = `<span class="tm-pill tm-pill-muted">${this._t("panel.bounty_status_expired")}</span>
         <div class="tm-meta">${this._t(b.lapse_count > 0 ? "panel.bounty_expired_lapsed_meta" : b.claim_count > 0 ? "panel.bounty_expired_unfinished_meta" : "panel.bounty_expired_meta", { date: b.closed_at ? this._esc(new Date(b.closed_at).toLocaleDateString([], { day: "numeric", month: "short" })) : "" })}</div>`;
