@@ -15,6 +15,9 @@
     },
     "abort": {
       "already_configured": "O TaskMate já está configurado"
+    },
+    "create_entry": {
+      "default": "O TaskMate está pronto. [Abra o painel do TaskMate](/taskmate-admin) para adicionar as suas crianças com o assistente de configuração, que sugere tarefas para a idade delas."
     }
   },
   "selector": {
@@ -139,6 +142,14 @@
         "child_id": {
           "name": "ID da criança",
           "description": "O ID da criança que conclui a tarefa"
+        },
+        "note": {
+          "name": "Nota",
+          "description": "O que a criança fez, nas suas próprias palavras. Obrigatório em tarefas abertas e mostrado ao progenitor na aprovação."
+        },
+        "suggested_points": {
+          "name": "Pontos sugeridos",
+          "description": "Quanto a criança acha que o trabalho valeu. Apenas uma sugestão para quem aprova — não atribui pontos por si só."
         }
       }
     },
@@ -167,6 +178,14 @@
         "completion_id": {
           "name": "ID de conclusão",
           "description": "O ID da conclusão da tarefa a aprovar"
+        },
+        "points": {
+          "name": "Pontos",
+          "description": "Atribuir este número de pontos em vez do valor da própria tarefa. Deixe vazio para usar os pontos da tarefa."
+        },
+        "rating": {
+          "name": "Avaliação de qualidade",
+          "description": "Avaliação opcional de 1 a 3 estrelas sobre a qualidade da tarefa. Com as avaliações de qualidade ativadas, os pontos são multiplicados pelo multiplicador dessa estrela; deixe vazio para pagar 100%."
         }
       }
     },
@@ -177,6 +196,10 @@
         "completion_ids": {
           "name": "IDs de conclusão",
           "description": "IDs de conclusão específicos para aprovar; omita para aprovar todas as pendentes"
+        },
+        "rating": {
+          "name": "Avaliação de qualidade",
+          "description": "Avaliação opcional de 1 a 3 estrelas aplicada a todas as tarefas aprovadas por esta chamada (as avaliações de qualidade têm de estar ativadas)."
         }
       }
     },
@@ -187,6 +210,20 @@
         "completion_id": {
           "name": "ID de conclusão",
           "description": "O ID da conclusão da tarefa a rejeitar"
+        },
+        "reason": {
+          "name": "Motivo",
+          "description": "Motivo opcional mostrado à criança"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Anular tarefa",
+      "description": "Permite a uma criança retirar a sua própria tarefa — uma submissão pendente até um pai a rever, ou uma tarefa aprovada automaticamente dentro da janela de anulação. Desligado a menos que a janela esteja acima de 0 nas definições do TaskMate; o que um pai já reviu só pode ser anulado por um pai.",
+      "fields": {
+        "completion_id": {
+          "name": "ID de conclusão",
+          "description": "O ID da tarefa concluída pela criança a retirar"
         }
       }
     },
@@ -295,6 +332,10 @@
         "claim_id": {
           "name": "ID do pedido",
           "description": "O ID do pedido de recompensa a rejeitar"
+        },
+        "reason": {
+          "name": "Motivo",
+          "description": "Motivo opcional mostrado à criança"
         }
       }
     },
@@ -513,6 +554,18 @@
         "requires_approval": {
           "name": "Requer aprovação",
           "description": "Se verdadeiro, um pai/mãe deve aprovar a conclusão antes de os pontos serem atribuídos"
+        },
+        "team_size": {
+          "name": "Tamanho da equipa",
+          "description": "Torna esta tarefa numa tarefa de equipa que só conta quando este número de crianças diferentes se juntar. Quando a equipa está completa, é submetida para todas. 0 = uma tarefa normal."
+        },
+        "team_points_mode": {
+          "name": "Pontos da equipa",
+          "description": "Como uma tarefa de equipa paga: \"each\" dá os pontos completos a cada participante, \"split\" divide-os igualmente (arredondado para baixo)."
+        },
+        "team_bonus": {
+          "name": "Bónus de equipa",
+          "description": "Pontos extra que cada participante ganha quando uma tarefa de equipa é concluída."
         }
       }
     },
@@ -601,6 +654,174 @@
         "child_id": {
           "name": "ID da criança",
           "description": "O ID da criança que inicia o temporizador"
+        }
+      }
+    },
+    "leave_team_chore": {
+      "name": "Sair de tarefa de equipa",
+      "description": "Retirar uma criança de uma tarefa de equipa a que se juntou hoje, antes de a equipa estar completa",
+      "fields": {
+        "chore_id": {
+          "name": "ID da tarefa",
+          "description": "O ID da tarefa de equipa"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança que sai da equipa"
+        }
+      }
+    },
+    "complete_next_chore": {
+      "name": "Concluir a próxima tarefa",
+      "description": "Conclui a próxima tarefa pendente da criança, pela ordem mostrada no cartão da criança. As tarefas que exigem uma fotografia, uma nota, um temporizador ou uma equipa são ignoradas. Pensado para botões e atalhos do relógio; aplicam-se as regras de aprovação habituais.",
+      "fields": {
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança cuja próxima tarefa deve ser concluída"
+        }
+      }
+    },
+    "post_bounty": {
+      "name": "Publicar tarefa extra",
+      "description": "Publicar uma tarefa extra pontual no quadro de tarefas extra por um número fixo de pontos. Qualquer criança elegível pode ficar com ela; quando feita, passa pela aprovação normal.",
+      "fields": {
+        "title": {
+          "name": "Título",
+          "description": "Qual é a tarefa, p. ex. \"Lavar o carro\""
+        },
+        "points": {
+          "name": "Pontos",
+          "description": "Pontos fixos pagos quando um pai ou mãe aprova a tarefa feita"
+        },
+        "description": {
+          "name": "Descrição",
+          "description": "Detalhes opcionais para as crianças"
+        },
+        "icon": {
+          "name": "Ícone",
+          "description": "Ícone MDI mostrado no quadro"
+        },
+        "expires_at": {
+          "name": "Expira em",
+          "description": "Data e hora opcionais em que a tarefa extra sai do quadro se ninguém tiver ficado com ela. Deixe vazio para não expirar."
+        },
+        "eligible_child_ids": {
+          "name": "Crianças elegíveis",
+          "description": "IDs das crianças que podem ficar com ela. Vazio = todas as crianças."
+        },
+        "claim_hours": {
+          "name": "Reserva (horas)",
+          "description": "Quanto tempo dura uma reserva antes de a tarefa extra voltar ao quadro"
+        },
+        "require_photo": {
+          "name": "Exigir fotografia",
+          "description": "A criança tem de anexar uma fotografia ao marcá-la como feita"
+        },
+        "notify_children": {
+          "name": "Avisar as crianças",
+          "description": "Enviar a notificação \"Nova tarefa extra\" às crianças elegíveis"
+        }
+      }
+    },
+    "update_bounty": {
+      "name": "Atualizar tarefa extra",
+      "description": "Editar uma tarefa extra. Depois de reservada, só os pontos e a expiração podem mudar.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID da tarefa extra",
+          "description": "O ID da tarefa extra a editar"
+        },
+        "title": {
+          "name": "Título",
+          "description": "Qual é a tarefa, p. ex. \"Lavar o carro\""
+        },
+        "points": {
+          "name": "Pontos",
+          "description": "Pontos fixos pagos quando um pai ou mãe aprova a tarefa feita"
+        },
+        "description": {
+          "name": "Descrição",
+          "description": "Detalhes opcionais para as crianças"
+        },
+        "icon": {
+          "name": "Ícone",
+          "description": "Ícone MDI mostrado no quadro"
+        },
+        "expires_at": {
+          "name": "Expira em",
+          "description": "Data e hora opcionais em que a tarefa extra sai do quadro se ninguém tiver ficado com ela. Deixe vazio para não expirar."
+        },
+        "eligible_child_ids": {
+          "name": "Crianças elegíveis",
+          "description": "IDs das crianças que podem ficar com ela. Vazio = todas as crianças."
+        },
+        "claim_hours": {
+          "name": "Reserva (horas)",
+          "description": "Quanto tempo dura uma reserva antes de a tarefa extra voltar ao quadro"
+        },
+        "require_photo": {
+          "name": "Exigir fotografia",
+          "description": "A criança tem de anexar uma fotografia ao marcá-la como feita"
+        },
+        "notify_children": {
+          "name": "Avisar as crianças",
+          "description": "Enviar a notificação \"Nova tarefa extra\" às crianças elegíveis"
+        }
+      }
+    },
+    "remove_bounty": {
+      "name": "Remover tarefa extra",
+      "description": "Tirar uma tarefa extra do quadro. Não é possível enquanto uma tarefa feita aguarda aprovação.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID da tarefa extra",
+          "description": "O ID da tarefa extra a remover"
+        }
+      }
+    },
+    "claim_bounty": {
+      "name": "Reservar tarefa extra",
+      "description": "Reservar uma tarefa extra para uma criança, que fica com ela durante o período de reserva. Cada criança só pode ter uma de cada vez.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID da tarefa extra",
+          "description": "O ID da tarefa extra a reservar"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança que a reserva"
+        }
+      }
+    },
+    "give_back_bounty": {
+      "name": "Devolver tarefa extra",
+      "description": "Devolver uma tarefa extra reservada ao quadro para outra criança a poder levar",
+      "fields": {
+        "bounty_id": {
+          "name": "ID da tarefa extra",
+          "description": "O ID da tarefa extra reservada"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança que a reservou"
+        }
+      }
+    },
+    "complete_bounty": {
+      "name": "Concluir tarefa extra",
+      "description": "Marcar uma tarefa extra reservada como feita. Vai para aprovação como uma tarefa normal.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID da tarefa extra",
+          "description": "O ID da tarefa extra reservada"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança que a reservou"
+        },
+        "photo_url": {
+          "name": "URL da fotografia",
+          "description": "Fotografia da tarefa feita (obrigatória quando a tarefa extra a pede)"
         }
       }
     },
@@ -806,6 +1027,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Ajustar congelamentos de sequência",
+      "description": "Dá congelamentos de sequência a uma criança (quantidade positiva) ou retira alguns (negativa). Uma atribuição nunca ultrapassa o limite streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança cujos congelamentos mudam"
+        },
+        "amount": {
+          "name": "Quantidade",
+          "description": "Congelamentos a adicionar (positivo) ou remover (negativo)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Adiar tarefa obrigatória",
       "description": "Dá a uma tarefa obrigatória falhada outro período (ou amanhã) sem penalização e remove o item de revisão.",
@@ -853,6 +1088,238 @@
           "description": "Pontos a converter em dinheiro e a deduzir"
         }
       }
+    },
+    "add_wish": {
+      "name": "Adicionar desejo",
+      "description": "Uma criança adiciona algo para o qual quer poupar. Fica à espera da aprovação de um adulto.",
+      "fields": {
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança que faz o desejo"
+        },
+        "name": {
+          "name": "Nome",
+          "description": "O que a criança quer"
+        },
+        "target": {
+          "name": "Objetivo",
+          "description": "Número de pontos sugerido. O adulto pode alterá-lo ao aprovar."
+        },
+        "link": {
+          "name": "Ligação",
+          "description": "Endereço web opcional (http ou https) do artigo"
+        },
+        "photo_url": {
+          "name": "Imagem",
+          "description": "Imagem opcional acabada de enviar pelo endpoint de fotos do TaskMate"
+        }
+      }
+    },
+    "withdraw_wish": {
+      "name": "Retirar desejo",
+      "description": "Uma criança retira um desejo que ainda aguarda aprovação, ou limpa um que foi recusado.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança a quem pertence o desejo"
+        }
+      }
+    },
+    "move_points_to_wish": {
+      "name": "Mover pontos para desejo",
+      "description": "Move pontos do saldo disponível de uma criança para um dos seus desejos aprovados.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança a quem pertence o desejo"
+        },
+        "points": {
+          "name": "Pontos",
+          "description": "Quantos pontos mover (limitado ao saldo e ao que ainda falta ao desejo)"
+        }
+      }
+    },
+    "take_points_from_wish": {
+      "name": "Retirar pontos do desejo",
+      "description": "Devolve à criança parte dos seus próprios pontos poupados num desejo. Os pontos prometidos nunca saem.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança a quem pertence o desejo"
+        },
+        "points": {
+          "name": "Pontos",
+          "description": "Quantos pontos poupados retirar (limitado ao que a criança poupou)"
+        }
+      }
+    },
+    "request_wish_redeem": {
+      "name": "Pedir para resgatar desejo",
+      "description": "Um desejo totalmente financiado passa a um pedido de recompensa à espera da aprovação do adulto.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "child_id": {
+          "name": "ID da criança",
+          "description": "O ID da criança a quem pertence o desejo"
+        }
+      }
+    },
+    "approve_wish": {
+      "name": "Aprovar desejo",
+      "description": "Transforma um desejo pendente num objetivo de poupança, opcionalmente com outro valor.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "target": {
+          "name": "Objetivo",
+          "description": "Pontos que o desejo custa. Deixe vazio para manter a sugestão da criança."
+        }
+      }
+    },
+    "decline_wish": {
+      "name": "Recusar desejo",
+      "description": "Recusa um desejo. Os pontos poupados voltam para a criança e as promessas são anuladas.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "reason": {
+          "name": "Motivo",
+          "description": "Motivo opcional mostrado à criança"
+        }
+      }
+    },
+    "pledge_to_wish": {
+      "name": "Prometer para desejo",
+      "description": "Regista pontos que um familiar oferece para o desejo de uma criança. Nunca mexem em nenhum saldo.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "name": {
+          "name": "De",
+          "description": "De quem é a promessa, p. ex. Avó"
+        },
+        "points": {
+          "name": "Pontos",
+          "description": "Quantos pontos prometer (limitado ao que ainda falta ao desejo)"
+        },
+        "message": {
+          "name": "Mensagem",
+          "description": "Mensagem opcional para a criança"
+        }
+      }
+    },
+    "remove_wish_pledge": {
+      "name": "Remover promessa",
+      "description": "Anula uma promessa. Possível até o desejo ser resgatado.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        },
+        "pledge_id": {
+          "name": "ID da promessa",
+          "description": "O ID da promessa a remover"
+        }
+      }
+    },
+    "remove_wish": {
+      "name": "Remover desejo",
+      "description": "Apaga um desejo. Os pontos poupados voltam para a criança e as promessas são anuladas.",
+      "fields": {
+        "wish_id": {
+          "name": "ID do desejo",
+          "description": "O ID do desejo"
+        }
+      }
+    },
+    "start_inspection": {
+      "name": "Iniciar inspeção",
+      "description": "Marca uma tarefa aprovada nas últimas 24 horas para uma inspeção surpresa. Aprova-a ou reprova-a antes de o prazo terminar; uma inspeção por decidir fecha-se discretamente.",
+      "fields": {
+        "completion_id": {
+          "name": "ID da conclusão",
+          "description": "O ID da conclusão aprovada a inspecionar"
+        },
+        "bonus": {
+          "name": "Bónus",
+          "description": "Pontos pagos se passar. Por omissão, o valor das Definições."
+        },
+        "window": {
+          "name": "Prazo",
+          "description": "Quanto tempo tens para verificar: 1h, 2h, 4h ou bed (até à hora de dormir). Por omissão, o valor das Definições."
+        },
+        "tell_child": {
+          "name": "Avisar a criança",
+          "description": "Mostra «Vem aí uma inspeção» no cartão da criança já. Desliga para uma verificação secreta."
+        }
+      }
+    },
+    "pass_inspection": {
+      "name": "Aprovar inspeção",
+      "description": "A tarefa inspecionada passou. Paga o bónus como uma entrada de pontos normal e celebra no cartão da criança.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID da inspeção",
+          "description": "O ID da inspeção em curso"
+        },
+        "bonus": {
+          "name": "Bónus",
+          "description": "Pontos a pagar. Por omissão, o bónus definido ao iniciar."
+        },
+        "note": {
+          "name": "Nota",
+          "description": "Nota opcional mostrada à criança"
+        }
+      }
+    },
+    "fail_inspection": {
+      "name": "Reprovar inspeção",
+      "description": "A tarefa inspecionada não passou. Não são retirados pontos. Pode ser devolvida para refazer; refazê-la não dá pontos extra.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID da inspeção",
+          "description": "O ID da inspeção em curso"
+        },
+        "redo": {
+          "name": "Devolver para refazer",
+          "description": "Volta a pôr a tarefa na lista da criança como não feita hoje. Por omissão, o valor das Definições."
+        },
+        "note": {
+          "name": "Nota",
+          "description": "Nota opcional mostrada à criança (o que é preciso corrigir)"
+        }
+      }
+    },
+    "cancel_inspection": {
+      "name": "Cancelar inspeção",
+      "description": "Cancela uma inspeção em curso, como se nunca tivesse começado.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID da inspeção",
+          "description": "O ID da inspeção em curso"
+        }
+      }
     }
   },
   "entity": {
@@ -862,6 +1329,13 @@
       },
       "child_badges": {
         "unit_of_measurement": "medalhas"
+      },
+      "child_watch": {
+        "state": {
+          "left": "Faltam #",
+          "all_done": "Tudo feito",
+          "no_chores": "Sem tarefas"
+        }
       }
     },
     "number": {
@@ -879,6 +1353,35 @@
       "card_design": {
         "name": "Design do cartão"
       }
+    }
+  },
+  "exceptions": {
+    "calendar_unknown_event": {
+      "message": "Este evento não é uma tarefa TaskMate no calendário desta criança."
+    },
+    "calendar_series_not_supported": {
+      "message": "Uma tarefa repetida só pode ser movida ou removida no calendário um dia de cada vez. Para alterar toda a série, edite a tarefa no TaskMate."
+    },
+    "calendar_repeating_create": {
+      "message": "Não é possível adicionar eventos repetidos a partir do calendário. Crie antes uma tarefa repetida no TaskMate."
+    },
+    "calendar_rename_series": {
+      "message": "Mude o nome de uma tarefa repetida no TaskMate. No calendário só pode mover ou remover um único dia."
+    },
+    "calendar_time_follows_chore": {
+      "message": "Uma tarefa repetida mantém a sua hora do dia. No calendário só é possível alterar a data de uma única ocorrência."
+    },
+    "calendar_past_date": {
+      "message": "Não é possível adicionar tarefas a um dia passado, nem movê-las para ou de um dia passado."
+    },
+    "calendar_already_scheduled": {
+      "message": "{chore} já está marcada para {date}."
+    },
+    "calendar_empty_title": {
+      "message": "Dê um título à tarefa."
+    },
+    "calendar_own_event": {
+      "message": "Este evento foi publicado pelo próprio TaskMate, por isso não é adicionado como nova tarefa."
     }
   }
 }

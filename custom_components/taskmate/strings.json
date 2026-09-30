@@ -15,6 +15,9 @@
     },
     "abort": {
       "already_configured": "TaskMate is already configured"
+    },
+    "create_entry": {
+      "default": "TaskMate is ready. [Open the TaskMate panel](/taskmate-admin) to add your children with the setup wizard, which suggests chores for their ages."
     }
   },
   "selector": {
@@ -139,6 +142,14 @@
         "child_id": {
           "name": "Child ID",
           "description": "The ID of the child completing the chore"
+        },
+        "note": {
+          "name": "Note",
+          "description": "What the child did, in their own words. Required when the chore is open-ended, and shown to the parent during approval."
+        },
+        "suggested_points": {
+          "name": "Suggested points",
+          "description": "What the child reckons the work was worth. A hint for the approving parent — it awards nothing on its own."
         }
       }
     },
@@ -167,6 +178,14 @@
         "completion_id": {
           "name": "Completion ID",
           "description": "The ID of the chore completion to approve"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Award this many points instead of the chore's own value. Leave empty to use the chore's points."
+        },
+        "rating": {
+          "name": "Quality rating",
+          "description": "Optional 1-3 star rating of how well the chore was done. When quality ratings are enabled it scales the points by that star's multiplier; leave empty to pay 100%."
         }
       }
     },
@@ -177,6 +196,10 @@
         "completion_ids": {
           "name": "Completion IDs",
           "description": "Specific completion IDs to approve; omit to approve all pending"
+        },
+        "rating": {
+          "name": "Quality rating",
+          "description": "Optional 1-3 star rating applied to every chore approved by this call (quality ratings must be enabled)."
         }
       }
     },
@@ -187,6 +210,20 @@
         "completion_id": {
           "name": "Completion ID",
           "description": "The ID of the chore completion to reject"
+        },
+        "reason": {
+          "name": "Reason",
+          "description": "Optional reason shown to the child"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Undo Chore",
+      "description": "Let a child take back their own chore — a pending submission until a parent reviews it, or an automatically approved one within the chore undo window. Off unless the window is set above 0 in TaskMate settings; anything a parent has reviewed needs a parent to undo it.",
+      "fields": {
+        "completion_id": {
+          "name": "Completion ID",
+          "description": "The ID of the child's chore completion to take back"
         }
       }
     },
@@ -295,6 +332,10 @@
         "claim_id": {
           "name": "Claim ID",
           "description": "The ID of the reward claim to reject"
+        },
+        "reason": {
+          "name": "Reason",
+          "description": "Optional reason shown to the child"
         }
       }
     },
@@ -513,6 +554,18 @@
         "requires_approval": {
           "name": "Requires Approval",
           "description": "If true, a parent must approve the completion before points are awarded"
+        },
+        "team_size": {
+          "name": "Team size",
+          "description": "Make this a teamwork chore that only counts once this many different children have joined it. When the team is full it submits for all of them. 0 = a normal chore."
+        },
+        "team_points_mode": {
+          "name": "Team points",
+          "description": "How a teamwork chore pays out: \"each\" gives every participant the full points, \"split\" divides them evenly (rounded down)."
+        },
+        "team_bonus": {
+          "name": "Team bonus",
+          "description": "Extra points each participant earns when a teamwork chore is completed."
         }
       }
     },
@@ -601,6 +654,174 @@
         "child_id": {
           "name": "Child ID",
           "description": "The ID of the child starting the timer"
+        }
+      }
+    },
+    "leave_team_chore": {
+      "name": "Leave Teamwork Chore",
+      "description": "Take a child back out of a teamwork chore they joined today, before the team is complete",
+      "fields": {
+        "chore_id": {
+          "name": "Chore ID",
+          "description": "The ID of the teamwork chore"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child leaving the team"
+        }
+      }
+    },
+    "complete_next_chore": {
+      "name": "Complete Next Chore",
+      "description": "Complete the child's next outstanding chore, in the order the child card shows them. Chores that need a photo, a note, a timer or a team are skipped. Made for watch buttons and shortcuts; normal approval rules apply.",
+      "fields": {
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child whose next chore to complete"
+        }
+      }
+    },
+    "post_bounty": {
+      "name": "Post Bounty",
+      "description": "Post a one-off job to the bounty board for a fixed number of points. Any eligible child can claim it; finishing it goes through the normal approval queue.",
+      "fields": {
+        "title": {
+          "name": "Title",
+          "description": "What the job is, e.g. \"Wash the car\""
+        },
+        "points": {
+          "name": "Points",
+          "description": "Fixed points paid when a parent approves the finished job"
+        },
+        "description": {
+          "name": "Description",
+          "description": "Optional extra detail for the children"
+        },
+        "icon": {
+          "name": "Icon",
+          "description": "MDI icon shown on the board"
+        },
+        "expires_at": {
+          "name": "Expires at",
+          "description": "Optional date and time the bounty leaves the board if nobody has claimed it. Leave empty for no expiry."
+        },
+        "eligible_child_ids": {
+          "name": "Eligible children",
+          "description": "IDs of the children who may claim it. Empty = every child."
+        },
+        "claim_hours": {
+          "name": "Claim lock (hours)",
+          "description": "How long a claim lasts before the bounty goes back on the board"
+        },
+        "require_photo": {
+          "name": "Require photo",
+          "description": "The child must attach a photo when marking it done"
+        },
+        "notify_children": {
+          "name": "Notify children",
+          "description": "Send the \"New bounty\" notification to the eligible children"
+        }
+      }
+    },
+    "update_bounty": {
+      "name": "Update Bounty",
+      "description": "Edit a bounty. Once it has been claimed, only its points and expiry can change.",
+      "fields": {
+        "bounty_id": {
+          "name": "Bounty ID",
+          "description": "The ID of the bounty to edit"
+        },
+        "title": {
+          "name": "Title",
+          "description": "What the job is, e.g. \"Wash the car\""
+        },
+        "points": {
+          "name": "Points",
+          "description": "Fixed points paid when a parent approves the finished job"
+        },
+        "description": {
+          "name": "Description",
+          "description": "Optional extra detail for the children"
+        },
+        "icon": {
+          "name": "Icon",
+          "description": "MDI icon shown on the board"
+        },
+        "expires_at": {
+          "name": "Expires at",
+          "description": "Optional date and time the bounty leaves the board if nobody has claimed it. Leave empty for no expiry."
+        },
+        "eligible_child_ids": {
+          "name": "Eligible children",
+          "description": "IDs of the children who may claim it. Empty = every child."
+        },
+        "claim_hours": {
+          "name": "Claim lock (hours)",
+          "description": "How long a claim lasts before the bounty goes back on the board"
+        },
+        "require_photo": {
+          "name": "Require photo",
+          "description": "The child must attach a photo when marking it done"
+        },
+        "notify_children": {
+          "name": "Notify children",
+          "description": "Send the \"New bounty\" notification to the eligible children"
+        }
+      }
+    },
+    "remove_bounty": {
+      "name": "Remove Bounty",
+      "description": "Take a bounty off the board. Not allowed while a finished job waits for approval.",
+      "fields": {
+        "bounty_id": {
+          "name": "Bounty ID",
+          "description": "The ID of the bounty to remove"
+        }
+      }
+    },
+    "claim_bounty": {
+      "name": "Claim Bounty",
+      "description": "Claim a bounty for a child, locking it to them for its claim period. A child can hold one claim at a time.",
+      "fields": {
+        "bounty_id": {
+          "name": "Bounty ID",
+          "description": "The ID of the bounty to claim"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child claiming it"
+        }
+      }
+    },
+    "give_back_bounty": {
+      "name": "Give Back Bounty",
+      "description": "Hand a claimed bounty back to the board so another child can take it",
+      "fields": {
+        "bounty_id": {
+          "name": "Bounty ID",
+          "description": "The ID of the claimed bounty"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child who claimed it"
+        }
+      }
+    },
+    "complete_bounty": {
+      "name": "Complete Bounty",
+      "description": "Mark a claimed bounty as done. It goes to the approval queue like a chore.",
+      "fields": {
+        "bounty_id": {
+          "name": "Bounty ID",
+          "description": "The ID of the claimed bounty"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child who claimed it"
+        },
+        "photo_url": {
+          "name": "Photo URL",
+          "description": "Photo of the finished job (required when the bounty asks for one)"
         }
       }
     },
@@ -806,6 +1027,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Adjust Streak Freezes",
+      "description": "Give a child streak-freeze tokens (positive amount) or take some away (negative). A grant never goes past the streak_freeze_max cap.",
+      "fields": {
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child whose tokens change"
+        },
+        "amount": {
+          "name": "Amount",
+          "description": "Tokens to add (positive) or remove (negative)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Postpone Mandatory Chore",
       "description": "Give a missed mandatory chore another period (or tomorrow) without a penalty, and clear the review item.",
@@ -853,6 +1088,238 @@
           "description": "Points to convert to cash and deduct"
         }
       }
+    },
+    "add_wish": {
+      "name": "Add Wish",
+      "description": "A child adds something they want to save for. It waits for a parent to approve it.",
+      "fields": {
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child making the wish"
+        },
+        "name": {
+          "name": "Name",
+          "description": "What the child wants"
+        },
+        "target": {
+          "name": "Target",
+          "description": "Suggested number of points it costs. The parent can change it when approving."
+        },
+        "link": {
+          "name": "Link",
+          "description": "Optional web address (http or https) for the thing"
+        },
+        "photo_url": {
+          "name": "Picture",
+          "description": "Optional picture just uploaded through the TaskMate photo endpoint"
+        }
+      }
+    },
+    "withdraw_wish": {
+      "name": "Withdraw Wish",
+      "description": "A child takes back a wish that is still waiting for approval, or clears one that was declined.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child whose wish it is"
+        }
+      }
+    },
+    "move_points_to_wish": {
+      "name": "Move Points to Wish",
+      "description": "Move points from a child's spendable balance into one of their approved wishes.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child whose wish it is"
+        },
+        "points": {
+          "name": "Points",
+          "description": "How many points to move (capped at the balance and at what the wish still needs)"
+        }
+      }
+    },
+    "take_points_from_wish": {
+      "name": "Take Points from Wish",
+      "description": "Give some of a child's own saved points back from a wish. Pledged points never come out.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child whose wish it is"
+        },
+        "points": {
+          "name": "Points",
+          "description": "How many saved points to take back (capped at what the child saved)"
+        }
+      }
+    },
+    "request_wish_redeem": {
+      "name": "Ask to Redeem Wish",
+      "description": "A fully funded wish becomes a reward claim waiting for the parent's approval.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "child_id": {
+          "name": "Child ID",
+          "description": "The ID of the child whose wish it is"
+        }
+      }
+    },
+    "approve_wish": {
+      "name": "Approve Wish",
+      "description": "Turn a waiting wish into a savings goal, optionally at a different target.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "target": {
+          "name": "Target",
+          "description": "Points the wish costs. Leave empty to keep the child's suggestion."
+        }
+      }
+    },
+    "decline_wish": {
+      "name": "Decline Wish",
+      "description": "Say no to a wish. Saved points go back to the child and pledges are voided.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "reason": {
+          "name": "Reason",
+          "description": "Optional reason shown to the child"
+        }
+      }
+    },
+    "pledge_to_wish": {
+      "name": "Pledge to Wish",
+      "description": "Record points a relative chips in towards a child's wish. They never touch any balance.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "name": {
+          "name": "From",
+          "description": "Who the pledge is from, e.g. Grandma"
+        },
+        "points": {
+          "name": "Points",
+          "description": "How many points to pledge (capped at what the wish still needs)"
+        },
+        "message": {
+          "name": "Message",
+          "description": "Optional message for the child"
+        }
+      }
+    },
+    "remove_wish_pledge": {
+      "name": "Remove Wish Pledge",
+      "description": "Undo a pledge. Allowed until the wish is redeemed.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        },
+        "pledge_id": {
+          "name": "Pledge ID",
+          "description": "The ID of the pledge to remove"
+        }
+      }
+    },
+    "remove_wish": {
+      "name": "Remove Wish",
+      "description": "Delete a wish. Saved points go back to the child and pledges are voided.",
+      "fields": {
+        "wish_id": {
+          "name": "Wish ID",
+          "description": "The ID of the wish"
+        }
+      }
+    },
+    "start_inspection": {
+      "name": "Start Inspection",
+      "description": "Flag a chore approved in the last 24 hours for a surprise inspection. Pass or fail it before the window closes; an undecided inspection closes quietly.",
+      "fields": {
+        "completion_id": {
+          "name": "Completion ID",
+          "description": "The ID of the approved chore completion to inspect"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Points paid if it passes. Defaults to the Settings value."
+        },
+        "window": {
+          "name": "Window",
+          "description": "How long you have to check it: 1h, 2h, 4h or bed (until bedtime). Defaults to the Settings value."
+        },
+        "tell_child": {
+          "name": "Tell the child",
+          "description": "Show \"Inspection coming\" on the child's card now. Turn off for a secret check."
+        }
+      }
+    },
+    "pass_inspection": {
+      "name": "Pass Inspection",
+      "description": "The inspected chore passed. Pays the bonus as a normal points entry and celebrates on the child's card.",
+      "fields": {
+        "inspection_id": {
+          "name": "Inspection ID",
+          "description": "The ID of the open inspection"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Points to pay. Defaults to the bonus set when the inspection started."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Optional note shown to the child"
+        }
+      }
+    },
+    "fail_inspection": {
+      "name": "Fail Inspection",
+      "description": "The inspected chore didn't pass. No points are taken. It can be sent back to redo; the redo earns nothing extra.",
+      "fields": {
+        "inspection_id": {
+          "name": "Inspection ID",
+          "description": "The ID of the open inspection"
+        },
+        "redo": {
+          "name": "Send back to redo",
+          "description": "Put the chore back on the child's list as not done for today. Defaults to the Settings value."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Optional note shown to the child (what needs fixing)"
+        }
+      }
+    },
+    "cancel_inspection": {
+      "name": "Cancel Inspection",
+      "description": "Call off an open inspection, as if it never started.",
+      "fields": {
+        "inspection_id": {
+          "name": "Inspection ID",
+          "description": "The ID of the open inspection"
+        }
+      }
     }
   },
   "entity": {
@@ -862,6 +1329,13 @@
       },
       "child_badges": {
         "unit_of_measurement": "badges"
+      },
+      "child_watch": {
+        "state": {
+          "left": "# left",
+          "all_done": "All done",
+          "no_chores": "No chores"
+        }
       }
     },
     "number": {
@@ -879,6 +1353,35 @@
       "card_design": {
         "name": "Card design"
       }
+    }
+  },
+  "exceptions": {
+    "calendar_unknown_event": {
+      "message": "This event isn't a TaskMate chore on this child's calendar."
+    },
+    "calendar_series_not_supported": {
+      "message": "A repeating chore can only be moved or removed one day at a time from the calendar. To change the whole series, edit the chore in TaskMate."
+    },
+    "calendar_repeating_create": {
+      "message": "Repeating events can't be added from the calendar. Create a repeating chore in TaskMate instead."
+    },
+    "calendar_rename_series": {
+      "message": "Rename a repeating chore in TaskMate. From the calendar you can only move or remove a single day."
+    },
+    "calendar_time_follows_chore": {
+      "message": "A repeating chore keeps its time of day. Only the date of a single occurrence can be changed from the calendar."
+    },
+    "calendar_past_date": {
+      "message": "Chores can't be added to, moved to or moved from a day in the past."
+    },
+    "calendar_already_scheduled": {
+      "message": "{chore} is already on {date}."
+    },
+    "calendar_empty_title": {
+      "message": "Give the chore a title."
+    },
+    "calendar_own_event": {
+      "message": "This event was published by TaskMate itself, so it isn't added as a new chore."
     }
   }
 }

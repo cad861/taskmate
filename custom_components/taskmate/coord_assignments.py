@@ -390,6 +390,13 @@ class AssignmentsMixin:
         if mode == "unassigned":
             return []
 
+        # A chore auction (#982) settles one occurrence outright: the winner
+        # does it, ahead of every mode's own logic and of a sibling swap. Like a
+        # swap, `require_availability` is not re-applied — the child bid for it.
+        winner = self.auction_winner(chore, today)
+        if winner:
+            return [winner]
+
         # An approved swap replaces the whole active set for that day, ahead of
         # every mode's own logic. `require_availability` is deliberately not
         # re-applied: a parent explicitly approved this child for today, which
@@ -616,7 +623,11 @@ class AssignmentsMixin:
         active_child_id = getattr(chore, "assignment_current_child_id", "") or ""
         completions_today = 0
         completed_bonus_ids_today: set[str] = set()
+        # Sent back to redo by an inspection (#981): no longer fills the quota.
+        redo_ids = self.inspection_redo_completion_ids()
         for comp in self._cached_completions_for_chore(chore.id):
+            if comp.id in redo_ids:
+                continue
             comp_dt = comp.completed_at
             try:
                 if hasattr(comp_dt, "astimezone"):

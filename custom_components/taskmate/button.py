@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import authz
 from .const import DOMAIN
-from .coordinator import TaskMateCoordinator
+from .coordinator import TaskMateCoordinator, button_keys, chore_has_button
 from .entity import taskmate_device_info
 from .models import Child, Chore, Reward
 
@@ -38,32 +38,25 @@ async def async_setup_entry(
 
     for child in children:
         # Chore completion buttons
-        for chore in chores:
-            if getattr(chore, "assignment_mode", "everyone") == "unassigned":
-                continue
-            if not chore.assigned_to or child.id in chore.assigned_to:
-                entities.append(CompleteChoreButton(coordinator, entry, child, chore))
+        entities.extend(
+            CompleteChoreButton(coordinator, entry, child, chore)
+            for chore in chores
+            if chore_has_button(chore, child.id)
+        )
 
         # Reward claim buttons
         entities.extend(ClaimRewardButton(coordinator, entry, child, reward) for reward in rewards)
 
     # Track which entity combos already exist
-    tracked_combos: set[str] = set()
-    for child in children:
-        for chore in chores:
-            if getattr(chore, "assignment_mode", "everyone") == "unassigned":
-                continue
-            if not chore.assigned_to or child.id in chore.assigned_to:
-                tracked_combos.add(f"{child.id}_{chore.id}_complete")
-        for reward in rewards:
-            tracked_combos.add(f"{child.id}_{reward.id}_claim")
+    tracked_combos: set[str] = button_keys(children, chores, rewards)
 
     async_add_entities(entities)
 
-    # Set up listener to add buttons for new children/chores/rewards
+    # Set up listener to add buttons for new children/chores/rewards, and drop
+    # those whose chore/reward was deleted or child unassigned (#960).
     @callback
     def async_update_entities() -> None:
-        """Add button entities for newly created children, chores, or rewards."""
+        """Keep button entities in step with children, chores and rewards."""
         new_entities: list[ButtonEntity] = []
         current_children = coordinator.data.get("children", [])
         current_chores = coordinator.data.get("chores", [])
@@ -71,9 +64,7 @@ async def async_setup_entry(
 
         for child in current_children:
             for chore in current_chores:
-                if getattr(chore, "assignment_mode", "everyone") == "unassigned":
-                    continue
-                if not chore.assigned_to or child.id in chore.assigned_to:
+                if chore_has_button(chore, child.id):
                     key = f"{child.id}_{chore.id}_complete"
                     if key not in tracked_combos:
                         new_entities.append(CompleteChoreButton(coordinator, entry, child, chore))
@@ -83,6 +74,12 @@ async def async_setup_entry(
                 if key not in tracked_combos:
                     new_entities.append(ClaimRewardButton(coordinator, entry, child, reward))
                     tracked_combos.add(key)
+
+        # Forget stale keys too, so re-assigning a child brings the button back.
+        stale = tracked_combos - button_keys(current_children, current_chores, current_rewards)
+        if stale:
+            tracked_combos.difference_update(stale)
+            coordinator.remove_button_entities(stale)
 
         if new_entities:
             async_add_entities(new_entities)
@@ -194,9 +191,8 @@ class ClaimRewardButton(TaskMateBaseButton):
         Pool-mode pending claims are skipped because their cost was already
         deducted from child.points at allocation time.
         """
-        pending_claims = self.coordinator.data.get("pending_reward_claims", [])
         committed = 0
-        for c in pending_claims:
+        for c in self.coordinator.storage.get_pending_reward_claims():
             if c.child_id == child_id and not self.coordinator.is_pool_mode_claim(c):
                 reward = self.coordinator.get_reward(c.reward_id)
                 if reward:
@@ -205,15 +201,19 @@ class ClaimRewardButton(TaskMateBaseButton):
 
     @property
     def available(self) -> bool:
-        """Return if button is available (accounting for committed points)."""
-        child = self.coordinator.get_child(self.child_id)
-        reward = self.coordinator.get_reward(self.reward_id)
+        """Offer the button exactly when claiming would be allowed.
 
-        if not child or not reward:
+        Deciding this on the wallet balance alone disagreed with the claim
+        itself in both directions: a jackpot or a filled savings jar is not
+        paid from the wallet, and a sold-out, expired, time-locked or
+        already-claimed reward cannot be claimed however many points a child
+        has. One rule, asked the same way by both.
+        """
+        try:
+            self.coordinator.validate_reward_claim(self.reward_id, self.child_id)
+        except ValueError:
             return False
-
-        available_points = child.points - self._get_committed_points(child.id)
-        return available_points >= reward.cost
+        return True
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -226,7 +226,10 @@ class ClaimRewardButton(TaskMateBaseButton):
 
         committed = self._get_committed_points(child.id)
         available_points = child.points - committed
-        can_afford = available_points >= reward.cost
+        # A jackpot is paid from the shared pool and an ordinary reward may be
+        # paid from a filled savings jar, so affordability is not a question
+        # about the wallet.
+        funding = self.coordinator.reward_claim_funding(reward, child.id)
 
         return {
             "child_id": child.id,
@@ -237,8 +240,8 @@ class ClaimRewardButton(TaskMateBaseButton):
             "child_points": child.points,
             "committed_points": committed,
             "available_points": available_points,
-            "can_afford": can_afford,
-            "points_needed": max(0, reward.cost - available_points),
+            "can_afford": funding >= reward.cost,
+            "points_needed": max(0, reward.cost - funding),
         }
 
     async def async_press(self) -> None:

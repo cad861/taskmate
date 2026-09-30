@@ -87,6 +87,7 @@ class TaskMatePointsDisplayCard extends LitElement {
       hass:   { type: Object },
       config: { type: Object },
       _animated: { type: Object },
+      _confetti: { type: Array },
     };
   }
 
@@ -102,6 +103,7 @@ class TaskMatePointsDisplayCard extends LitElement {
   constructor() {
     super();
     this._animated = {};
+    this._confetti = [];
   }
 
   _t(key, params) {
@@ -227,7 +229,7 @@ class TaskMatePointsDisplayCard extends LitElement {
         content: "\u2B50";
         font-size: 7rem;
         position: absolute;
-        right: -12px;
+        inset-inline-end: -12px;
         bottom: -18px;
         opacity: 0.06;
         line-height: 1;
@@ -253,7 +255,7 @@ class TaskMatePointsDisplayCard extends LitElement {
         font-size: 2rem;
         animation: star-spin 3s linear infinite;
         display: inline-block;
-        margin-right: 6px;
+        margin-inline-end: 6px;
         vertical-align: middle;
       }
       @keyframes star-spin {
@@ -328,7 +330,7 @@ class TaskMatePointsDisplayCard extends LitElement {
       .child-tile .rank-badge {
         position: absolute;
         top: 8px;
-        right: 10px;
+        inset-inline-end: 10px;
         font-size: 1.1rem;
         line-height: 1;
       }
@@ -350,7 +352,7 @@ class TaskMatePointsDisplayCard extends LitElement {
       .child-tile .tile-star {
         font-size: 1rem;
         vertical-align: middle;
-        margin-right: 2px;
+        margin-inline-end: 2px;
         display: inline-block;
         animation: star-spin 4s linear infinite;
       }
@@ -382,8 +384,8 @@ class TaskMatePointsDisplayCard extends LitElement {
         content: "";
         position: absolute;
         bottom: 0;
-        left: 0;
-        right: 0;
+        inset-inline-start: 0;
+        inset-inline-end: 0;
         height: 4px;
         border-radius: 0 0 18px 18px;
       }
@@ -413,7 +415,7 @@ class TaskMatePointsDisplayCard extends LitElement {
         content: "\u{1F31F}";
         font-size: 6rem;
         position: absolute;
-        right: -10px;
+        inset-inline-end: -10px;
         bottom: -14px;
         opacity: 0.07;
         pointer-events: none;
@@ -473,7 +475,7 @@ class TaskMatePointsDisplayCard extends LitElement {
         font-size: 0.85rem;
         animation: star-spin 5s linear infinite;
         display: inline-block;
-        margin-right: 2px;
+        margin-inline-end: 2px;
       }
       .cumul-bar-wrap {
         width: 100%;
@@ -502,16 +504,45 @@ class TaskMatePointsDisplayCard extends LitElement {
       }
       .empty-state ha-icon { --mdc-icon-size: 40px; opacity: 0.35; display: block; margin: 0 auto 10px; }
 
+      /* ── Birthday (#924) ── */
+      .birthday-banner {
+        display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+        background: linear-gradient(135deg, #ffd1e8, #e3c8ff); color: #5b1f6b;
+      }
+      .birthday-banner ha-icon { --mdc-icon-size: 28px; flex-shrink: 0; }
+      .bday-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .birthday-banner .bday-title { font-weight: 800; font-size: 1rem; }
+      .birthday-banner .bday-sub { font-size: 0.85rem; font-weight: 600; opacity: 0.85; }
+      .tmd-birthday {
+        display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 11px;
+        background: color-mix(in srgb, var(--tmd-accent) 16%, transparent); color: var(--tmd-text);
+        border: 1px solid color-mix(in srgb, var(--tmd-accent) 40%, transparent);
+        border-radius: var(--tmd-radius-sm);
+      }
+      .tmd-birthday ha-icon { --mdc-icon-size: 26px; color: var(--tmd-accent); flex-shrink: 0; }
+      .tmd-birthday .bday-title { font-weight: 800; font-size: 14px; }
+      .tmd-birthday .bday-sub { font-size: 12px; font-weight: 600; color: var(--tmd-dim); }
+      .confetti-container {
+        position: fixed; top: 0; inset-inline-start: 0; width: 100%; height: 100%;
+        pointer-events: none; z-index: 10000; overflow: hidden;
+      }
+      .confetti { position: absolute; width: 10px; height: 10px; animation: confetti-fall 3s linear forwards; }
+      @keyframes confetti-fall {
+        0% { transform: translateY(-100px) rotate(0deg); opacity: 1; }
+        100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+      }
+      @media (prefers-reduced-motion: reduce) { .confetti-container { display: none; } }
+
       /* Shared .tmd kit + design tokens are provided by taskmate-design.js styles(). */
 
       /* Points Display — Playroom */
       .pl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 11px; }
       .pl-tile { background: var(--tmd-surface-2); border-radius: 18px; padding: 22px 12px 15px; text-align: center;
                  position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; }
-      .pl-medal { position: absolute; top: 9px; left: 11px; font-size: 16px; line-height: 1; }
+      .pl-medal { position: absolute; top: 9px; inset-inline-start: 11px; font-size: 16px; line-height: 1; }
       .pl-pts { font-family: var(--tmd-font-display); font-weight: 800; font-size: 1.85rem; line-height: 1;
                 color: var(--tmd-accent); }
-      .pl-pts span { font-size: 0.9rem; margin-left: 2px; }
+      .pl-pts span { font-size: 0.9rem; margin-inline-start: 2px; }
       .pl-name { font-weight: 800; font-size: 0.95rem; }
       .pl-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
 
@@ -522,7 +553,7 @@ class TaskMatePointsDisplayCard extends LitElement {
       .cn-rank { font-size: 20px; width: 34px; color: var(--tmd-dim); }
       .cn-mid { flex: 1; min-width: 0; }
       .cn-name { font-weight: 700; margin-bottom: 6px; }
-      .cn-right { text-align: right; }
+      .cn-right { text-align: end; }
       .cn-pts { font-size: 22px; }
       .cn-sub { font-size: 10px; }
 
@@ -746,7 +777,7 @@ class TaskMatePointsDisplayCard extends LitElement {
                 <div class="tile-weekly">${this._t("points_display.weekly_plus", { count: weekly })}</div>` : ""}
               ${this.config.show_streak ? html`
                 <div class="streak-chip">\u{1F525} ${streak}</div>` : ""}
-              ${isTop ? html`<div style="position:absolute;bottom:0;left:0;right:0;height:4px;background:${colour};border-radius:0 0 18px 18px;"></div>` : ""}
+              ${isTop ? html`<div style="position:absolute;bottom:0;inset-inline-start:0;inset-inline-end:0;height:4px;background:${colour};border-radius:0 0 18px 18px;"></div>` : ""}
             </div>`;
         })}
       </div>`;
@@ -813,6 +844,64 @@ class TaskMatePointsDisplayCard extends LitElement {
       </div>`;
   }
 
+  /* ── Birthday mode (#924) ───────────────────────────────────────────────
+     `child.birthday` is only on the sensor on the day. The banner helper is
+     called from BOTH render paths; confetti fires from updated(), which runs
+     for every design. Same confetti as the child card's chore celebration. */
+
+  _birthdayChildren() {
+    const mode = this.config.mode || "single";
+    const pool = mode === "single" ? [this._singleChild()].filter(Boolean) : this._allChildren();
+    return pool.filter(c => c && c.birthday);
+  }
+
+  _renderBirthdayBanners(designed) {
+    return this._birthdayChildren().map(child => {
+      const b = child.birthday;
+      const greeting = b.age != null
+        ? this._t("birthday.banner_age", { name: child.name, age: b.age })
+        : this._t("birthday.banner", { name: child.name });
+      const mult = Number(b.multiplier) || 1;
+      const sub = mult > 1 ? this._t("birthday.multiplier", { multiplier: mult }) : "";
+      return html`
+        <div class="${designed ? "tmd-birthday" : "birthday-banner"}" role="status">
+          <ha-icon icon="mdi:cake-variant"></ha-icon>
+          <div class="bday-text">
+            <span class="bday-title">${greeting}</span>
+            ${sub ? html`<span class="bday-sub">${sub}</span>` : ""}
+          </div>
+        </div>`;
+    });
+  }
+
+  updated(changed) {
+    super.updated(changed);
+    const once = window.__taskmate_birthday_once;
+    if (!once || !this.hass || !this.config) return;
+    // Evaluate every child (no short-circuit) so each is marked seen today.
+    const fire = this._birthdayChildren().map(c => once(this.hass, c.id)).some(Boolean);
+    if (fire) this._spawnConfetti();
+  }
+
+  _spawnConfetti() {
+    const pieces = [];
+    for (let i = 0; i < 50; i++) {
+      pieces.push({ x: Math.random() * 100, delay: Math.random() * 0.5, size: Math.random() * 8 + 6, round: Math.random() > 0.5 });
+    }
+    this._confetti = pieces;
+    setTimeout(() => { this._confetti = []; }, 3500);
+  }
+
+  _renderConfetti() {
+    if (!this._confetti.length) return "";
+    const colors = ["#ff6b9d", "#9b59b6", "#3498db", "#2ecc71", "#f1c40f", "#e67e22"];
+    return html`
+      <div class="confetti-container">
+        ${this._confetti.map((p, i) => html`
+          <div class="confetti" style="inset-inline-start:${p.x}%;animation-delay:${p.delay}s;background:${colors[i % colors.length]};border-radius:${p.round ? "50%" : "0"};width:${p.size}px;height:${p.size}px;"></div>`)}
+      </div>`;
+  }
+
   /* ── Main render ────────────────────────────────────────────────────── */
 
   render() {
@@ -846,7 +935,9 @@ class TaskMatePointsDisplayCard extends LitElement {
           </div>
           <div class="mode-badge">${modeLabel}</div>
         </div>
+        ${this._renderBirthdayBanners(false)}
         <div class="card-body">${body}</div>
+        ${this._renderConfetti()}
       </ha-card>`;
   }
 
@@ -912,7 +1003,7 @@ class TaskMatePointsDisplayCard extends LitElement {
       design === "console"  ? this._designConsole(rows) :
                               this._designCleanpro(rows, total);
 
-    return html`<ha-card class="tmd" style="--hd:${hd}">${header}<div class="tmd-bd">${body}</div></ha-card>`;
+    return html`<ha-card class="tmd" style="--hd:${hd}">${header}<div class="tmd-bd">${this._renderBirthdayBanners(true)}${body}</div>${this._renderConfetti()}</ha-card>`;
   }
 
   _designPlayroom(rows) {
@@ -1050,7 +1141,7 @@ class TaskMatePointsDisplayCardEditor extends LitElement {
       .preset-swatch { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--divider-color, #e0e0e0); transition: transform 0.1s; padding: 0; }
       .preset-swatch:hover { transform: scale(1.15); }
       .preset-swatch.active { border-color: var(--primary-text-color); box-shadow: 0 0 0 2px var(--primary-color); }
-      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-left: auto; }
+      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-inline-start: auto; }
       .colour-helper { color: var(--secondary-text-color); font-size: 0.82rem; line-height: 1.3; }
     `;
   }

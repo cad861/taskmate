@@ -9,11 +9,13 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import DEFAULT_NOTIFICATION_NAV_URL, DOMAIN
+from .const import DEFAULT_NOTIFICATION_NAV_URL, DEFAULT_PRESENCE_ARRIVAL_MIN_AWAY, DOMAIN
 from .models import (
+    Auction,
     AwardedBadge,
     Badge,
     Bonus,
+    Bounty,
     Challenge,
     Child,
     Chore,
@@ -33,6 +35,7 @@ from .models import (
     ScheduledChange,
     TaskGroup,
     TimedSession,
+    Wish,
     parse_datetime,
 )
 
@@ -122,6 +125,10 @@ class TaskMateStorage:
         if "career_score_history" not in self._data:
             self._data["career_score_history"] = {}
 
+        # Per-child daily done/total for the admin panel's Today page (#966)
+        if "daily_progress" not in self._data:
+            self._data["daily_progress"] = {}
+
         # Ensure templates store exists
         if "templates" not in self._data:
             self._data["templates"] = []
@@ -167,6 +174,12 @@ class TaskMateStorage:
             self._data["notifications_migration_done"] = True
 
         self._migrate_nav_url_default()
+
+        # Deleting a child or parent used to leave their notification routes
+        # and missed-mandatory records behind (#946). Sweep up what existing
+        # installs already carry; like the swap-request prune above it is a
+        # cheap filter, so it runs on every load.
+        self._drop_dead_recipient_records()
 
         # Badge migration / seeding
         self._seed_builtin_badges(is_fresh=is_fresh)
@@ -368,6 +381,44 @@ class TaskMateStorage:
         """Remove a child and cascade-delete their awarded badges."""
         self._data["children"] = [c for c in self._data.get("children", []) if c.get("id") != child_id]
         self.remove_awards_for_child(child_id)
+        self.set_kiosk_pin_hash(child_id, "")
+        if self._data.get("rejections"):
+            self._data["rejections"] = [r for r in self.get_rejections() if r.get("child_id") != child_id]
+        if self.get_inspections():
+            self.set_inspections([i for i in self.get_inspections() if i.get("child_id") != child_id])
+        # Per-child maps kept in settings (#946): the birthday guard and a
+        # Custom recap schedule would otherwise outlive the child.
+        settings = self._data.get("settings", {})
+        for key in ("birthday_celebrated", "recap_child_frequencies"):
+            value = settings.get(key)
+            if isinstance(value, dict) and child_id in value:
+                settings[key] = {k: v for k, v in value.items() if k != child_id}
+
+    # Kiosk PINs (#930): {child_id: salted hash}. Kept apart from the child
+    # records so the hash never rides along wherever children are serialised
+    # (get_state, sensor attributes). A missing or malformed map reads as empty.
+    def _kiosk_pins(self) -> dict:
+        pins = self._data.get("kiosk_pins")
+        return pins if isinstance(pins, dict) else {}
+
+    def get_kiosk_pin_hash(self, child_id: str) -> str:
+        value = self._kiosk_pins().get(child_id, "")
+        return value if isinstance(value, str) else ""
+
+    def get_kiosk_pin_child_ids(self) -> list[str]:
+        return [cid for cid, value in self._kiosk_pins().items() if isinstance(value, str) and value]
+
+    def set_kiosk_pin_hash(self, child_id: str, value: str) -> None:
+        """Store a child's PIN hash; an empty value removes it."""
+        pins = dict(self._kiosk_pins())
+        if value:
+            pins[child_id] = value
+        else:
+            pins.pop(child_id, None)
+        if pins:
+            self._data["kiosk_pins"] = pins
+        else:
+            self._data.pop("kiosk_pins", None)
 
     # Chores management
     def get_chores(self) -> list[Chore]:
@@ -489,6 +540,12 @@ class TaskMateStorage:
     def remove_mandatory_miss(self, miss_id: str) -> None:
         """Remove a mandatory-miss item by id."""
         self._data["mandatory_misses"] = [m for m in self._data.get("mandatory_misses", []) if m.get("id") != miss_id]
+
+    def remove_mandatory_misses_for_child(self, child_id: str) -> None:
+        """Drop a deleted child's mandatory-miss review items (#946)."""
+        self._data["mandatory_misses"] = [
+            m for m in self._data.get("mandatory_misses", []) if m.get("child_id") != child_id
+        ]
 
     def replace_mandatory_misses(self, misses: list[MandatoryMiss]) -> None:
         """Replace the whole mandatory-miss collection."""
@@ -772,6 +829,65 @@ class TaskMateStorage:
                 return
         rows.append(p.to_dict())
 
+    def remove_notification_recipient(self, recipient_id: str) -> bool:
+        """Drop a recipient from every notification route and custom reminder.
+
+        ``recipient_id`` is the prefixed id (``child:<id>`` / ``parent:<id>``).
+        Returns True if anything changed.
+        """
+        changed = False
+        for raw in (self._data.get("notification_config", {}) or {}).values():
+            routes = raw.get("routes") if isinstance(raw, dict) else None
+            if isinstance(routes, dict) and recipient_id in routes:
+                routes.pop(recipient_id)
+                changed = True
+        for row in self._data.get("custom_notifications", []) or []:
+            ids = row.get("recipient_ids") if isinstance(row, dict) else None
+            if isinstance(ids, list) and recipient_id in ids:
+                row["recipient_ids"] = [r for r in ids if r != recipient_id]
+                changed = True
+        return changed
+
+    def _drop_dead_recipient_records(self) -> None:
+        """Prune routes, reminders and misses naming a deleted child or parent (#946).
+
+        Called from ``async_load``. Only ``child:``/``parent:`` recipient ids
+        are judged — anything else is left alone.
+        """
+        child_ids = {c.get("id") for c in self._data.get("children", [])}
+        parent_ids = {p.get("id") for p in self._data.get("parent_recipients", [])}
+
+        def _dead(rid: str) -> bool:
+            if rid.startswith("child:"):
+                return rid.split(":", 1)[1] not in child_ids
+            if rid.startswith("parent:"):
+                return rid not in parent_ids
+            return False
+
+        dead: set[str] = set()
+        for raw in (self._data.get("notification_config", {}) or {}).values():
+            routes = raw.get("routes") if isinstance(raw, dict) else None
+            if isinstance(routes, dict):
+                dead.update(rid for rid in routes if isinstance(rid, str) and _dead(rid))
+        for row in self._data.get("custom_notifications", []) or []:
+            ids = row.get("recipient_ids") if isinstance(row, dict) else None
+            if isinstance(ids, list):
+                dead.update(rid for rid in ids if isinstance(rid, str) and _dead(rid))
+        for rid in dead:
+            self.remove_notification_recipient(rid)
+
+        misses = self._data.get("mandatory_misses")
+        kept = [m for m in misses or [] if m.get("child_id") in child_ids]
+        if misses and len(kept) != len(misses):
+            self._data["mandatory_misses"] = kept
+
+        if dead or (misses and len(kept) != len(misses)):
+            _LOGGER.debug(
+                "Dropped %d orphaned notification recipient(s) and %d orphaned mandatory miss(es)",
+                len(dead),
+                len(misses or []) - len(kept),
+            )
+
     def delete_parent_recipient(self, parent_id: str) -> None:
         self._data["parent_recipients"] = [
             r for r in self._data.get("parent_recipients", []) if r.get("id") != parent_id
@@ -841,6 +957,20 @@ class TaskMateStorage:
             return []
         return [x for x in raw if isinstance(x, str) and x]
 
+    def get_chore_undo_seconds(self) -> int:
+        """Seconds a child has to undo their own auto-approved chore (#918).
+
+        0 (the default) switches child undo off entirely. Anything stored that
+        isn't a whole number reads as 0, and the value is clamped to 0..3600.
+        """
+        value = (self._data.get("settings", {}) or {}).get("chore_undo_seconds", 0)
+        if isinstance(value, bool):
+            return 0
+        try:
+            return max(0, min(3600, int(value)))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
     def get_require_linked_child(self) -> bool:
         """True when acting *as* a child requires that child to be linked.
 
@@ -879,6 +1009,20 @@ class TaskMateStorage:
         s = self._data.setdefault("settings", {})
         s["mandatory_escalation_reminder_minutes"] = max(1, int(reminder_minutes))
         s["mandatory_escalation_parent_minutes"] = max(1, int(parent_minutes))
+
+    # --- presence-aware reminders (#926) ---
+    def get_presence_arrival_min_away(self) -> int:
+        """Minutes a child must have been away for their arrival to earn a nudge."""
+        try:
+            value = (self._data.get("settings", {}) or {}).get(
+                "presence_arrival_min_away", DEFAULT_PRESENCE_ARRIVAL_MIN_AWAY
+            )
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return DEFAULT_PRESENCE_ARRIVAL_MIN_AWAY
+
+    def set_presence_arrival_min_away(self, minutes: int) -> None:
+        self._data.setdefault("settings", {})["presence_arrival_min_away"] = max(0, int(minutes))
 
     # Task groups management
     def get_task_groups(self) -> list[TaskGroup]:
@@ -960,8 +1104,13 @@ class TaskMateStorage:
         """Get all points transactions."""
         return [PointsTransaction.from_dict(t) for t in self._data.get("points_transactions", [])]
 
-    def add_points_transaction(self, transaction: PointsTransaction) -> None:
-        """Add a points transaction record."""
+    def add_points_transaction(self, transaction: PointsTransaction, *, count_for_season: bool = True) -> None:
+        """Add a points transaction record.
+
+        ``count_for_season=False`` records a positive row that returns the
+        child's own points rather than awarding new ones (e.g. taking savings
+        back out of a wish, #932), so it must not count towards the leaderboard.
+        """
         if "points_transactions" not in self._data:
             self._data["points_transactions"] = []
         self._data["points_transactions"].append(transaction.to_dict())
@@ -969,7 +1118,7 @@ class TaskMateStorage:
         # Accumulate season (leaderboard) points from every positive award here,
         # the single choke point all awards flow through — the rolling 200-cap on
         # transactions makes them unreliable for a monthly total (FEAT-2).
-        if transaction.points > 0:
+        if transaction.points > 0 and count_for_season:
             self.record_season_points(transaction.child_id, transaction.points, transaction.created_at)
 
         # Keep only the last 200 transactions to avoid unbounded storage growth
@@ -1059,6 +1208,41 @@ class TaskMateStorage:
         self._data["audit_log"] = []
         self._data["audit_log_dropped"] = 0
 
+    # ── Reject reasons (#976) ────────────────────────────────────────────
+    # Rejection deletes the completion / claim, so the reason a parent gave is
+    # kept here instead: small dicts (see coord_rejections), newest last.
+    def get_rejections(self) -> list[dict]:
+        rows = self._data.get("rejections")
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def set_rejections(self, rows: list[dict]) -> None:
+        self._data["rejections"] = list(rows)
+
+    # ── Surprise inspections (#981) ──────────────────────────────────────
+    # Their own key: {"items": [inspection dicts, see coord_inspections],
+    # "last_pick": ISO date of the last random daily pick, "last_pick_child"}.
+    def _inspection_store(self) -> dict:
+        store = self._data.get("inspections")
+        if not isinstance(store, dict):
+            store = {"items": []}
+            self._data["inspections"] = store
+        return store
+
+    def get_inspections(self) -> list[dict]:
+        store = self._data.get("inspections")
+        rows = store.get("items") if isinstance(store, dict) else None
+        return [dict(r) for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def set_inspections(self, rows: list[dict]) -> None:
+        self._inspection_store()["items"] = [dict(r) for r in rows]
+
+    def get_inspection_meta(self, key: str, default: str = "") -> str:
+        store = self._data.get("inspections")
+        return str(store.get(key) or default) if isinstance(store, dict) else default
+
+    def set_inspection_meta(self, key: str, value: str) -> None:
+        self._inspection_store()[key] = value
+
     # ── Chore swap requests ──────────────────────────────────────────────
     def get_swap_requests(self) -> list[dict]:
         return list(self._data.get("swap_requests", []))
@@ -1130,6 +1314,137 @@ class TaskMateStorage:
             r
             for r in self._data.get("swap_requests", [])
             if r.get("requester_id") != child_id and r.get("from_child_id") != child_id
+        ]
+
+    # ── Teamwork chore joins (#928) ─────────────────────────────────────
+    # {chore_id: {"date": "YYYY-MM-DD", "joined": [{"child_id", "joined_at",
+    # "photo_url"?}]}}. Runtime state for the occurrence in progress, kept out
+    # of the chore record so an editor save can never wipe (or resurrect) it.
+    # Only the current day's entry counts; anything older is dead on read.
+    def get_team_joins(self, chore_id: str, day: str) -> list[dict]:
+        entry = self._data.get("team_joins", {}).get(chore_id)
+        if not isinstance(entry, dict) or entry.get("date") != day:
+            return []
+        return [dict(j) for j in entry.get("joined", []) if isinstance(j, dict) and j.get("child_id")]
+
+    def set_team_joins(self, chore_id: str, day: str, joined: list[dict]) -> None:
+        store = self._data.setdefault("team_joins", {})
+        if joined:
+            store[chore_id] = {"date": day, "joined": [dict(j) for j in joined]}
+        else:
+            store.pop(chore_id, None)
+
+    def remove_team_joins_for_chore(self, chore_id: str) -> None:
+        self._data.get("team_joins", {}).pop(chore_id, None)
+
+    def remove_team_joins_for_child(self, child_id: str) -> None:
+        """Take a deleted child out of every team they had joined."""
+        store = self._data.get("team_joins", {})
+        for chore_id in list(store):
+            entry = store[chore_id]
+            kept = [j for j in entry.get("joined", []) if j.get("child_id") != child_id]
+            if kept:
+                entry["joined"] = kept
+            else:
+                store.pop(chore_id, None)
+
+    def prune_team_joins(self, keep_date: str) -> None:
+        """Drop joins from any day but keep_date — the occurrence rolled over."""
+        store = self._data.get("team_joins", {})
+        for chore_id in list(store):
+            if store[chore_id].get("date") != keep_date:
+                store.pop(chore_id, None)
+
+    # ── Wishlist (#932) ──────────────────────────────────────────────────
+    # Wishes are their own records, not rewards: a child creates them and a
+    # parent approves them. A wish's own saved points and pledges live on the
+    # record; the reward claim a funded wish turns into points back at it.
+    def get_wishes(self) -> list[Wish]:
+        return [Wish.from_dict(w) for w in self._data.get("wishes", []) if isinstance(w, dict)]
+
+    def get_wish(self, wish_id: str) -> Wish | None:
+        for w in self._data.get("wishes", []):
+            if isinstance(w, dict) and w.get("id") == wish_id:
+                return Wish.from_dict(w)
+        return None
+
+    def upsert_wish(self, wish: Wish) -> None:
+        rows = self._data.setdefault("wishes", [])
+        for i, row in enumerate(rows):
+            if isinstance(row, dict) and row.get("id") == wish.id:
+                rows[i] = wish.to_dict()
+                return
+        rows.append(wish.to_dict())
+
+    def remove_wish(self, wish_id: str) -> None:
+        self._data["wishes"] = [
+            w for w in self._data.get("wishes", []) if not (isinstance(w, dict) and w.get("id") == wish_id)
+        ]
+
+    def remove_wishes_for_child(self, child_id: str) -> list[Wish]:
+        """Drop a deleted child's wishes; returns them so their images can go too."""
+        removed = [w for w in self.get_wishes() if w.child_id == child_id]
+        self._data["wishes"] = [
+            w for w in self._data.get("wishes", []) if not (isinstance(w, dict) and w.get("child_id") == child_id)
+        ]
+        return removed
+
+    # ── Bounty board (#931) ──────────────────────────────────────────────
+    # Their own list, not chores: a bounty is a one-off with a claim lock and
+    # a lifecycle of its own. Missing on installs from before the feature, so
+    # every reader defaults it.
+    def get_bounties(self) -> list[Bounty]:
+        return [Bounty.from_dict(b) for b in self._data.get("bounties", []) if isinstance(b, dict)]
+
+    def get_bounty(self, bounty_id: str) -> Bounty | None:
+        for b in self._data.get("bounties", []):
+            if isinstance(b, dict) and b.get("id") == bounty_id:
+                return Bounty.from_dict(b)
+        return None
+
+    def add_bounty(self, bounty: Bounty) -> None:
+        self._data.setdefault("bounties", []).append(bounty.to_dict())
+
+    def update_bounty(self, bounty: Bounty) -> None:
+        items = self._data.setdefault("bounties", [])
+        for i, b in enumerate(items):
+            if isinstance(b, dict) and b.get("id") == bounty.id:
+                items[i] = bounty.to_dict()
+                return
+        items.append(bounty.to_dict())
+
+    def remove_bounty(self, bounty_id: str) -> None:
+        self._data["bounties"] = [
+            b for b in self._data.get("bounties", []) if not (isinstance(b, dict) and b.get("id") == bounty_id)
+        ]
+
+    # ── Chore auctions (#982) ────────────────────────────────────────────
+    # Their own list: an auction is about one occurrence of a chore, not the
+    # chore itself, so the chore record is never touched. Missing on installs
+    # from before the feature, so every reader defaults it.
+    def get_auctions(self) -> list[Auction]:
+        return [Auction.from_dict(a) for a in self._data.get("auctions", []) if isinstance(a, dict)]
+
+    def get_auction(self, auction_id: str) -> Auction | None:
+        for a in self._data.get("auctions", []):
+            if isinstance(a, dict) and a.get("id") == auction_id:
+                return Auction.from_dict(a)
+        return None
+
+    def add_auction(self, auction: Auction) -> None:
+        self._data.setdefault("auctions", []).append(auction.to_dict())
+
+    def update_auction(self, auction: Auction) -> None:
+        items = self._data.setdefault("auctions", [])
+        for i, a in enumerate(items):
+            if isinstance(a, dict) and a.get("id") == auction.id:
+                items[i] = auction.to_dict()
+                return
+        items.append(auction.to_dict())
+
+    def remove_auction(self, auction_id: str) -> None:
+        self._data["auctions"] = [
+            a for a in self._data.get("auctions", []) if not (isinstance(a, dict) and a.get("id") == auction_id)
         ]
 
     # ── Quests (chore chains) ────────────────────────────────────────────
@@ -1249,6 +1564,9 @@ class TaskMateStorage:
             "timed_sessions",
             "quests",
             "challenges",
+            "wishes",
+            "bounties",
+            "auctions",
         )
         for k in list_keys:
             if not isinstance(self._data.get(k), list):
@@ -1277,7 +1595,7 @@ class TaskMateStorage:
         from .photos import is_taskmate_photo_url
 
         _STREAK_MODES = ("reset", "pause")
-        _CARD_DESIGNS = ("classic", "playroom", "console", "cleanpro", "accessible")
+        _CARD_DESIGNS = ("classic", "playroom", "console", "cleanpro", "accessible", "graphite")
         # Per-record numeric fields. The WebSocket schemas coerce these on every
         # normal write; import bypasses the schemas entirely, so a crafted
         # backup could leave a string (or inf/NaN) where the rest of the code —
@@ -1293,6 +1611,8 @@ class TaskMateStorage:
                 "best_streak",
                 "career_score",
                 "total_penalties_received",
+                "streak_freezes",
+                "streak_freeze_earned_at",
             ),
             "chores": (
                 "points",
@@ -1308,7 +1628,7 @@ class TaskMateStorage:
             "rewards": ("cost", "restock_amount", "unlock_minutes"),
             "penalties": ("points",),
             "bonuses": ("points",),
-            "completions": ("points_awarded", "timed_duration_seconds"),
+            "completions": ("points_awarded", "timed_duration_seconds", "quality_rating"),
             "points_transactions": ("points",),
             "mandatory_misses": ("penalty_points", "postpone_count", "escalation_stage"),
             "pool_allocations": ("allocated_points",),
@@ -1322,10 +1642,15 @@ class TaskMateStorage:
         }
         _NUMERIC_SETTINGS = (
             "history_days",
+            "chore_undo_seconds",
             "weekend_multiplier",
+            "birthday_points_multiplier",
             "difficulty_multiplier_easy",
             "difficulty_multiplier_medium",
             "difficulty_multiplier_hard",
+            "quality_rating_multiplier_1",
+            "quality_rating_multiplier_2",
+            "quality_rating_multiplier_3",
             "calendar_projection_days",
             "surprise_bonus_chance",
             "surprise_bonus_min",
@@ -1431,6 +1756,13 @@ class TaskMateStorage:
             if isinstance(chore, dict) and "completion_sound" in chore:
                 if not is_valid_completion_sound(str(chore.get("completion_sound") or "")):
                     chore["completion_sound"] = "coin"
+
+        # Wishes (#932): a restored backup must not smuggle in a javascript:
+        # link or a foreign image URL. The model normalises every field it
+        # reads, so a round trip through it is the sanitiser.
+        self._data["wishes"] = [
+            Wish.from_dict(w).to_dict() for w in self._data.get("wishes", []) or [] if isinstance(w, dict)
+        ]
 
         for grp in self._data.get("task_groups", []):
             if isinstance(grp, dict) and grp.get("policy") not in TASK_GROUP_POLICIES:
@@ -1652,6 +1984,12 @@ class TaskMateStorage:
         """Remove a timed session."""
         self._data["timed_sessions"] = [s for s in self._data.get("timed_sessions", []) if s.get("id") != session_id]
 
+    def remove_timed_sessions_for_child(self, child_id: str) -> None:
+        """Drop a deleted child's timed sessions (#946)."""
+        self._data["timed_sessions"] = [
+            s for s in self._data.get("timed_sessions", []) if s.get("child_id") != child_id
+        ]
+
     # Generic settings
     def get_setting(self, key: str, default: Any = "") -> Any:
         """Get a generic setting value (may be a bool/number/list, not just str)."""
@@ -1729,6 +2067,22 @@ class TaskMateStorage:
         """Remove all career score history for a child."""
         history = self._data.get("career_score_history", {})
         history.pop(child_id, None)
+
+    # Daily progress (#966): {child_id: [{"date", "due", "done"}]}
+    def get_daily_progress(self, child_id: str) -> list[dict]:
+        """Stored daily done/total entries for a child, oldest first."""
+        return list(self._data.get("daily_progress", {}).get(child_id, []))
+
+    def upsert_daily_progress(self, child_id: str, date_str: str, due: int, done: int, cutoff: str) -> None:
+        """Record one day's done/total for a child and drop entries before ``cutoff``."""
+        history = self._data.setdefault("daily_progress", {})
+        entries = [e for e in history.get(child_id, []) if e.get("date") != date_str and e.get("date", "") >= cutoff]
+        entries.append({"date": date_str, "due": due, "done": done})
+        history[child_id] = sorted(entries, key=lambda e: e["date"])
+
+    def remove_daily_progress_for_child(self, child_id: str) -> None:
+        """Drop a deleted child's daily progress history."""
+        self._data.get("daily_progress", {}).pop(child_id, None)
 
     def prune_all_done_flags(self, keep_date: str) -> None:
         """Drop all-chores-done flags for dates other than keep_date.

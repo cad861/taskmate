@@ -40,13 +40,28 @@ class TaskMateActivityCard extends LitElement {
     return [
       "Weekend bonus", "Streak milestone bonus", "Perfect week bonus",
       "Allocated to pool:", "Pool refund", "Points decay",
-      "Savings interest", "Badge",
+      "Savings interest", "Badge", "Streak freeze",
+      "Wish savings", "Wish refund", "Wish pledge", "Wish redeemed",
     ];
   }
 
   _txnReversible(reason) {
     const r = reason || "";
     return !TaskMateActivityCard._UNDO_DENY_PREFIXES.some(p => r.startsWith(p));
+  }
+
+  // Streak-freeze token movements (#925) are logged as zero-point rows. Worded
+  // as points they would read "lost 0", so both render paths give them their
+  // own line: the child, the translated reason, a snowflake — no points.
+  // Wishlist pledges and redemptions (#932) are zero-point rows too — the
+  // pledged points never touch the child's balance — and share the same line.
+  _isFreezeEntry(item) {
+    const reason = item.reason || "";
+    return !item.points && (reason.startsWith("Streak freeze") || reason.startsWith("Wish "));
+  }
+
+  _isWishEntry(item) {
+    return (item.reason || "").startsWith("Wish ");
   }
 
   shouldUpdate(changedProps) {
@@ -73,8 +88,12 @@ class TaskMateActivityCard extends LitElement {
       ['Pool refund (reward sold out):', 'activity.reason_pool_refund_sold_out'],
       ['Pool refund (reward cost reduced):', 'activity.reason_pool_refund_cost_reduced'],
       ['Pool refund (reward deleted):', 'activity.reason_pool_refund_deleted'],
+      ['Pool refund (reward funding changed):', 'activity.reason_pool_refund_funding_changed'],
+      ['Pool refund (reward assignment changed):', 'activity.reason_pool_refund_assignment_changed'],
       ['Penalty:', 'activity.reason_penalty'],
       ['Bonus:', 'activity.reason_bonus'],
+      // Surprise inspections (#981): the pass bonus.
+      ['Inspection passed:', 'activity.reason_inspection_passed'],
     ];
     for (const [prefix, key] of prefixMap) {
       if (reason.startsWith(prefix)) {
@@ -97,6 +116,42 @@ class TaskMateActivityCard extends LitElement {
     const streakMatch = reason.match(/^Streak milestone bonus \((\d+) day streak!\)$/);
     if (streakMatch) {
       return this._t('activity.reason_streak_milestone', { days: streakMatch[1] });
+    }
+    // Streak freeze tokens (#925). Zero-point rows: the reason is the news.
+    const freezeUsed = reason.match(/^Streak freeze used \((\d{4}-\d{2}-\d{2})\)$/);
+    if (freezeUsed) {
+      return this._t('activity.reason_streak_freeze_used', { date: freezeUsed[1] });
+    }
+    const freezeEarned = reason.match(/^Streak freeze earned \((\d+) day streak!\)$/);
+    if (freezeEarned) {
+      return this._t('activity.reason_streak_freeze_earned', { days: freezeEarned[1] });
+    }
+    const freezeAdjusted = reason.match(/^Streak freezes adjusted \(([+-]\d+)\)$/);
+    if (freezeAdjusted) {
+      return this._t('activity.reason_streak_freeze_adjusted', { delta: freezeAdjusted[1] });
+    }
+    if (reason === 'Streak freeze reversed') {
+      return this._t('activity.reason_streak_freeze_reversed');
+    }
+    // Wishlist (#932). Pledges carry who and how much, so they need a match
+    // rather than a prefix.
+    const wishPrefixes = [
+      ['Wish savings taken back:', 'activity.reason_wish_taken_back'],
+      ['Wish savings:', 'activity.reason_wish_savings'],
+      ['Wish refund (declined):', 'activity.reason_wish_refund_declined'],
+      ['Wish refund (removed):', 'activity.reason_wish_refund_removed'],
+      ['Wish redeemed:', 'activity.reason_wish_redeemed'],
+    ];
+    for (const [prefix, key] of wishPrefixes) {
+      if (reason.startsWith(prefix)) return this._t(key, { name: reason.slice(prefix.length).trim() });
+    }
+    const pledgeAdded = reason.match(/^Wish pledge from (.+) \(\+(\d+)\): (.*)$/);
+    if (pledgeAdded) {
+      return this._t('activity.reason_wish_pledge', { who: pledgeAdded[1], points: pledgeAdded[2], name: pledgeAdded[3] });
+    }
+    const pledgeGone = reason.match(/^Wish pledge (removed|voided) \((.+), (\d+)\): (.*)$/);
+    if (pledgeGone) {
+      return this._t(`activity.reason_wish_pledge_${pledgeGone[1]}`, { who: pledgeGone[2], points: pledgeGone[3], name: pledgeGone[4] });
     }
     return reason;
   }
@@ -156,7 +211,7 @@ class TaskMateActivityCard extends LitElement {
       .header-meta {
         font-size: 0.78rem;
         color: rgba(255, 255, 255, 0.85);
-        margin-left: 2px;
+        margin-inline-start: 2px;
         white-space: nowrap;
       }
 
@@ -228,7 +283,7 @@ class TaskMateActivityCard extends LitElement {
         letter-spacing: 0.2px;
         font-weight: 500;
         opacity: 0.75;
-        margin-left: 4px;
+        margin-inline-start: 4px;
       }
 
       /* ── Activity item ─────────────────────────────────── */
@@ -253,6 +308,9 @@ class TaskMateActivityCard extends LitElement {
       .activity-item.t-penalty    .event-stripe { background: var(--tm-stripe-penalty); }
       .activity-item.t-reward     .event-stripe { background: var(--tm-stripe-reward); }
       .activity-item.t-bonus      .event-stripe { background: var(--tm-stripe-bonus); }
+      .activity-item.t-inspection .event-stripe { background: #f39c12; }
+      .activity-icon.t-inspection { background: rgba(243,156,18,0.16); color: #c2740a; }
+      .activity-insp-note { font-size: 0.8rem; font-style: italic; color: var(--secondary-text-color); margin-top: 2px; overflow-wrap: anywhere; }
 
       .activity-row {
         flex: 1;
@@ -315,6 +373,13 @@ class TaskMateActivityCard extends LitElement {
         color: var(--secondary-text-color);
         font-style: normal;
       }
+      .activity-reject-reason {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--tm-stripe-rejected, #ef4444);
+        margin-top: 2px;
+        overflow-wrap: anywhere;
+      }
 
       .activity-meta {
         display: flex;
@@ -328,7 +393,7 @@ class TaskMateActivityCard extends LitElement {
       .activity-time { color: var(--secondary-text-color); }
       .activity-ago::before {
         content: "·";
-        margin-right: 4px;
+        margin-inline-end: 4px;
         opacity: 0.6;
       }
 
@@ -407,7 +472,7 @@ class TaskMateActivityCard extends LitElement {
         justify-content: center;
         width: 28px;
         height: 28px;
-        margin-left: 2px;
+        margin-inline-start: 2px;
         border-radius: 50%;
         border: 1px solid var(--divider-color, #e0e0e0);
         background: transparent;
@@ -431,6 +496,11 @@ class TaskMateActivityCard extends LitElement {
       .tmd-undo { padding: 4px 11px; }
       .act-line { font-weight: 700; font-size: 13.5px; line-height: 1.35; }
       .act-line .reason { font-weight: 400; color: var(--tmd-dim); }
+      .act-insp-note { font-size: 12px; font-style: italic; font-weight: 400; color: var(--tmd-dim); margin-top: 2px; overflow-wrap: anywhere; }
+      .act-reject-reason { font-size: 12px; font-weight: 600; color: var(--tmd-bad); margin-top: 2px; overflow-wrap: anywhere; }
+      /* Quality rating the parent gave at approval (#927), both render paths. */
+      .act-rating { color: var(--tmd-gold, #f5b301); font-weight: 700; letter-spacing: 1px; white-space: nowrap; }
+      .act-rating .off { color: var(--tmd-dim, var(--secondary-text-color, #999)); font-weight: 400; }
       .act-ago { font-size: 11.5px; }
       .act-rel { opacity: 0.8; }
 
@@ -446,14 +516,14 @@ class TaskMateActivityCard extends LitElement {
       .act-cn-row { gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--tmd-border); }
       .act-cn-row:last-child { border-bottom: none; }
       .act-cn-mid { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; }
-      .act-cn-time { font-size: 11px; flex-shrink: 0; text-align: right; line-height: 1.3; white-space: nowrap; }
+      .act-cn-time { font-size: 11px; flex-shrink: 0; text-align: end; line-height: 1.3; white-space: nowrap; }
 
       /* Clean Pro — connecting rail */
-      .act-cp-rail { position: relative; padding-left: 26px; }
-      .act-cp-line { position: absolute; left: 11px; top: 6px; bottom: 6px; width: 2px; background: var(--tmd-border); }
+      .act-cp-rail { position: relative; padding-inline-start: 26px; }
+      .act-cp-line { position: absolute; inset-inline-start: 11px; top: 6px; bottom: 6px; width: 2px; background: var(--tmd-border); }
       .act-cp { gap: 14px; }
       .act-cp-node { position: relative; }
-      .act-cp-dot { position: absolute; left: -26px; top: 0; width: 22px; height: 22px; border-radius: 50%;
+      .act-cp-dot { position: absolute; inset-inline-start: -26px; top: 0; width: 22px; height: 22px; border-radius: 50%;
         background: color-mix(in srgb, var(--ac, var(--tmd-accent)) 18%, transparent); color: var(--ac, var(--tmd-accent));
         display: grid; place-items: center; font-size: 11px; line-height: 1; box-shadow: 0 0 0 3px var(--tmd-surface); }
       .act-cp-head { justify-content: space-between; align-items: flex-start; gap: 10px; }
@@ -463,7 +533,7 @@ class TaskMateActivityCard extends LitElement {
       /* Vertical scroll (parity with classic) — extend to the card edge so the
          scrollbar sits at the edge, not floating inset by the body padding. */
       .act-pl, .act-cn, .act-cp-rail { max-height: 360px; overflow-y: auto;
-        margin-right: -15px; padding-right: 8px; }
+        margin-inline-end: -15px; padding-inline-end: 8px; }
 
       /* Undo confirm overlay (works in classic + designed; no mwc dependency) */
       .undo-ov { position: fixed; inset: 0; z-index: 99; display: grid; place-items: center;
@@ -513,15 +583,17 @@ class TaskMateActivityCard extends LitElement {
   _eventBucket(item) {
     const t = item.type || "chore";
     if (t === "points_added" || t === "points_removed") return "adjustments";
-    if (t === "reward" || t === "reward_claimed" || t === "reward_approved") return "rewards";
+    if (t === "reward" || t === "reward_claimed" || t === "reward_approved" || t === "reward_rejected") return "rewards";
     return "chores";
   }
 
   _classifyItem(item) {
     const t = item.type || "chore";
+    if (t === "chore_rejected" || t === "reward_rejected") return "rejected";
+    if (t.startsWith("inspection_")) return "inspection";
     if (t === "points_added") {
       const reason = item.reason || "";
-      if (reason.startsWith("Bonus:") || reason.startsWith("Perfect week bonus") ||
+      if (reason.startsWith("Bonus:") || reason.startsWith("Inspection passed:") || reason.startsWith("Perfect week bonus") ||
           reason.startsWith("Weekend bonus") || reason.startsWith("Streak milestone bonus")) {
         return "bonus";
       }
@@ -689,19 +761,45 @@ class TaskMateActivityCard extends LitElement {
     const ago = this._formatAgo(new Date(item.completed_at));
     const klass = this._classifyItem(item);
 
+    // ── Streak-freeze tokens (#925) ───────────────────────
+    if ((type === "points_added" || type === "points_removed") && this._isFreezeEntry(item)) {
+      return html`
+        <div class="activity-item t-bonus">
+          ${this.config.accent_stripes !== false ? html`<div class="event-stripe"></div>` : ''}
+          <div class="activity-row">
+            <div class="activity-icon t-bonus">
+              <ha-icon icon="${this._isWishEntry(item) ? "mdi:heart" : "mdi:snowflake"}"></ha-icon>
+            </div>
+            <div class="activity-body">
+              <div class="activity-title">
+                <strong>${childName}</strong>
+                <span class="reason">— ${this._translateReason(item.reason)}</span>
+              </div>
+              <div class="activity-meta">
+                <span class="activity-time">${time}</span>
+                ${this.config.show_relative_time !== false ? html`<span class="activity-ago">${ago}</span>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     // ── Manual points transactions ────────────────────────
     if (type === "points_added" || type === "points_removed") {
       const isAdd = type === "points_added";
       const pts = Math.abs(item.points || 0);
       const reason = item.reason || '';
       const isPenalty = reason.startsWith('Penalty:');
-      const isPoolAllocation = reason.startsWith('Allocated to pool:');
+      // Saving into a wish (#932) is the same kind of move as a savings jar.
+      const isPoolAllocation = reason.startsWith('Allocated to pool:') || reason.startsWith('Wish savings:');
       const isSpend = !isAdd && !isPenalty && isPoolAllocation;
       const verb = isAdd ? this._t('activity.received')
                  : isSpend ? this._t('activity.spent')
                  : this._t('activity.lost');
       const pillClass = isAdd ? 'gain' : (isSpend ? 'spend' : 'loss');
-      const icon = isAdd ? 'mdi:star-plus' : (isPenalty ? 'mdi:minus-circle' : 'mdi:star-minus');
+      const icon = reason.startsWith('Inspection passed:') ? 'mdi:magnify-scan'
+        : isAdd ? 'mdi:star-plus' : (isPenalty ? 'mdi:minus-circle' : 'mdi:star-minus');
       const displayReason = this._translateReason(item.reason);
 
       return html`
@@ -729,6 +827,60 @@ class TaskMateActivityCard extends LitElement {
             ${this._txnReversible(reason)
               ? this._renderUndoButton('txn', item.transaction_id, displayReason || reason, childName, pts)
               : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    // ── Surprise inspections (#981) ───────────────────────
+    if (type.startsWith("inspection_")) {
+      const d = this._inspectionText(item);
+      return html`
+        <div class="activity-item t-inspection">
+          ${this.config.accent_stripes !== false ? html`<div class="event-stripe"></div>` : ''}
+          <div class="activity-row">
+            <div class="activity-icon t-inspection">
+              <ha-icon icon="${type === "inspection_redo" ? "mdi:restore" : "mdi:magnify-scan"}"></ha-icon>
+            </div>
+            <div class="activity-body">
+              <div class="activity-title">
+                <strong>${childName}</strong> · ${d.label}
+                <span class="reason">— ${d.name}</span>
+              </div>
+              ${item.note ? html`<div class="activity-insp-note">“${item.note}”</div>` : ''}
+              <div class="activity-meta">
+                <span class="activity-time">${time}</span>
+                ${this.config.show_relative_time !== false ? html`<span class="activity-ago">${ago}</span>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // ── Rejected with a reason (#976) ─────────────────────
+    if (type === "chore_rejected" || type === "reward_rejected") {
+      const isReward = type === "reward_rejected";
+      const name = (isReward ? item.reward_name : item.chore_name)
+        || this._t(isReward ? 'activity.a_reward' : 'activity.a_chore');
+      return html`
+        <div class="activity-item t-rejected">
+          ${this.config.accent_stripes !== false ? html`<div class="event-stripe"></div>` : ''}
+          <div class="activity-row">
+            <div class="activity-icon t-rejected">
+              <ha-icon icon="${isReward ? 'mdi:gift-off-outline' : 'mdi:close-circle'}"></ha-icon>
+            </div>
+            <div class="activity-body">
+              <div class="activity-title">
+                <strong>${childName}</strong> · ${name}
+                <span class="activity-status rejected">${this._t('common.rejected')}</span>
+              </div>
+              ${item.reason ? html`<div class="activity-reject-reason">${this._t('activity.rejected_reason', { reason: item.reason })}</div>` : ''}
+              <div class="activity-meta">
+                <span class="activity-time">${time}</span>
+                ${this.config.show_relative_time !== false ? html`<span class="activity-ago">${ago}</span>` : ''}
+              </div>
+            </div>
           </div>
         </div>
       `;
@@ -792,6 +944,7 @@ class TaskMateActivityCard extends LitElement {
           <div class="activity-body">
             <div class="activity-title">
               <strong>${childName}</strong> · ${choreName}
+              ${this._ratingStars(item)}
               ${status !== 'approved' ? html`
                 <span class="activity-status ${status}">${this._t('common.' + status)}</span>
               ` : ''}
@@ -815,6 +968,14 @@ class TaskMateActivityCard extends LitElement {
     `;
   }
 
+  // Stars a parent gave the approval (#927); nothing for unrated completions.
+  _ratingStars(item) {
+    const n = Number(item && item.rating) || 0;
+    if (n < 1 || n > 3) return '';
+    const label = this._t('activity.rated', { count: n });
+    return html`<span class="act-rating" title="${label}" aria-label="${label}" role="img">${'★'.repeat(n)}<span class="off">${'☆'.repeat(3 - n)}</span></span>`;
+  }
+
   // ── Undo affordance ──────────────────────────────────────
   // kind: 'chore' (undo an approval → pending) or 'txn' (reverse a points txn).
   _renderUndoButton(kind, id, detail, child, points) {
@@ -832,7 +993,7 @@ class TaskMateActivityCard extends LitElement {
         ?disabled=${loading}
         @click=${() => { this._confirm = { kind, id, message }; }}
       >
-        <ha-icon icon="mdi:undo-variant"></ha-icon>
+        <ha-icon class="tm-rtl-flip" icon="mdi:undo-variant"></ha-icon>
       </button>
     `;
   }
@@ -851,7 +1012,7 @@ class TaskMateActivityCard extends LitElement {
               ${this._t('common.cancel')}
             </button>
             <button class="undo-modal-btn go" @click=${() => this._doUndo()}>
-              ↩ ${this._t('activity.undo')}
+              ${this.getAttribute?.("dir") === "rtl" ? "↪" : "↩"} ${this._t('activity.undo')}
             </button>
           </div>
         </div>
@@ -892,6 +1053,20 @@ class TaskMateActivityCard extends LitElement {
      Ported from docs/design/redesigns/frag/17-activity.html
   ══════════════════════════════════════════════════════════════════════ */
 
+  // Surprise inspections (#981): label + chore for an inspection_* event.
+  _inspectionText(item) {
+    const keys = {
+      inspection_started: 'activity.inspection_started',
+      inspection_passed: 'activity.inspection_passed',
+      inspection_failed: 'activity.inspection_failed',
+      inspection_redo: 'activity.inspection_redo',
+    };
+    return {
+      label: this._t(keys[item.type] || 'activity.inspection_started'),
+      name: item.chore_name || this._t('activity.a_chore'),
+    };
+  }
+
   // Normalise a raw event into a descriptor the designed renderers consume.
   // Preserves the SAME undo affordance/handler used by the classic path.
   _describeEvent(item, childNames, pointsIcon, chorePointsMap) {
@@ -900,18 +1075,31 @@ class TaskMateActivityCard extends LitElement {
     const ago = this._formatAgo(new Date(item.completed_at)) || this._formatTime(new Date(item.completed_at));
     const time = this._formatTime(new Date(item.completed_at));
 
+    if ((type === "points_added" || type === "points_removed") && this._isFreezeEntry(item)) {
+      const displayReason = this._translateReason(item.reason);
+      return {
+        childName, tone: 'accent', emoji: this._isWishEntry(item) ? '💝' : '❄️', sign: '', pts: '',
+        text: html`<strong>${childName}</strong> <span class="reason">— ${displayReason}</span>`,
+        plain: `${childName} · ${displayReason}`,
+        ago, time,
+        ptsClass: 'accent',
+        undo: null,
+      };
+    }
+
     if (type === "points_added" || type === "points_removed") {
       const isAdd = type === "points_added";
       const pts = Math.abs(item.points || 0);
       const reason = item.reason || '';
       const isPenalty = reason.startsWith('Penalty:');
-      const isPoolAllocation = reason.startsWith('Allocated to pool:');
+      // Saving into a wish (#932) is the same kind of move as a savings jar.
+      const isPoolAllocation = reason.startsWith('Allocated to pool:') || reason.startsWith('Wish savings:');
       const isSpend = !isAdd && !isPenalty && isPoolAllocation;
       const displayReason = this._translateReason(item.reason);
       const verb = isAdd ? this._t('activity.received') : isSpend ? this._t('activity.spent') : this._t('activity.lost');
       const sign = isAdd ? '+' : '−';
       const tone = isAdd ? 'good' : (isSpend ? 'accent' : 'bad');
-      const emoji = isAdd ? '⭐' : (isPenalty ? '⚠️' : '➖');
+      const emoji = reason.startsWith('Inspection passed:') ? '🔍' : isAdd ? '⭐' : (isPenalty ? '⚠️' : '➖');
       return {
         childName, tone, emoji, sign, pts,
         text: html`<strong>${childName}</strong> ${verb} <strong>${pts}</strong>${item.reason ? html` <span class="reason">— ${displayReason}</span>` : ''}`,
@@ -921,6 +1109,34 @@ class TaskMateActivityCard extends LitElement {
         undo: this._txnReversible(reason)
           ? { kind: 'txn', id: item.transaction_id, detail: displayReason || reason, child: childName, points: pts }
           : null,
+      };
+    }
+
+    if (type.startsWith("inspection_")) {
+      const d = this._inspectionText(item);
+      return {
+        childName, tone: type === "inspection_failed" ? 'accent' : 'good',
+        emoji: type === "inspection_redo" ? '🔁' : '🔍', sign: '', pts: '',
+        text: html`<strong>${childName}</strong> · ${d.label} <span class="reason">— ${d.name}</span>${item.note ? html`<div class="act-insp-note">“${item.note}”</div>` : ''}`,
+        plain: `${childName} · ${d.label} — ${d.name}`,
+        ago, time,
+        ptsClass: 'good',
+        undo: null,
+      };
+    }
+
+    if (type === "chore_rejected" || type === "reward_rejected") {
+      const isReward = type === "reward_rejected";
+      const name = (isReward ? item.reward_name : item.chore_name)
+        || this._t(isReward ? 'activity.a_reward' : 'activity.a_chore');
+      const why = item.reason ? this._t('activity.rejected_reason', { reason: item.reason }) : '';
+      return {
+        childName, tone: 'bad', emoji: '↩️', sign: '', pts: '',
+        text: html`<strong>${childName}</strong> · ${name} <span class="reason">— ${this._t('common.rejected')}</span>${why ? html`<div class="act-reject-reason">${why}</div>` : ''}`,
+        plain: `${childName} · ${name} · ${this._t('common.rejected')}${why ? ` — ${why}` : ''}`,
+        ago, time,
+        ptsClass: 'bad',
+        undo: null,
       };
     }
 
@@ -946,8 +1162,10 @@ class TaskMateActivityCard extends LitElement {
     const emoji = status === 'approved' ? '✅' : status === 'rejected' ? '❌' : '⏳';
     return {
       childName, tone, emoji, sign: '+', pts,
-      text: html`<strong>${childName}</strong> ${this._t('activity.completed')} ${choreName}`,
+      text: html`<strong>${childName}</strong> ${this._t('activity.completed')} ${choreName} ${this._ratingStars(item)}`,
       plain: `${childName} · ${choreName}`,
+      // Console renders `plain`, so it carries the stars separately.
+      stars: this._ratingStars(item),
       ago, time,
       ptsClass: status === 'approved' ? 'good' : status === 'rejected' ? 'bad' : 'muted',
       undo: status === 'approved'
@@ -963,7 +1181,7 @@ class TaskMateActivityCard extends LitElement {
       ? this._t('activity.undo_confirm_chore', { detail: undo.detail, child: undo.child, points: undo.points })
       : this._t('activity.undo_confirm_txn', { detail: undo.detail, child: undo.child, points: undo.points });
     return html`<button class="btn ghost sm tmd-undo" ?disabled=${loading}
-      @click=${() => { this._confirm = { kind: undo.kind, id: undo.id, message }; }}>↩ ${label}</button>`;
+      @click=${() => { this._confirm = { kind: undo.kind, id: undo.id, message }; }}>${this.getAttribute?.("dir") === "rtl" ? "↪" : "↩"} ${label}</button>`;
   }
 
   _designFilterChips() {
@@ -1065,7 +1283,7 @@ class TaskMateActivityCard extends LitElement {
           <div class="row act-cn-row" style="--ac:var(--tmd-${r.tone})">
             ${this._stripe(r)}
             <div class="av" style="--av:26px;--ac:var(--tmd-${r.tone})">${r.emoji}</div>
-            <div class="act-cn-mid">${r.plain} <span class="num" style="color:var(--tmd-${r.ptsClass})">${r.sign}${r.pts}</span></div>
+            <div class="act-cn-mid">${r.plain} ${r.stars || ''} <span class="num" style="color:var(--tmd-${r.ptsClass})">${r.sign}${r.pts}</span></div>
             ${this._designUndoBtn(r.undo, this._t('activity.undo'))}
             <div class="num muted act-cn-time">${this._timeMeta(r)}</div>
           </div>`)}
@@ -1175,7 +1393,7 @@ class TaskMateActivityCardEditor extends LitElement {
       .preset-swatch { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--divider-color, #e0e0e0); transition: transform 0.1s; padding: 0; }
       .preset-swatch:hover { transform: scale(1.15); }
       .preset-swatch.active { border-color: var(--primary-text-color); box-shadow: 0 0 0 2px var(--primary-color); }
-      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-left: auto; }
+      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-inline-start: auto; }
       .colour-helper { color: var(--secondary-text-color); font-size: 0.82rem; line-height: 1.3; }
     `;
   }

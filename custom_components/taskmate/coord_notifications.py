@@ -15,39 +15,74 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 
 from . import authz
 from .const import (
     DEFAULT_NOTIFICATION_GROUP,
     DEFAULT_NOTIFICATION_NAV_URL,
     NOTIF_TYPE_ALL_CHORES_DONE,
+    NOTIF_TYPE_AUCTION_CLOSING,
+    NOTIF_TYPE_AUCTION_OPENED,
+    NOTIF_TYPE_AUCTION_RESULT,
     NOTIF_TYPE_BADGE_EARNED,
     NOTIF_TYPE_BEDTIME_REMINDER,
+    NOTIF_TYPE_BIRTHDAY,
+    NOTIF_TYPE_BOUNTY_CLAIM_LAPSING,
+    NOTIF_TYPE_BOUNTY_POSTED,
     NOTIF_TYPE_CELEBRATION,
     NOTIF_TYPE_FAMILY_GOAL_REACHED,
+    NOTIF_TYPE_INSPECTION_PASSED,
+    NOTIF_TYPE_INSPECTION_REMINDER,
+    NOTIF_TYPE_INSPECTION_STARTED,
+    NOTIF_TYPE_ITEM_REJECTED,
     NOTIF_TYPE_LEVEL_UP,
     NOTIF_TYPE_MANDATORY_PARENT_ALERT,
     NOTIF_TYPE_MANDATORY_REMINDER,
     NOTIF_TYPE_MONTHLY_REPORT,
     NOTIF_TYPE_PENDING_CHORE_APPROVAL,
     NOTIF_TYPE_PENDING_REWARD_CLAIM,
+    NOTIF_TYPE_PRESENCE_ARRIVAL,
+    NOTIF_TYPE_RECAP_READY,
     NOTIF_TYPE_SEASON_CHAMPION,
     NOTIF_TYPE_STREAK_AT_RISK,
+    NOTIF_TYPE_STREAK_FREEZE_USED,
     NOTIF_TYPE_STREAK_MILESTONE,
     NOTIF_TYPE_WEEKLY_DIGEST,
+    NOTIF_TYPE_WISH_PLEDGED,
+    NOTIF_TYPE_WISH_REQUESTED,
+    QUALITY_RATINGS,
 )
 from .models import NotificationRoute
 from .timewindow import is_within_window, parse_hhmm
 
 _LOGGER = logging.getLogger(__name__)
 
+DEFAULT_MORNING_NOTIFY_TIME = "08:00"
+
 # Appended to actionable notifications sent to non-mobile_app backends, which
 # silently ignore tap actions. Gives those recipients a way to act.
 _APPROVE_IN_PANEL_HINT = "Open the TaskMate panel to approve or reject."
+
+# Mobile action id prefix for "approve with an N-star quality rating" (#927):
+# TASKMATE_RATE_<n>_<completion id>. Distinct from TASKMATE_APPROVE_ so the
+# original Approve/Reject ids keep working unchanged when ratings are off.
+_RATE_ACTION_PREFIX = "TASKMATE_RATE_"
+
+
+def _reject_action(entry_id: str) -> dict[str, str]:
+    """The Reject button of an approval push, with a reply box for the reason (#976)."""
+    return {
+        "action": f"TASKMATE_REJECT_{entry_id}",
+        "title": "Reject",
+        "behavior": "textInput",
+        "textInputButtonTitle": "Reject",
+        "textInputPlaceholder": "Reason (optional)",
+    }
 
 
 def _approval_tag(entry_id: str) -> str:
@@ -87,9 +122,70 @@ NOTIFICATION_TYPES: list[NotificationTypeMeta] = [
     NotificationTypeMeta(NOTIF_TYPE_MONTHLY_REPORT, "parent", False, False, False, False),
     NotificationTypeMeta(NOTIF_TYPE_SEASON_CHAMPION, "both", False, False, False, False),
     NotificationTypeMeta(NOTIF_TYPE_FAMILY_GOAL_REACHED, "both", False, False, False, False),
+    # Birthday mode (#924): a morning "happy birthday" to the child, at a
+    # per-child time (08:00 when none is set).
+    NotificationTypeMeta(NOTIF_TYPE_BIRTHDAY, "child", True, True, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_STREAK_FREEZE_USED, "both", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_PRESENCE_ARRIVAL, "child", False, False, False, False),
+    # Wishlist (#932): a parent hears about a new wish to approve; the child
+    # hears when someone pledges towards one of theirs. Off until turned on,
+    # like every type added after the first release.
+    NotificationTypeMeta(NOTIF_TYPE_WISH_REQUESTED, "parent", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_WISH_PLEDGED, "child", False, False, False, False),
+    # Bounty board (#931), both opt-in: a new bounty for the children it's
+    # open to (when the parent ticks "notify"), and a warning to the claimer
+    # shortly before their claim lapses.
+    NotificationTypeMeta(NOTIF_TYPE_BOUNTY_POSTED, "child", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_BOUNTY_CLAIM_LAPSING, "child", False, False, False, False),
+    # Recaps (#929): one push per child plus one grouped parent message, sent
+    # at the recap send time rather than at midnight when they're built. Off
+    # at install; switched on the first time a parent turns recaps on (#944).
+    NotificationTypeMeta(NOTIF_TYPE_RECAP_READY, "both", True, False, False, False),
+    # Reject reasons (#976): the child hears their chore / claim was sent
+    # back, with the parent's reason. Off until turned on.
+    NotificationTypeMeta(NOTIF_TYPE_ITEM_REJECTED, "child", False, False, False, False),
+    # Chore auctions (#982), all opt-in: an auction opened and bidding closing
+    # within the hour go to the children who may bid (when the parent ticks
+    # "tell children"); the result goes to them and to the parents.
+    NotificationTypeMeta(NOTIF_TYPE_AUCTION_OPENED, "child", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_AUCTION_CLOSING, "child", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_AUCTION_RESULT, "both", False, False, False, False),
+    # Surprise inspections (#981): the child hears one is coming (when they're
+    # told) and that it passed — both off until turned on. The parent's
+    # reminder before an undecided inspection closes quietly is on: it only
+    # ever fires for an inspection a parent started (or switched on).
+    NotificationTypeMeta(NOTIF_TYPE_INSPECTION_STARTED, "child", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_INSPECTION_PASSED, "child", False, False, False, False),
+    NotificationTypeMeta(NOTIF_TYPE_INSPECTION_REMINDER, "parent", False, False, False, True),
 ]
 
 NOTIFICATION_TYPES_BY_ID: dict[str, NotificationTypeMeta] = {t.id: t for t in NOTIFICATION_TYPES}
+
+# Types whose feature fires its own ``taskmate_<type>`` event (#1014). Their
+# notification-side event is ``taskmate_<type>_notification`` instead, so an
+# automation on the feature event runs once, not twice.
+_OWN_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        NOTIF_TYPE_AUCTION_OPENED,
+        NOTIF_TYPE_BADGE_EARNED,
+        NOTIF_TYPE_BOUNTY_POSTED,
+        NOTIF_TYPE_CELEBRATION,
+        NOTIF_TYPE_FAMILY_GOAL_REACHED,
+        NOTIF_TYPE_INSPECTION_PASSED,
+        NOTIF_TYPE_INSPECTION_STARTED,
+        NOTIF_TYPE_LEVEL_UP,
+        NOTIF_TYPE_SEASON_CHAMPION,
+        NOTIF_TYPE_STREAK_FREEZE_USED,
+        NOTIF_TYPE_WISH_PLEDGED,
+    }
+)
+
+
+def notification_event_name(type_id: str) -> str:
+    """The bus event fired when a notification of ``type_id`` goes out."""
+    if type_id in _OWN_EVENT_TYPES:
+        return f"taskmate_{type_id}_notification"
+    return f"taskmate_{type_id}"
 
 
 def _validate_nav_url(value: str) -> str:
@@ -128,6 +224,31 @@ def _validate_group(value: str) -> str:
     return value
 
 
+# Presence-aware reminders (#926): the child-facing nags that wait for a child
+# who is out. Custom reminders are held too (see _make_custom_callback). Good
+# news (badges, level-ups, celebrations) is never held — only the nagging.
+_PRESENCE_DEFERRED_TYPES = frozenset(
+    {
+        NOTIF_TYPE_BEDTIME_REMINDER,
+        NOTIF_TYPE_STREAK_AT_RISK,
+        NOTIF_TYPE_MANDATORY_REMINDER,
+    }
+)
+
+_PRESENCE_HOME_STATES = ("home", "on", "true", "present")
+
+
+def _presence_is_home(state: str | None) -> bool | None:
+    """Read a presence state: True home, False away, None when it can't tell.
+
+    ``unavailable``/``unknown`` are "can't tell" rather than away, so a flaky
+    tracker neither starts an absence nor fakes an arrival.
+    """
+    if state is None or state in ("unavailable", "unknown", ""):
+        return None
+    return str(state).lower() in _PRESENCE_HOME_STATES
+
+
 # Quiet hours reuse the shared time-of-day window helpers (also used by
 # time-locked rewards, #857).
 _parse_hhmm = parse_hhmm
@@ -149,6 +270,12 @@ class NotificationCoordinator:
         self.storage = storage
         self._scheduled_unsubs: list = []  # cancellation handles for time triggers
         self.coordinator: Any = None
+        # Presence-aware reminders (#926). Runtime-only: child_id -> linked
+        # entity, when each child left, and who had a reminder held back.
+        self._presence_unsub = None
+        self._presence_entities: dict[str, str] = {}
+        self._presence_away_since: dict[str, datetime] = {}
+        self._presence_deferred: set[str] = set()
 
     async def fire(
         self,
@@ -196,6 +323,10 @@ class NotificationCoordinator:
                 continue
             notify_service = self._resolve_notify_service(recipient_id)
             if not notify_service:
+                continue
+            if type_id in _PRESENCE_DEFERRED_TYPES and self._defer_if_away(recipient_id):
+                # The child is out (#926): hold the nag for the arrival nudge
+                # instead of buzzing them at the park.
                 continue
             await self._send_to(notify_service, message, meta, context, nav_url, group)
             recipients_fired.append(recipient_id)
@@ -301,6 +432,20 @@ class NotificationCoordinator:
             "month": "January 2026",
             "goal_name": "Movie night fund",
             "goal_reward": "a family movie night",
+            "multiplier": "2",
+            "count": 3,
+            "wish_name": "Lego set",
+            "target": 600,
+            "pledger": "Grandma",
+            "bounty_name": "Wash the car",
+            "minutes": 15,
+            "period": "January",
+            "item_name": "Tidy room",
+            "reason": "Not finished",
+            "reason_text": ": Not finished",
+            "until": "18:20",
+            "bonus": 10,
+            "note_text": ": Brilliant job!",
             "points_name": self.storage.get_points_name(),
         }
         message = "[TEST] " + self._render_template(meta, ctx)
@@ -379,6 +524,21 @@ class NotificationCoordinator:
             NOTIF_TYPE_MONTHLY_REPORT: "TaskMate {month} report:\n{summary}",
             NOTIF_TYPE_SEASON_CHAMPION: "🏆 {child_name} won the {month} leaderboard with {points} {points_name}!",
             NOTIF_TYPE_FAMILY_GOAL_REACHED: "🎉 Family goal reached: {goal_name}! Time for {goal_reward}.",
+            NOTIF_TYPE_BIRTHDAY: "🎂 Happy birthday, {child_name}! Every chore pays {multiplier}× today.",
+            NOTIF_TYPE_STREAK_FREEZE_USED: "❄️ A streak freeze saved {child_name}'s {streak}-day streak ({freezes_left} left).",
+            NOTIF_TYPE_PRESENCE_ARRIVAL: "🏠 You're home, {child_name} — {count} chores left today.",
+            NOTIF_TYPE_WISH_REQUESTED: "{child_name} wished for '{wish_name}' ({target} {points_name}) — waiting for your approval.",
+            NOTIF_TYPE_WISH_PLEDGED: "💝 {pledger} added {points} {points_name} to your wish '{wish_name}'!",
+            NOTIF_TYPE_BOUNTY_POSTED: "🏁 New bounty: {bounty_name} — {points} {points_name}. First to claim it gets it!",
+            NOTIF_TYPE_BOUNTY_CLAIM_LAPSING: "⏳ {child_name}, {minutes} minutes left to finish '{bounty_name}' before it goes back on the board.",
+            NOTIF_TYPE_RECAP_READY: "✨ Your {period} recap is ready, {child_name}! Tap to watch it.",
+            NOTIF_TYPE_ITEM_REJECTED: "↩️ {child_name}, '{item_name}' was sent back{reason_text}",
+            NOTIF_TYPE_AUCTION_OPENED: "🔨 New auction: {chore_name} on {date}, up to {max_points} {points_name}. Lowest bid wins!",
+            NOTIF_TYPE_AUCTION_CLOSING: "⏳ {child_name}, bidding on '{chore_name}' closes in {minutes} minutes.",
+            NOTIF_TYPE_AUCTION_RESULT: "🔨 Auction closed: {result_text}",
+            NOTIF_TYPE_INSPECTION_STARTED: "🔍 {child_name}, a grown-up is coming to inspect '{chore_name}' before {until}. Keep it looking great for +{bonus} {points_name}!",
+            NOTIF_TYPE_INSPECTION_PASSED: "🌟 Inspection passed, {child_name}! '{chore_name}' looked great: +{bonus} {points_name}{note_text}",
+            NOTIF_TYPE_INSPECTION_REMINDER: "🔍 {child_name}'s '{chore_name}' inspection closes in {minutes} minutes — pass or fail it before {until}.",
         }
         tpl = context.get("message_template") or templates.get(meta.id, "")
         try:
@@ -425,10 +585,7 @@ class NotificationCoordinator:
                     # `tag` lets us dismiss this push later (clear_approval) once
                     # the item is reviewed — see _approval_tag.
                     push["tag"] = _approval_tag(entry_id)
-                    push["actions"] = [
-                        {"action": f"TASKMATE_APPROVE_{entry_id}", "title": "Approve"},
-                        {"action": f"TASKMATE_REJECT_{entry_id}", "title": "Reject"},
-                    ]
+                    push["actions"] = self._approval_actions(meta.id, entry_id)
             else:
                 data["message"] = f"{message} {_APPROVE_IN_PANEL_HINT}"
 
@@ -445,6 +602,11 @@ class NotificationCoordinator:
             push["clickAction"] = nav_url
             push["url"] = nav_url
 
+        # A caller-supplied tag makes a re-send replace the earlier push on the
+        # phone instead of stacking (recaps, #929). Approvals set their own.
+        if context.get("tag") and service.startswith("mobile_app"):
+            push.setdefault("tag", context["tag"])
+
         # Grouping (#811): stack TaskMate's notifications into one bundle so
         # they don't scatter through the phone's other HA alerts. Android reads
         # data.group; iOS threads on push.thread-id, so send both — same value,
@@ -460,6 +622,37 @@ class NotificationCoordinator:
             await self.hass.services.async_call(domain, service, data, blocking=False)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("notify call failed for %s: %s", notify_service, err)
+
+    def _approval_actions(self, type_id: str, entry_id: str) -> list[dict[str, str]]:
+        """Mobile action buttons for a pending-approval push.
+
+        With quality ratings on (#927) a chore approval offers the three star
+        ratings instead of a plain Approve, so a parent can rate from the lock
+        screen. Reject goes last: Android shows at most three actions, so the
+        ratings take priority there and Reject stays in the panel/card. With
+        the feature off — and always for reward claims — the push keeps the
+        original Approve/Reject ids, so older pushes still in flight resolve.
+
+        Reject asks for a reason in place (#976): the companion app's
+        ``textInput`` behaviour opens a reply box and returns what was typed
+        as ``reply_text`` on the action event. The id is unchanged, and an
+        empty reply (or an older push without the box) is a plain reject.
+        """
+        coordinator = getattr(self, "coordinator", None)
+        rated = (
+            type_id == NOTIF_TYPE_PENDING_CHORE_APPROVAL
+            and coordinator is not None
+            and coordinator.quality_rating_enabled()
+        )
+        if rated:
+            return [
+                *({"action": f"{_RATE_ACTION_PREFIX}{n}_{entry_id}", "title": "★" * n} for n in QUALITY_RATINGS),
+                _reject_action(entry_id),
+            ]
+        return [
+            {"action": f"TASKMATE_APPROVE_{entry_id}", "title": "Approve"},
+            _reject_action(entry_id),
+        ]
 
     async def clear_approval(self, type_id: str, entry_id: str) -> None:
         """Dismiss the mobile push for a reviewed approval (chore or reward).
@@ -519,7 +712,7 @@ class NotificationCoordinator:
     def _fire_bus_event(self, type_id: str, context: dict[str, Any], recipients: list[str]) -> None:
         payload = dict(context)
         payload["recipients"] = recipients
-        self.hass.bus.async_fire(f"taskmate_{type_id}", payload)
+        self.hass.bus.async_fire(notification_event_name(type_id), payload)
 
     async def handle_mobile_action(self, event) -> None:
         """Route TASKMATE_APPROVE_<id> / TASKMATE_REJECT_<id> mobile actions."""
@@ -537,28 +730,123 @@ class NotificationCoordinator:
             _LOGGER.warning("Ignoring TaskMate mobile action from a non-parent user")
             return
 
-        if action.startswith("TASKMATE_APPROVE_"):
-            entry_id = action[len("TASKMATE_APPROVE_") :]
+        if action.startswith(_RATE_ACTION_PREFIX):
+            # TASKMATE_RATE_<n>_<completion id> (#927): approve with a rating.
+            stars, _, entry_id = action[len(_RATE_ACTION_PREFIX) :].partition("_")
             try:
-                await coordinator.async_approve_chore(entry_id)
+                rating = int(stars)
+            except ValueError:
+                _LOGGER.info("Mobile action %s — malformed rating", action)
                 return
-            except (ValueError, KeyError):
-                pass
-            try:
-                await coordinator.async_approve_reward(entry_id)
-            except (ValueError, KeyError):
-                _LOGGER.info("Mobile action %s — entry not found", action)
+
+            async def _approve_rated(completion_id: str) -> None:
+                await coordinator.async_approve_chore(completion_id, rating=rating)
+
+            await self._review_from_mobile(action, entry_id, _approve_rated, coordinator.async_approve_reward)
+        elif action.startswith("TASKMATE_APPROVE_"):
+            await self._review_from_mobile(
+                action,
+                action[len("TASKMATE_APPROVE_") :],
+                coordinator.async_approve_chore,
+                coordinator.async_approve_reward,
+            )
         elif action.startswith("TASKMATE_REJECT_"):
-            entry_id = action[len("TASKMATE_REJECT_") :]
-            try:
-                await coordinator.async_reject_chore(entry_id)
-                return
-            except (ValueError, KeyError):
-                pass
-            try:
-                await coordinator.async_reject_reward(entry_id)
-            except (ValueError, KeyError):
-                _LOGGER.info("Mobile action %s — entry not found", action)
+            # The reply box's text (#976); absent on a plain tap or an old push.
+            reason = str((event.data or {}).get("reply_text") or "")
+
+            async def _reject_chore(completion_id: str) -> None:
+                await coordinator.async_reject_chore(completion_id, reason=reason)
+
+            async def _reject_reward(claim_id: str) -> None:
+                await coordinator.async_reject_reward(claim_id, reason=reason)
+
+            await self._review_from_mobile(
+                action,
+                action[len("TASKMATE_REJECT_") :],
+                _reject_chore,
+                _reject_reward,
+            )
+
+    async def _review_from_mobile(self, action: str, entry_id: str, review_chore, review_reward) -> None:
+        """Send a mobile review to whichever record the id belongs to.
+
+        A chore completion id and a reward claim id look alike, so this used to
+        try the chore path and fall back to the reward path when it raised. It
+        never does: approving or rejecting an unknown completion is a no-op,
+        not an error, so the fallback was unreachable and every reward push
+        button did nothing at all. The id itself decides.
+        """
+        if any(c.id == entry_id for c in self.storage.get_completions()):
+            review = review_chore
+        elif any(c.id == entry_id for c in self.storage.get_reward_claims()):
+            review = review_reward
+        else:
+            _LOGGER.info("Mobile action %s — entry not found", action)
+            return
+        try:
+            await review(entry_id)
+        except (ValueError, KeyError) as err:
+            # A stale push: the item was reviewed elsewhere, or the reward has
+            # since sold out. Nothing to do, but say why in the log.
+            _LOGGER.info("Mobile action %s could not be applied: %s", action, err)
+
+    async def send_recap_ready(
+        self,
+        per_child: list[dict[str, Any]],
+        parent_message: str,
+        *,
+        to_children: bool = True,
+        to_parents: bool = True,
+    ) -> list[str]:
+        """Announce new recaps (#929): one push per child, one grouped for parents.
+
+        Goes around ``fire()`` because a single dispatch here is several
+        messages with different text. The routing rules are the same: the
+        master switch, each recipient's route, child quiet hours and the parent
+        routing policy. One ``taskmate_recap_ready`` event fires per child even
+        when the notification is switched off, like every other type.
+        """
+        meta = NOTIFICATION_TYPES_BY_ID[NOTIF_TYPE_RECAP_READY]
+        cfg = self.storage.get_notification_config(NOTIF_TYPE_RECAP_READY)
+        nav_url = self._resolve_nav_url(cfg)
+        group = self._resolve_group(cfg)
+        sent: list[str] = []
+        for item in per_child:
+            rid = f"child:{item['child_id']}"
+            fired: list[str] = []
+            route = cfg.routes.get(rid)
+            if (
+                cfg.master_enabled
+                and to_children
+                and route is not None
+                and route.enabled
+                and not self._child_in_quiet_hours(rid)
+            ):
+                notify_service = self._resolve_notify_service(rid)
+                if notify_service:
+                    ctx = {**item, "tag": f"taskmate_recap_{item['child_id']}"}
+                    await self._send_to(notify_service, item["message"], meta, ctx, nav_url, group)
+                    fired.append(rid)
+            sent.extend(fired)
+            self._fire_bus_event(
+                NOTIF_TYPE_RECAP_READY,
+                {
+                    "child_id": item["child_id"],
+                    "child_name": item["child_name"],
+                    "count": len(item.get("recaps", [])),
+                    "recaps": item.get("recaps", []),
+                },
+                fired,
+            )
+        if cfg.master_enabled and to_parents and per_child:
+            for rid in sorted(self._route_parents(NOTIF_TYPE_RECAP_READY, cfg, None)):
+                notify_service = self._resolve_notify_service(rid)
+                if not notify_service:
+                    continue
+                ctx = {"tag": "taskmate_recaps"}
+                await self._send_to(notify_service, parent_message, meta, ctx, nav_url, group)
+                sent.append(rid)
+        return sent
 
     # ------------------------------------------------------------------
     # Scheduler — time-gated callbacks
@@ -591,6 +879,17 @@ class NotificationCoordinator:
                 self._register_at(
                     route.time,
                     self._make_bedtime_callback(child_id),
+                )
+
+        # Birthday (#924) — per-child morning time, only fires on the day
+        cfg = self.storage.get_notification_config("birthday")
+        if cfg.master_enabled:
+            for recipient_id, route in cfg.routes.items():
+                if not route.enabled or not recipient_id.startswith("child:"):
+                    continue
+                self._register_at(
+                    route.time or DEFAULT_MORNING_NOTIFY_TIME,
+                    self._make_birthday_callback(recipient_id.split(":", 1)[1]),
                 )
 
         # Streak at risk — global cutoff time, fire once per child
@@ -637,6 +936,24 @@ class NotificationCoordinator:
 
         return _cb
 
+    def _make_birthday_callback(self, child_id: str):
+        async def _cb(now):
+            coord = self.coordinator
+            child = self.storage.get_child(child_id)
+            if child is None or coord is None or not coord.is_birthday(child):
+                return
+            await self.fire(
+                "birthday",
+                {
+                    "child_name": child.name,
+                    "child_id": child_id,
+                    "multiplier": f"{coord.birthday_multiplier():g}",
+                },
+                only_recipients={f"child:{child_id}"},
+            )
+
+        return _cb
+
     async def _streak_at_risk_callback(self, now) -> None:
         from homeassistant.util import dt as dt_util
 
@@ -645,6 +962,9 @@ class NotificationCoordinator:
             if (child.current_streak or 0) < 2:
                 continue
             if child.last_completion_date == today:
+                continue
+            # A birthday day off can't break the streak, so don't nag (#924).
+            if self.coordinator is not None and self.coordinator.is_birthday_day_off(child) is True:
                 continue
             await self.fire(
                 "streak_at_risk",
@@ -672,6 +992,8 @@ class NotificationCoordinator:
                 notify_service = self._resolve_notify_service(recipient_id)
                 if not notify_service:
                     continue
+                if self._defer_if_away(recipient_id):
+                    continue  # held for the arrival nudge (#926)
                 child_name = ""
                 if recipient_id.startswith("child:"):
                     child = self.storage.get_child(recipient_id.split(":", 1)[1])
@@ -708,6 +1030,161 @@ class NotificationCoordinator:
             )
 
         return _cb
+
+    # ------------------------------------------------------------------
+    # Presence-aware reminders (#926)
+    # ------------------------------------------------------------------
+
+    def child_is_away(self, child_id: str) -> bool:
+        """True only when the child's presence entity positively says "not home".
+
+        No entity, a missing entity, or an unavailable/unknown one all read as
+        home: a broken tracker must not silence every reminder.
+        """
+        entity_id = self._presence_entities.get(child_id)
+        if entity_id is None:
+            child = self.storage.get_child(child_id)
+            entity_id = (getattr(child, "presence_entity", "") or "").strip() if child else ""
+        if not entity_id:
+            return False
+        state = self.hass.states.get(entity_id)
+        return _presence_is_home(getattr(state, "state", None)) is False
+
+    def _defer_if_away(self, recipient_id: str) -> bool:
+        """Hold a reminder for an away child; True means "don't send it now"."""
+        if not recipient_id.startswith("child:"):
+            return False
+        child_id = recipient_id.split(":", 1)[1]
+        if not self.child_is_away(child_id):
+            return False
+        self._presence_deferred.add(child_id)
+        return True
+
+    def sync_presence_tracking(self) -> None:
+        """(Re)subscribe to the children's presence entities if they changed.
+
+        Cheap enough to call on every coordinator refresh: it compares the
+        child -> entity map and only resubscribes on a difference, so adding,
+        editing, removing or importing a child all pick it up.
+        """
+        wanted: dict[str, str] = {}
+        for child in self.storage.get_children():
+            entity_id = (getattr(child, "presence_entity", "") or "").strip()
+            if entity_id:
+                wanted[child.id] = entity_id
+        if wanted == self._presence_entities and (self._presence_unsub is not None or not wanted):
+            return
+
+        self.cancel_presence_tracking()
+        # A child whose entity changed (or was removed) starts from scratch —
+        # an absence measured on the old tracker says nothing about the new one.
+        for child_id in list(self._presence_away_since):
+            if wanted.get(child_id) != self._presence_entities.get(child_id):
+                self._presence_away_since.pop(child_id, None)
+        self._presence_deferred &= set(wanted)
+        self._presence_entities = wanted
+        if not wanted:
+            return
+
+        from homeassistant.util import dt as dt_util
+
+        # Seed absences already under way (e.g. across a restart) from the
+        # entity's own last_changed, so the min-away rule still holds.
+        for child_id, entity_id in wanted.items():
+            if child_id in self._presence_away_since:
+                continue
+            state = self.hass.states.get(entity_id)
+            if _presence_is_home(getattr(state, "state", None)) is False:
+                since = getattr(state, "last_changed", None)
+                self._presence_away_since[child_id] = since if isinstance(since, datetime) else dt_util.now()
+
+        self._presence_unsub = async_track_state_change_event(
+            self.hass,
+            sorted(set(wanted.values())),
+            self._presence_state_changed,
+        )
+
+    def cancel_presence_tracking(self) -> None:
+        """Drop the presence subscription (idempotent; also used on unload)."""
+        if self._presence_unsub is not None:
+            with contextlib.suppress(Exception):
+                self._presence_unsub()
+            self._presence_unsub = None
+
+    @callback
+    def _presence_state_changed(self, event) -> None:
+        data = getattr(event, "data", None) or {}
+        entity_id = data.get("entity_id")
+        new_state = data.get("new_state")
+        is_home = _presence_is_home(getattr(new_state, "state", None))
+        if is_home is None:
+            return  # flaky tracker: keep whatever we last knew
+
+        from homeassistant.util import dt as dt_util
+
+        now = dt_util.now()
+        for child_id, tracked in self._presence_entities.items():
+            if tracked != entity_id:
+                continue
+            if not is_home:
+                # Moving between zones (school -> park) is one absence.
+                self._presence_away_since.setdefault(child_id, now)
+                continue
+            # Consume the absence here, synchronously, so a burst of "home"
+            # updates (GPS jitter) can only ever produce one nudge.
+            away_since = self._presence_away_since.pop(child_id, None)
+            deferred = child_id in self._presence_deferred
+            self._presence_deferred.discard(child_id)
+            if away_since is None and not deferred:
+                continue
+            self.hass.async_create_task(self.async_arrival_nudge(child_id, away_since, deferred, now))
+
+    async def async_arrival_nudge(
+        self,
+        child_id: str,
+        away_since: datetime | None,
+        deferred: bool,
+        now: datetime,
+    ) -> bool:
+        """Send one "you're home — N chores left" nudge. Returns True if fired.
+
+        Fires when the child was out for at least the configured minimum, or
+        when a reminder was held back while they were out (however short the
+        trip — held reminders are deferred, never dropped). Held reminders
+        collapse into this single nudge rather than replaying one by one.
+        Quiet hours still apply, via ``fire()``.
+        """
+        child = self.storage.get_child(child_id)
+        if child is None:
+            return False
+        if not deferred:
+            min_away = timedelta(minutes=self.storage.get_presence_arrival_min_away())
+            if away_since is None or now - away_since < min_away:
+                return False
+        count = self._outstanding_chore_count(child_id)
+        if count <= 0:
+            return False
+        await self.fire(
+            NOTIF_TYPE_PRESENCE_ARRIVAL,
+            {"child_name": child.name, "child_id": child_id, "count": count},
+            only_recipients={f"child:{child_id}"},
+        )
+        return True
+
+    def _outstanding_chore_count(self, child_id: str) -> int:
+        """How many chores the child still owes today (what their card shows)."""
+        coordinator = getattr(self, "coordinator", None)
+        due = getattr(coordinator, "get_due_chores_for_child", None) if coordinator else None
+        if callable(due):
+            try:
+                return len(due(child_id))
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Due-chore lookup failed for %s", child_id, exc_info=True)
+        return 1 if self._has_outstanding_chores_today(child_id) else 0
+
+    async def set_presence_arrival_min_away(self, minutes: int) -> None:
+        self.storage.set_presence_arrival_min_away(minutes)
+        await self.storage.async_save()
 
     # ------------------------------------------------------------------
     # CRUD wrappers — persist + reload schedules as needed
@@ -753,10 +1230,27 @@ class NotificationCoordinator:
 
     async def delete_parent(self, parent_id: str) -> None:
         self.storage.delete_parent_recipient(parent_id)
+        # Their routes and custom-reminder slots go with them (#946).
+        self.storage.remove_notification_recipient(parent_id)
         await self.storage.async_save()
         await self.async_setup_schedules()  # in case routes referenced this id
 
+    def _recipient_exists(self, recipient_id: str) -> bool:
+        """True if ``recipient_id`` resolves to an existing child or parent recipient."""
+        if recipient_id.startswith("child:"):
+            child_id = recipient_id.split(":", 1)[1]
+            return bool(child_id) and self.storage.get_child(child_id) is not None
+        if recipient_id.startswith("parent:"):
+            return any(p.id == recipient_id for p in self.storage.get_parent_recipients())
+        return False
+
     async def set_route(self, type_id: str, recipient_id: str, route) -> None:
+        # Reject unknown types/recipients (#947) — a stored route for an id
+        # that resolves to nobody is silently dead weight in the config.
+        if type_id not in NOTIFICATION_TYPES_BY_ID:
+            raise ValueError(f"Unknown notification type {type_id}")
+        if not self._recipient_exists(recipient_id):
+            raise ValueError(f"Unknown notification recipient {recipient_id}")
         self.storage.set_notification_route(type_id, recipient_id, route)
         await self.storage.async_save()
         if NOTIFICATION_TYPES_BY_ID.get(type_id) and NOTIFICATION_TYPES_BY_ID[type_id].time_gated:
@@ -808,10 +1302,15 @@ class NotificationCoordinator:
             for c in completions
             if c.child_id == child_id and dt_util.as_local(c.completed_at).date() == today
         }
+        # Birthday day off (#924): only mandatory chores are still owed.
+        coord = self.coordinator
+        birthday_off = coord is not None and coord.is_birthday_day_off(self.storage.get_child(child_id)) is True
         for chore in chores:
             if not chore.assigned_to or child_id not in chore.assigned_to:
                 continue
             if chore.id in completed_today:
+                continue
+            if birthday_off and not getattr(chore, "mandatory", False):
                 continue
             return True
         return False

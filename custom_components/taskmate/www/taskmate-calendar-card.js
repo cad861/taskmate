@@ -13,6 +13,9 @@ const html = LitElement.prototype.html;
 const css = LitElement.prototype.css;
 
 const _safeColor = (c, d) => (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : d);
+// Keeps number runs like "3 / 1" reading left to right in RTL text (#995);
+// identity until the design layer has loaded (it is also what stamps dir).
+const _ltrNums = (s) => (window.__taskmate_design && window.__taskmate_design.ltrNums ? window.__taskmate_design.ltrNums(s) : s);
 
 const DAY_NAMES = [
   "monday", "tuesday", "wednesday", "thursday",
@@ -185,10 +188,10 @@ class TaskMateCalendarCard extends LitElement {
         padding: 6px 10px;
         background: var(--card-background-color, white);
         border-radius: 8px;
-        border-left: 4px solid var(--cal-grey);
+        border-inline-start: 4px solid var(--cal-grey);
       }
-      .chore-row.approved { border-left-color: var(--cal-green); }
-      .chore-row.pending  { border-left-color: var(--cal-amber); }
+      .chore-row.approved { border-inline-start-color: var(--cal-green); }
+      .chore-row.pending  { border-inline-start-color: var(--cal-amber); }
       .chore-row.rotating { opacity: 0.6; font-style: italic; }
 
       .chore-icon { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
@@ -261,7 +264,7 @@ class TaskMateCalendarCard extends LitElement {
       .cal-card-cn { background: var(--tmd-surface-2); border: 1px solid var(--tmd-border); border-radius: 8px; padding: 10px 11px; }
       .cal-head-cn { margin-bottom: 7px; }
       .cal-name-cn { font-weight: 700; font-size: 12.5px; }
-      .cal-count { margin-left: auto; font-size: 10px; }
+      .cal-count { margin-inline-start: auto; font-size: 10px; }
 
       /* Clean Pro */
       .cal-grid-cp { gap: 0; }
@@ -309,6 +312,17 @@ class TaskMateCalendarCard extends LitElement {
 
   _isChoreScheduledOn(chore, dayDow, dayDate, todayKey, tz) {
     if (chore.enabled === false) return false;
+
+    // One occurrence moved or removed from the HA calendar (#977):
+    // {scheduled date: new date, or "" when removed}. Mirrors the backend's
+    // occurrence_override — a day something was moved onto is on, a day
+    // something was moved away from or removed is off.
+    const moved = chore.moved_occurrences;
+    if (moved && typeof moved === "object") {
+      const key = ymd(dayDate, tz);
+      if (Object.values(moved).includes(key)) return true;
+      if (Object.prototype.hasOwnProperty.call(moved, key)) return false;
+    }
 
     const scheduleMode = chore.schedule_mode || "specific_days";
     const createdDate = chore.created_date || "";
@@ -394,7 +408,19 @@ class TaskMateCalendarCard extends LitElement {
     return assignedTo.includes(childId);
   }
 
+  // What the chore pays ``childId`` on ``dayKey``: a won auction occurrence
+  // pays the winning bid, days ahead included (#998).
+  _dayPoints(chore, childId, dayKey) {
+    const won = (chore.auction_wins || {})[dayKey];
+    const price = (chore.auction_prices || {})[dayKey];
+    if (won && String(won) === String(childId) && Number.isFinite(price)) return price;
+    return chore.points;
+  }
+
   _rotationRenderMode(chore, childId, dayKey, todayKey) {
+    // Won at auction (#982): that day's occurrence is the winner's alone.
+    const won = (chore.auction_wins || {})[dayKey];
+    if (won) return String(won) === String(childId) ? "active" : "hidden";
     const mode = chore.assignment_mode || "everyone";
     if (mode === "everyone") return "active";
     const current = chore.assignment_current_child_id || "";
@@ -483,11 +509,11 @@ class TaskMateCalendarCard extends LitElement {
           </div>
           <div class="day-nav">
             <button @click=${() => this._shiftDay(-1)} title=${this._t("calendar.prev_day")}>
-              <ha-icon icon="mdi:chevron-left"></ha-icon>
+              <ha-icon class="tm-rtl-flip" icon="mdi:chevron-left"></ha-icon>
             </button>
             <span class="day-label">${isToday ? this._t("common.today") : dayLabel}</span>
             <button @click=${() => this._shiftDay(1)} title=${this._t("calendar.next_day")}>
-              <ha-icon icon="mdi:chevron-right"></ha-icon>
+              <ha-icon class="tm-rtl-flip" icon="mdi:chevron-right"></ha-icon>
             </button>
             ${!isToday ? html`
               <button @click=${() => this._resetDay()} title=${this._t("common.today")}>
@@ -556,7 +582,7 @@ class TaskMateCalendarCard extends LitElement {
           <ha-icon class="chore-icon ${state}" icon="${stateIcon}"></ha-icon>
           <span class="chore-name">${chore.name}</span>
           <span class="chore-points">
-            <ha-icon icon="${pointsIcon}"></ha-icon>${chore.points}
+            <ha-icon icon="${pointsIcon}"></ha-icon>${this._dayPoints(chore, child.id, day.key)}
           </span>
         </div>
       `;
@@ -564,7 +590,7 @@ class TaskMateCalendarCard extends LitElement {
 
     const summary = dueCount === 0
       ? this._t("calendar.no_chores_today")
-      : this._t("calendar.child_summary", { done: doneCount, total: dueCount });
+      : _ltrNums(this._t("calendar.child_summary", { done: doneCount, total: dueCount }));
 
     return html`
       <div class="child-block">
@@ -672,7 +698,7 @@ class TaskMateCalendarCard extends LitElement {
 
     const sub = isToday ? this._t("common.today") : dayShort;
     const pill = design === "console" && totalPending
-      ? this._t("calendar.child_summary", { done: 0, total: totalPending }) : "";
+      ? _ltrNums(this._t("calendar.child_summary", { done: 0, total: totalPending })) : "";
     return wrap(sub, pill, body);
   }
 
@@ -784,7 +810,7 @@ class TaskMateCalendarCardEditor extends LitElement {
       .preset-swatch { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--divider-color, #e0e0e0); transition: transform 0.1s; padding: 0; }
       .preset-swatch:hover { transform: scale(1.15); }
       .preset-swatch.active { border-color: var(--primary-text-color); box-shadow: 0 0 0 2px var(--primary-color); }
-      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-left: auto; }
+      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-inline-start: auto; }
       .colour-helper { color: var(--secondary-text-color); font-size: 0.82rem; line-height: 1.3; }
     `;
   }

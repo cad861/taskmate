@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
+
+from .const import AGE_GROUPS, AUCTION_STATUSES, BOUNTY_STATUSES, MAX_CHORE_TAGS, TAG_ID_MAX_LENGTH
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,6 +56,35 @@ def parse_datetime(value: str | datetime | None) -> datetime | None:
     return None
 
 
+def parse_quality_rating(value: Any) -> int:
+    """Parse a stored 1-3 star quality rating (#927); anything else is 0 (unrated)."""
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        rating = int(value)
+    except (ValueError, TypeError, OverflowError):
+        return 0
+    return rating if 1 <= rating <= 3 else 0
+
+
+def parse_optional_points(value: Any) -> int | None:
+    """Parse a stored points figure, or None for "not recorded".
+
+    Used for fields that snapshot a value at the moment it applied. ``None``
+    marks a record written before the field existed, so callers can fall back
+    to recalculating; anything unusable is treated the same way rather than
+    being trusted as a number.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        points = int(value)
+    except (ValueError, TypeError, OverflowError):
+        _LOGGER.warning("Ignoring unusable stored points value %r", value)
+        return None
+    return None if points < 0 else points
+
+
 def format_datetime(dt: datetime | None) -> str | None:
     """Format a datetime as ISO string with timezone info.
 
@@ -68,6 +99,24 @@ def format_datetime(dt: datetime | None) -> str | None:
     utc_dt = dt.astimezone(timezone.utc)
     # Use isoformat but replace +00:00 with Z for cleaner output
     return utc_dt.isoformat().replace("+00:00", "Z")
+
+
+def normalize_tag_ids(raw: Any) -> list[str]:
+    """Clean a chore's linked HA tag ids (#923).
+
+    Ids are compared exactly against ``tag_scanned`` events, so surrounding
+    whitespace (easy to paste in with a free-text id) would silently never
+    match. Blanks and duplicates are dropped, order is kept, and the list is
+    capped so a crafted import can't bloat the store.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()[:TAG_ID_MAX_LENGTH]
+        if text and text not in out:
+            out.append(text)
+    return out[:MAX_CHORE_TAGS]
 
 
 def optional_float(value: Any) -> float | None:
@@ -148,6 +197,11 @@ class BonusSubTask:
         }
 
 
+def normalize_age_group(value: Any) -> str:
+    """A stored age group (#980): one of AGE_GROUPS, anything else is none ("")."""
+    return value if isinstance(value, str) and value in AGE_GROUPS else ""
+
+
 @dataclass
 class Child:
     """Represents a child."""
@@ -164,6 +218,14 @@ class Child:
     last_completion_date: str | None = None  # ISO date string of last chore completion (for streak tracking)
     streak_paused: bool = False  # True if streak is paused due to missed day (pause mode)
     streak_milestones_achieved: list[int] = field(default_factory=list)
+    # Streak freeze tokens (#925): each one covers one missed day so the streak
+    # survives it. `streak_freeze_dates` are the ISO days a token has covered
+    # (only the ones after the last completion matter, so it stays short), and
+    # `streak_freeze_earned_at` is the streak length that last earned a token,
+    # so undoing that day's completion can take the token back.
+    streak_freezes: int = 0
+    streak_freeze_dates: list[str] = field(default_factory=list)
+    streak_freeze_earned_at: int = 0
     awarded_perfect_weeks: list[str] = field(default_factory=list)
     availability_entity: str = ""  # HA entity id; empty = always available
     availability_inverted: bool = False  # When True, _AVAILABLE_STATES means UNAVAILABLE
@@ -181,11 +243,17 @@ class Child:
     picture_entity: str = ""
     quiet_hours_start: str = ""  # "HH:MM" — start of do-not-disturb window; empty = no quiet hours
     quiet_hours_end: str = ""  # "HH:MM" — end of do-not-disturb window; start>end means overnight
+    presence_entity: str = ""  # person./device_tracker.; while not home, reminders wait for arrival (#926)
     level: int = 1  # cached XP level (derived from total_points_earned)
     # Guest profiles (#690): a visiting cousin gets a temporary child that
     # expires on its own and stays out of the family leaderboard.
     is_guest: bool = False
     guest_expires_on: str = ""  # ISO date; profile auto-archives the day after
+    # Birthday mode (#924): "YYYY-MM-DD", or "MM-DD" when no age should show.
+    birthday: str = ""
+    # Setup wizard age group (#980): one of AGE_GROUPS, or "" when none was
+    # picked (every child that predates the wizard). Only steers suggestions.
+    age_group: str = ""
     id: str = field(default_factory=generate_id)
 
     @classmethod
@@ -204,9 +272,14 @@ class Child:
             last_completion_date=data.get("last_completion_date"),
             streak_paused=data.get("streak_paused", False),
             streak_milestones_achieved=list(data.get("streak_milestones_achieved", [])),
+            streak_freezes=max(0, int(data.get("streak_freezes", 0) or 0)),
+            streak_freeze_dates=[str(d) for d in (data.get("streak_freeze_dates") or []) if d],
+            streak_freeze_earned_at=max(0, int(data.get("streak_freeze_earned_at", 0) or 0)),
             awarded_perfect_weeks=list(data.get("awarded_perfect_weeks", [])),
             is_guest=bool(data.get("is_guest", False)),
             guest_expires_on=str(data.get("guest_expires_on", "") or ""),
+            birthday=str(data.get("birthday", "") or ""),
+            age_group=normalize_age_group(data.get("age_group")),
             availability_entity=data.get("availability_entity", ""),
             availability_inverted=data.get("availability_inverted", False),
             unavailability_entity=data.get("unavailability_entity", ""),
@@ -218,6 +291,7 @@ class Child:
             picture_entity=str(data.get("picture_entity", "") or ""),
             quiet_hours_start=data.get("quiet_hours_start", ""),
             quiet_hours_end=data.get("quiet_hours_end", ""),
+            presence_entity=str(data.get("presence_entity", "") or ""),
             level=int(data.get("level", 1) or 1),
             id=data.get("id") or generate_id(),
         )
@@ -237,9 +311,14 @@ class Child:
             "last_completion_date": self.last_completion_date,
             "streak_paused": self.streak_paused,
             "streak_milestones_achieved": self.streak_milestones_achieved,
+            "streak_freezes": self.streak_freezes,
+            "streak_freeze_dates": list(self.streak_freeze_dates),
+            "streak_freeze_earned_at": self.streak_freeze_earned_at,
             "awarded_perfect_weeks": self.awarded_perfect_weeks,
             "is_guest": self.is_guest,
             "guest_expires_on": self.guest_expires_on,
+            "birthday": self.birthday,
+            "age_group": self.age_group,
             "availability_entity": self.availability_entity,
             "availability_inverted": self.availability_inverted,
             "unavailability_entity": self.unavailability_entity,
@@ -251,6 +330,7 @@ class Child:
             "picture_entity": self.picture_entity,
             "quiet_hours_start": self.quiet_hours_start,
             "quiet_hours_end": self.quiet_hours_end,
+            "presence_entity": self.presence_entity,
             "level": self.level,
             "id": self.id,
         }
@@ -268,6 +348,12 @@ class Chore:
     time_category: str = "anytime"  # morning, afternoon, evening, night, anytime
     claim_allowance_minutes: int = 0  # Grace minutes past period end during which the chore stays claimable; 0 = no grace. Night chores still cap at midnight.
     daily_limit: int = 1
+    # Weekly target (#883): "do this N times this week, on whichever days you
+    # like" — instrument practice, reading, exercise. 0 = off. Monday-anchored
+    # to match Challenges. It caps the week the way daily_limit caps the day,
+    # and counts pending completions too, so a slow approval never hands the
+    # child a spare go.
+    weekly_target: int = 0
     completion_sound: str = "coin"  # Sound to play on completion
     # Optional picture for the chore. Text-free pre-reader mode (#683) needs
     # one per chore; everything else falls back to the time-of-day icon.
@@ -327,6 +413,20 @@ class Chore:
     mandatory: bool = False
     mandatory_penalty_points: int = 0
     require_photo: bool = False  # require an evidence photo; forces parent approval
+    # Open-ended "I did something extra" placeholder (#832): the card asks the
+    # child to describe the work and suggest a point value, and the parent sets
+    # the real points when approving. Forces parent approval — a child types
+    # the suggestion, so it must never self-award.
+    open_ended: bool = False
+    # Teamwork chores (#928): the chore only counts once team_size different
+    # children have joined the day's occurrence; then it submits for all of
+    # them at once. 0 = an ordinary chore. team_points_mode "each" pays every
+    # participant the full points, "split" divides them evenly (rounded down);
+    # team_bonus is added per participant either way. Who has joined so far
+    # is runtime state, kept in storage["team_joins"], not on the chore.
+    team_size: int = 0
+    team_points_mode: str = "each"  # each | split
+    team_bonus: int = 0
     # Dynamic assignment (sibling rotation)
     assignment_mode: str = "everyone"  # everyone | alternating | random
     assignment_rotation_anchor: str = ""  # ISO date; day-0 of the rotation for alternating
@@ -350,6 +450,11 @@ class Chore:
     # idempotence (don't re-publish the same day) and projection cleanup
     # (entries < today are pruned before each publish pass).
     publish_calendar_published_dates: list[str] = field(default_factory=list)
+    # Per-occurrence calendar edits (#977): {original ISO date: new ISO date}.
+    # An empty value means that one occurrence was removed. Written by the
+    # two-way calendar; every due-date computation consults it through
+    # ``occurrence_override`` so a moved chore is due on its new day only.
+    moved_occurrences: dict[str, str] = field(default_factory=dict)
     # Bonus sub-tasks: optional extra-credit tasks that unlock after the parent chore is completed
     bonus_subtasks: list[BonusSubTask] = field(default_factory=list)
     # Timed task fields
@@ -357,6 +462,9 @@ class Chore:
     timed_rate_points: int = 10  # points awarded per rate window
     timed_rate_minutes: int = 5  # rate window size in minutes
     timed_max_daily_minutes: int = 0  # 0 = unlimited; caps total daily duration
+    # NFC / QR tag completion (#923): HA tag ids that complete this chore when
+    # scanned in the companion app. Empty = no tag linked.
+    tag_ids: list[str] = field(default_factory=list)
     id: str = field(default_factory=generate_id)
 
     @classmethod
@@ -378,6 +486,7 @@ class Chore:
             time_category=data.get("time_category", "anytime"),
             claim_allowance_minutes=max(0, int(data.get("claim_allowance_minutes", 0) or 0)),
             daily_limit=data.get("daily_limit", 1),
+            weekly_target=int(data.get("weekly_target", 0) or 0),
             completion_sound=data.get("completion_sound", "coin"),
             icon=str(data.get("icon", "") or ""),
             image_url=str(data.get("image_url", "") or ""),
@@ -409,6 +518,10 @@ class Chore:
             mandatory=bool(data.get("mandatory", False)),
             mandatory_penalty_points=max(0, int(data.get("mandatory_penalty_points", 0) or 0)),
             require_photo=data.get("require_photo", False),
+            open_ended=data.get("open_ended", False),
+            team_size=max(0, int(data.get("team_size", 0) or 0)),
+            team_points_mode="split" if data.get("team_points_mode") == "split" else "each",
+            team_bonus=max(0, int(data.get("team_bonus", 0) or 0)),
             assignment_mode=data.get("assignment_mode", "everyone"),
             assignment_rotation_anchor=data.get("assignment_rotation_anchor", ""),
             assignment_current_child_id=data.get("assignment_current_child_id", ""),
@@ -425,11 +538,13 @@ class Chore:
                 list(data.get("publish_calendar_published_dates", []))
                 or ([data["publish_calendar_last_date"]] if data.get("publish_calendar_last_date") else [])
             ),
+            moved_occurrences=clean_moved_occurrences(data.get("moved_occurrences")),
             bonus_subtasks=[BonusSubTask.from_dict(b) for b in data.get("bonus_subtasks", [])],
             task_type=data.get("task_type", "standard"),
             timed_rate_points=data.get("timed_rate_points", 10),
             timed_rate_minutes=max(1, int(data.get("timed_rate_minutes", 5) or 5)),
             timed_max_daily_minutes=max(0, int(data.get("timed_max_daily_minutes", 0) or 0)),
+            tag_ids=normalize_tag_ids(data.get("tag_ids", [])),
             id=data.get("id") or generate_id(),
         )
 
@@ -444,6 +559,7 @@ class Chore:
             "time_category": self.time_category,
             "claim_allowance_minutes": self.claim_allowance_minutes,
             "daily_limit": self.daily_limit,
+            "weekly_target": self.weekly_target,
             "completion_sound": self.completion_sound,
             "icon": self.icon,
             "image_url": self.image_url,
@@ -475,6 +591,10 @@ class Chore:
             "mandatory": self.mandatory,
             "mandatory_penalty_points": self.mandatory_penalty_points,
             "require_photo": self.require_photo,
+            "open_ended": self.open_ended,
+            "team_size": self.team_size,
+            "team_points_mode": self.team_points_mode,
+            "team_bonus": self.team_bonus,
             "assignment_mode": self.assignment_mode,
             "assignment_rotation_anchor": self.assignment_rotation_anchor,
             "assignment_current_child_id": self.assignment_current_child_id,
@@ -485,13 +605,39 @@ class Chore:
             "assignment_swap_date": self.assignment_swap_date,
             "publish_calendar_entities": self.publish_calendar_entities,
             "publish_calendar_published_dates": self.publish_calendar_published_dates,
+            "moved_occurrences": self.moved_occurrences,
             "bonus_subtasks": [b.to_dict() for b in self.bonus_subtasks],
             "task_type": self.task_type,
             "timed_rate_points": self.timed_rate_points,
             "timed_rate_minutes": self.timed_rate_minutes,
             "timed_max_daily_minutes": self.timed_max_daily_minutes,
+            "tag_ids": self.tag_ids,
             "id": self.id,
         }
+
+
+def clean_moved_occurrences(raw: Any) -> dict[str, str]:
+    """Coerce a stored ``moved_occurrences`` map to {ISO date: ISO date or ""}.
+
+    Anything unparseable is dropped rather than raised, so a hand-edited or
+    older store can never stop the integration loading (#977).
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        try:
+            src = date.fromisoformat(str(key)).isoformat()
+        except ValueError:
+            continue
+        if value in ("", None):
+            out[src] = ""
+            continue
+        try:
+            out[src] = date.fromisoformat(str(value)).isoformat()
+        except ValueError:
+            continue
+    return out
 
 
 def _clean_weekdays(raw: Any) -> list[int]:
@@ -541,9 +687,16 @@ class Reward:
     available_days: list[int] = field(default_factory=list)
     available_from: str = ""
     available_until: str = ""
+    # Streak freeze (#925): approving a claim hands the child one streak-freeze
+    # token instead of anything physical. Always a fixed cost like any reward.
+    streak_freeze: bool = False
     id: str = field(default_factory=generate_id)
 
     def __post_init__(self) -> None:
+        # A streak freeze belongs to the one child who bought it, so it can
+        # never be a shared jackpot.
+        if self.streak_freeze:
+            self.is_jackpot = False
         # Jackpots are inherently pooled (#552): everyone deposits into the shared
         # jar, so pool mode is always on. Enforced here so every construction path
         # — WS add, service add, and storage load (legacy migration) — stays
@@ -578,6 +731,7 @@ class Reward:
             available_days=_clean_weekdays(data.get("available_days")),
             available_from=str(data.get("available_from", "") or ""),
             available_until=str(data.get("available_until", "") or ""),
+            streak_freeze=bool(data.get("streak_freeze", False)),
             id=data.get("id") or generate_id(),
         )
 
@@ -603,6 +757,7 @@ class Reward:
             "available_days": list(self.available_days),
             "available_from": self.available_from,
             "available_until": self.available_until,
+            "streak_freeze": self.streak_freeze,
             "id": self.id,
         }
 
@@ -706,6 +861,228 @@ class Challenge:
         }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _bounty_claim_count(data: dict[str, Any]) -> int:
+    """The stored claim count, or the least a record from before it was kept
+    (#961) proves: every lapse was a claim, and a bounty that is or was held
+    was claimed at least once."""
+    count = max(0, _safe_int(data.get("claim_count", 0)))
+    count = max(count, _safe_int(data.get("lapse_count", 0)))
+    if data.get("status") in ("claimed", "pending", "completed"):
+        count = max(count, 1)
+    return count
+
+
+@dataclass
+class Bounty:
+    """A one-off job on the bounty board (#931).
+
+    A parent posts it for a fixed number of points; any eligible child may
+    claim it, which locks it to them until ``claim_until``. Done goes through
+    the normal approval queue as a ``ChoreCompletion`` carrying ``bounty_id``,
+    so points, streaks, badges and undo behave exactly as for a chore. A claim
+    that runs out puts the bounty back on the board; an unclaimed bounty
+    expires at ``expires_at``. Completed and expired bounties stay as history
+    until the completion history is pruned.
+    """
+
+    title: str
+    points: int = 0
+    description: str = ""
+    icon: str = "mdi:flag-outline"
+    expires_at: datetime | None = None  # None = no expiry
+    eligible_child_ids: list[str] = field(default_factory=list)  # empty = every child
+    claim_hours: int = 2
+    require_photo: bool = False
+    notify_children: bool = True
+    status: str = "open"  # open | claimed | pending | completed | expired
+    # The claimer. Kept once the bounty is completed, as who did it.
+    claimed_by: str = ""
+    claimed_at: datetime | None = None
+    claim_until: datetime | None = None
+    lapse_warned: bool = False  # the "about to lapse" push went out for this claim
+    completion_id: str = ""  # the pending / approved ChoreCompletion
+    points_awarded: int = 0
+    lapse_count: int = 0  # how many claims ran out before someone finished it
+    # How many times a child claimed it off the board (#961). A rejection
+    # hands the same claim back, so it doesn't count again.
+    claim_count: int = 0
+    created_at: datetime | None = None
+    closed_at: datetime | None = None  # when it was completed or expired
+    id: str = field(default_factory=generate_id)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Bounty:
+        return cls(
+            title=str(data.get("title", "") or ""),
+            points=max(0, _safe_int(data.get("points", 0))),
+            description=str(data.get("description", "") or ""),
+            icon=str(data.get("icon", "") or "mdi:flag-outline"),
+            expires_at=parse_datetime(data.get("expires_at")),
+            eligible_child_ids=[str(c) for c in (data.get("eligible_child_ids") or []) if c],
+            claim_hours=max(1, _safe_int(data.get("claim_hours", 2), 2)),
+            require_photo=data.get("require_photo") is True,
+            notify_children=data.get("notify_children", True) is not False,
+            status=data.get("status") if data.get("status") in BOUNTY_STATUSES else "open",
+            claimed_by=str(data.get("claimed_by", "") or ""),
+            claimed_at=parse_datetime(data.get("claimed_at")),
+            claim_until=parse_datetime(data.get("claim_until")),
+            lapse_warned=data.get("lapse_warned") is True,
+            completion_id=str(data.get("completion_id", "") or ""),
+            points_awarded=max(0, _safe_int(data.get("points_awarded", 0))),
+            lapse_count=max(0, _safe_int(data.get("lapse_count", 0))),
+            claim_count=_bounty_claim_count(data),
+            created_at=parse_datetime(data.get("created_at")),
+            closed_at=parse_datetime(data.get("closed_at")),
+            id=data.get("id") or generate_id(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "points": self.points,
+            "description": self.description,
+            "icon": self.icon,
+            "expires_at": format_datetime(self.expires_at),
+            "eligible_child_ids": list(self.eligible_child_ids),
+            "claim_hours": self.claim_hours,
+            "require_photo": self.require_photo,
+            "notify_children": self.notify_children,
+            "status": self.status,
+            "claimed_by": self.claimed_by,
+            "claimed_at": format_datetime(self.claimed_at),
+            "claim_until": format_datetime(self.claim_until),
+            "lapse_warned": self.lapse_warned,
+            "completion_id": self.completion_id,
+            "points_awarded": self.points_awarded,
+            "lapse_count": self.lapse_count,
+            "claim_count": self.claim_count,
+            "created_at": format_datetime(self.created_at),
+            "closed_at": format_datetime(self.closed_at),
+            "id": self.id,
+        }
+
+    def is_eligible(self, child_id: str) -> bool:
+        return not self.eligible_child_ids or child_id in self.eligible_child_ids
+
+    def clear_claim(self) -> None:
+        self.claimed_by = ""
+        self.claimed_at = None
+        self.claim_until = None
+        self.lapse_warned = False
+        self.completion_id = ""
+
+
+def _clean_auction_bids(raw: Any) -> dict[str, dict[str, Any]]:
+    """Coerce stored bids to {child_id: {"points": int >= 1, "at": ISO}}."""
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for child_id, bid in raw.items():
+        if not child_id or not isinstance(bid, dict):
+            continue
+        points = _safe_int(bid.get("points", 0))
+        at = parse_datetime(bid.get("at"))
+        if points < 1 or at is None:
+            continue
+        out[str(child_id)] = {"points": points, "at": format_datetime(at)}
+    return out
+
+
+@dataclass
+class Auction:
+    """A reverse auction on one occurrence of a chore (#982).
+
+    A parent opens it on a scheduled date of an existing chore with a maximum
+    price and a closing time. Eligible children place sealed bids — the fewest
+    points they would do it for. At closing the lowest bid wins (the earliest
+    bid on a tie; changing a bid re-times it) and the winner is assigned that
+    one occurrence at their price: ``winner_id`` / ``price`` are what the
+    assignment and completion paths read. No bids leaves the chore on its
+    normal assignment. Bids are secret: only a parent ever sees ``bids``.
+    """
+
+    chore_id: str
+    occurrence: str  # ISO date of the auctioned occurrence
+    max_points: int = 1
+    min_points: int = 1
+    closes_at: datetime | None = None
+    eligible_child_ids: list[str] = field(default_factory=list)
+    notify_children: bool = True
+    status: str = "open"  # open | closed | cancelled
+    bids: dict[str, dict[str, Any]] = field(default_factory=dict)
+    winner_id: str = ""
+    price: int = 0
+    reminder_sent: bool = False  # the "closes within the hour" push went out
+    # What the chore was called and worth when the auction opened, so the
+    # history still reads right after the chore is renamed or deleted.
+    chore_name: str = ""
+    chore_points: int = 0
+    created_at: datetime | None = None
+    closed_at: datetime | None = None
+    id: str = field(default_factory=generate_id)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Auction:
+        max_points = max(1, _safe_int(data.get("max_points", 1), 1))
+        return cls(
+            chore_id=str(data.get("chore_id", "") or ""),
+            occurrence=str(data.get("occurrence", "") or ""),
+            max_points=max_points,
+            min_points=min(max_points, max(1, _safe_int(data.get("min_points", 1), 1))),
+            closes_at=parse_datetime(data.get("closes_at")),
+            eligible_child_ids=[str(c) for c in (data.get("eligible_child_ids") or []) if c],
+            notify_children=data.get("notify_children", True) is not False,
+            status=data.get("status") if data.get("status") in AUCTION_STATUSES else "open",
+            bids=_clean_auction_bids(data.get("bids")),
+            winner_id=str(data.get("winner_id", "") or ""),
+            price=max(0, _safe_int(data.get("price", 0))),
+            reminder_sent=data.get("reminder_sent") is True,
+            chore_name=str(data.get("chore_name", "") or ""),
+            chore_points=max(0, _safe_int(data.get("chore_points", 0))),
+            created_at=parse_datetime(data.get("created_at")),
+            closed_at=parse_datetime(data.get("closed_at")),
+            id=data.get("id") or generate_id(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "chore_id": self.chore_id,
+            "occurrence": self.occurrence,
+            "max_points": self.max_points,
+            "min_points": self.min_points,
+            "closes_at": format_datetime(self.closes_at),
+            "eligible_child_ids": list(self.eligible_child_ids),
+            "notify_children": self.notify_children,
+            "status": self.status,
+            "bids": {k: dict(v) for k, v in self.bids.items()},
+            "winner_id": self.winner_id,
+            "price": self.price,
+            "reminder_sent": self.reminder_sent,
+            "chore_name": self.chore_name,
+            "chore_points": self.chore_points,
+            "created_at": format_datetime(self.created_at),
+            "closed_at": format_datetime(self.closed_at),
+            "id": self.id,
+        }
+
+    def ranked_bids(self) -> list[tuple[str, int, datetime]]:
+        """(child_id, points, placed_at), winner first: lowest, then earliest."""
+        ranked = []
+        for child_id, bid in self.bids.items():
+            at = parse_datetime(bid.get("at"))
+            if at is not None:
+                ranked.append((child_id, int(bid.get("points", 0)), at))
+        ranked.sort(key=lambda b: (b[1], b[2]))
+        return ranked
+
+
 @dataclass
 class ChoreCompletion:
     """Represents a chore completion record."""
@@ -719,7 +1096,23 @@ class ChoreCompletion:
     bonus_subtask_id: str = ""  # Non-empty = this completion is for a bonus sub-task
     timed_duration_seconds: int = 0
     photo_url: str = ""  # optional evidence photo (URL/path) attached at completion
+    note: str = ""  # child's own description of the work (open-ended chores, #832)
+    suggested_points: int = 0  # what the child reckons it was worth (#832)
     id: str = field(default_factory=generate_id)
+    # The award this submission was worth when it was made, before the streak
+    # and weekend multipliers that _award_points adds on top. None on records
+    # written before the field existed.
+    submitted_points: int | None = None
+    # Parent's 1-3 star quality rating given at approval (#927); 0 = unrated.
+    quality_rating: int = 0
+    # True only on a completion a child submitted themselves, so the child
+    # may take it back inside the global undo window (#918). A parent's
+    # review clears it for good, and records written before the field existed
+    # load as False: they stay parent-only.
+    child_undo_allowed: bool = False
+    # Set when this completion is a bounty's (#931). chore_id then carries the
+    # bounty id too, so nothing that groups completions by chore mixes the two.
+    bounty_id: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChoreCompletion:
@@ -737,12 +1130,18 @@ class ChoreCompletion:
             bonus_subtask_id=data.get("bonus_subtask_id", ""),
             timed_duration_seconds=data.get("timed_duration_seconds", 0),
             photo_url=data.get("photo_url", ""),
+            note=data.get("note", ""),
+            suggested_points=int(data.get("suggested_points", 0) or 0),
             id=data.get("id") or generate_id(),
+            submitted_points=parse_optional_points(data.get("submitted_points")),
+            quality_rating=parse_quality_rating(data.get("quality_rating")),
+            child_undo_allowed=data.get("child_undo_allowed") is True,
+            bounty_id=str(data.get("bounty_id", "") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        data = {
             "chore_id": self.chore_id,
             "child_id": self.child_id,
             "completed_at": format_datetime(self.completed_at),
@@ -752,8 +1151,19 @@ class ChoreCompletion:
             "bonus_subtask_id": self.bonus_subtask_id,
             "timed_duration_seconds": self.timed_duration_seconds,
             "photo_url": self.photo_url,
+            "note": self.note,
+            "suggested_points": self.suggested_points,
             "id": self.id,
+            "submitted_points": self.submitted_points,
+            "quality_rating": self.quality_rating,
         }
+        # Written only when set: every completion ever made is stored, and the
+        # flag is False on nearly all of them.
+        if self.child_undo_allowed:
+            data["child_undo_allowed"] = True
+        if self.bounty_id:
+            data["bounty_id"] = self.bounty_id
+        return data
 
 
 @dataclass
@@ -815,6 +1225,12 @@ class RewardClaim:
     approved: bool = False
     approved_at: datetime | None = None
     id: str = field(default_factory=generate_id)
+    # What this purchase actually cost, recorded when it was approved. None on
+    # a pending claim, and on claims approved before the field existed.
+    approved_cost: int | None = None
+    # Set when the claim redeems a wishlist wish (#932) rather than a reward.
+    # reward_id then holds the wish id too, and no Reward record exists.
+    wish_id: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RewardClaim:
@@ -829,18 +1245,25 @@ class RewardClaim:
             approved=data.get("approved", False),
             approved_at=approved_at,
             id=data.get("id") or generate_id(),
+            approved_cost=parse_optional_points(data.get("approved_cost")),
+            wish_id=str(data.get("wish_id", "") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        out = {
             "reward_id": self.reward_id,
             "child_id": self.child_id,
             "claimed_at": format_datetime(self.claimed_at),
             "approved": self.approved,
             "approved_at": format_datetime(self.approved_at),
             "id": self.id,
+            "approved_cost": self.approved_cost,
         }
+        # Only a wishlist redemption carries it, so ordinary claims keep their shape.
+        if self.wish_id:
+            out["wish_id"] = self.wish_id
+        return out
 
 
 @dataclass
@@ -1353,4 +1776,183 @@ class CustomSound:
             "name": self.name,
             "file": self.file,
             "created_at": self.created_at,
+        }
+
+
+# ── Wishlist with pledges (#932) ─────────────────────────────────────────
+WISH_NAME_MAX = 60
+WISH_LINK_MAX = 500
+WISH_DECLINE_REASON_MAX = 200
+# Why a parent rejected a chore or reward claim (#976) — same cap as a wish's
+# decline reason, which it mirrors.
+REJECT_REASON_MAX = WISH_DECLINE_REASON_MAX
+PLEDGE_NAME_MAX = 40
+PLEDGE_MESSAGE_MAX = 140
+WISH_STATUSES = ("pending", "active", "redeem_requested", "redeemed", "declined")
+
+
+def clean_label(value: Any, limit: int) -> str:
+    """Single-line, trimmed, length-capped text for a user-supplied label."""
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def clean_wish_link(value: Any) -> str:
+    """Return ``value`` if it is a plain http(s) URL, else "".
+
+    A wish link is typed by a child and rendered as a clickable link, so
+    anything that is not an absolute http(s) URL — ``javascript:``, ``data:``,
+    a relative path, embedded whitespace or control characters — is dropped
+    rather than stored.
+    """
+    from urllib.parse import urlsplit
+
+    text = str(value or "").strip()
+    if not text or len(text) > WISH_LINK_MAX:
+        return ""
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return ""
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return ""
+    return text
+
+
+def _clean_wish_image(value: Any) -> str:
+    """Keep only one of TaskMate's own stored-image URLs (bare, unsigned)."""
+    from .images import normalize_taskmate_image_url
+
+    return normalize_taskmate_image_url(str(value or "")) or ""
+
+
+def _points(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, number)
+
+
+@dataclass
+class WishPledge:
+    """Points a relative chipped in towards a wish (#932).
+
+    Pledged points are a gift attached to the wish: they are never added to
+    the child's balance, so the only way they turn into anything is by the
+    wish being redeemed. ``name`` is free text typed by a parent ("Grandma").
+    """
+
+    name: str
+    points: int
+    message: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    id: str = field(default_factory=generate_id)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WishPledge:
+        return cls(
+            name=clean_label(data.get("name"), PLEDGE_NAME_MAX),
+            points=_points(data.get("points")),
+            message=clean_label(data.get("message"), PLEDGE_MESSAGE_MAX),
+            created_at=parse_datetime(data.get("created_at")) or datetime.now(timezone.utc),
+            id=data.get("id") or generate_id(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "points": self.points,
+            "message": self.message,
+            "created_at": format_datetime(self.created_at),
+            "id": self.id,
+        }
+
+
+@dataclass
+class Wish:
+    """Something a child is saving towards (#932).
+
+    Lifecycle: ``pending`` (added by the child, waiting for a parent) →
+    ``active`` (approved; the child can move points in and relatives can
+    pledge) → ``redeem_requested`` (funded, a reward claim is waiting) →
+    ``redeemed``. A parent can ``decline`` it instead, with a reason the child
+    sees. ``saved`` are the child's own points moved in — already taken out of
+    ``Child.points``, exactly like a savings-jar allocation — and are the only
+    part a child can take back out.
+    """
+
+    child_id: str
+    name: str
+    target: int
+    status: str = "pending"
+    suggested_target: int = 0
+    link: str = ""
+    image_url: str = ""
+    saved: int = 0
+    pledges: list[WishPledge] = field(default_factory=list)
+    decline_reason: str = ""
+    claim_id: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    approved_at: datetime | None = None
+    declined_at: datetime | None = None
+    redeemed_at: datetime | None = None
+    id: str = field(default_factory=generate_id)
+
+    @property
+    def pledged(self) -> int:
+        return sum(p.points for p in self.pledges)
+
+    @property
+    def remaining(self) -> int:
+        """Points still needed to reach the target (never negative)."""
+        return max(0, self.target - self.saved - self.pledged)
+
+    @property
+    def funded(self) -> bool:
+        return self.target > 0 and self.saved + self.pledged >= self.target
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Wish:
+        status = data.get("status", "pending")
+        target = _points(data.get("target"))
+        return cls(
+            child_id=str(data.get("child_id", "") or ""),
+            name=clean_label(data.get("name"), WISH_NAME_MAX),
+            target=target,
+            status=status if status in WISH_STATUSES else "pending",
+            suggested_target=_points(data.get("suggested_target")) or target,
+            link=clean_wish_link(data.get("link")),
+            image_url=_clean_wish_image(data.get("image_url")),
+            saved=_points(data.get("saved")),
+            pledges=[WishPledge.from_dict(p) for p in data.get("pledges", []) or [] if isinstance(p, dict)],
+            decline_reason=clean_label(data.get("decline_reason"), WISH_DECLINE_REASON_MAX),
+            claim_id=str(data.get("claim_id", "") or ""),
+            created_at=parse_datetime(data.get("created_at")) or datetime.now(timezone.utc),
+            approved_at=parse_datetime(data.get("approved_at")),
+            declined_at=parse_datetime(data.get("declined_at")),
+            redeemed_at=parse_datetime(data.get("redeemed_at")),
+            id=data.get("id") or generate_id(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "child_id": self.child_id,
+            "name": self.name,
+            "target": self.target,
+            "status": self.status,
+            "suggested_target": self.suggested_target,
+            "link": self.link,
+            "image_url": self.image_url,
+            "saved": self.saved,
+            "pledges": [p.to_dict() for p in self.pledges],
+            "decline_reason": self.decline_reason,
+            "claim_id": self.claim_id,
+            "created_at": format_datetime(self.created_at),
+            "approved_at": format_datetime(self.approved_at),
+            "declined_at": format_datetime(self.declined_at),
+            "redeemed_at": format_datetime(self.redeemed_at),
+            "id": self.id,
         }

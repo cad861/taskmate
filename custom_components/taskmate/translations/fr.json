@@ -15,6 +15,9 @@
     },
     "abort": {
       "already_configured": "TaskMate est déjà configuré"
+    },
+    "create_entry": {
+      "default": "TaskMate est prêt. [Ouvrez le panneau TaskMate](/taskmate-admin) pour ajouter vos enfants avec l'assistant de configuration, qui suggère des tâches adaptées à leur âge."
     }
   },
   "selector": {
@@ -139,6 +142,14 @@
         "child_id": {
           "name": "ID de l'enfant",
           "description": "L'identifiant de l'enfant effectuant la corvée"
+        },
+        "note": {
+          "name": "Note",
+          "description": "Ce que l'enfant a fait, avec ses propres mots. Obligatoire pour les tâches ouvertes, et affiché au parent lors de l'approbation."
+        },
+        "suggested_points": {
+          "name": "Points suggérés",
+          "description": "Ce que l'enfant estime que le travail valait. Une simple indication pour le parent qui approuve — cela n'attribue aucun point."
         }
       }
     },
@@ -167,6 +178,14 @@
         "completion_id": {
           "name": "ID de complétion",
           "description": "L'identifiant de l'exécution à approuver"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Attribuer ce nombre de points au lieu de la valeur de la tâche. Laisser vide pour utiliser les points de la tâche."
+        },
+        "rating": {
+          "name": "Note de qualité",
+          "description": "Note facultative de 1 à 3 étoiles sur la qualité du travail. Quand les notes de qualité sont activées, les points sont multipliés par le coefficient de cette note ; laissez vide pour verser 100 %."
         }
       }
     },
@@ -177,6 +196,10 @@
         "completion_ids": {
           "name": "Identifiants de complétion",
           "description": "Identifiants de complétion à approuver ; laisser vide pour tout approuver"
+        },
+        "rating": {
+          "name": "Note de qualité",
+          "description": "Note facultative de 1 à 3 étoiles appliquée à chaque tâche approuvée par cet appel (les notes de qualité doivent être activées)."
         }
       }
     },
@@ -187,6 +210,20 @@
         "completion_id": {
           "name": "ID de complétion",
           "description": "L'identifiant de l'exécution à rejeter"
+        },
+        "reason": {
+          "name": "Raison",
+          "description": "Raison facultative affichée à l'enfant"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Annuler une tâche",
+      "description": "Permet à un enfant de reprendre sa propre tâche — une soumission en attente tant qu'un parent ne l'a pas examinée, ou une tâche approuvée automatiquement pendant la fenêtre d'annulation. Désactivé tant que la fenêtre n'est pas réglée au-dessus de 0 dans les paramètres TaskMate ; tout ce qu'un parent a examiné doit être annulé par un parent.",
+      "fields": {
+        "completion_id": {
+          "name": "ID de réalisation",
+          "description": "L'ID de la tâche réalisée par l'enfant à reprendre"
         }
       }
     },
@@ -295,6 +332,10 @@
         "claim_id": {
           "name": "ID de la demande",
           "description": "L'identifiant de la demande à rejeter"
+        },
+        "reason": {
+          "name": "Raison",
+          "description": "Raison facultative affichée à l'enfant"
         }
       }
     },
@@ -513,6 +554,18 @@
         "requires_approval": {
           "name": "Nécessite approbation",
           "description": "Si vrai, un parent doit approuver l'exécution avant que les points soient attribués"
+        },
+        "team_size": {
+          "name": "Taille de l'équipe",
+          "description": "Fait de cette corvée une tâche d'équipe qui ne compte qu'une fois que ce nombre d'enfants différents l'ont rejointe. Quand l'équipe est complète, elle est soumise pour tous. 0 = corvée normale."
+        },
+        "team_points_mode": {
+          "name": "Points d'équipe",
+          "description": "Comment une tâche d'équipe rapporte : « each » donne tous les points à chaque participant, « split » les partage à parts égales (arrondi à l'inférieur)."
+        },
+        "team_bonus": {
+          "name": "Bonus d'équipe",
+          "description": "Points supplémentaires gagnés par chaque participant quand une tâche d'équipe est terminée."
         }
       }
     },
@@ -601,6 +654,174 @@
         "child_id": {
           "name": "ID de l'enfant",
           "description": "L'identifiant de l'enfant démarrant le minuteur"
+        }
+      }
+    },
+    "leave_team_chore": {
+      "name": "Quitter une tâche d'équipe",
+      "description": "Retirer un enfant d'une tâche d'équipe qu'il a rejointe aujourd'hui, avant que l'équipe soit complète",
+      "fields": {
+        "chore_id": {
+          "name": "ID de la corvée",
+          "description": "L'identifiant de la tâche d'équipe"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'identifiant de l'enfant qui quitte l'équipe"
+        }
+      }
+    },
+    "complete_next_chore": {
+      "name": "Terminer la tâche suivante",
+      "description": "Termine la prochaine tâche en attente de l'enfant, dans l'ordre affiché par la carte enfant. Les tâches qui demandent une photo, une note, un minuteur ou une équipe sont ignorées. Conçu pour les boutons et raccourcis de montre ; les règles d'approbation habituelles s'appliquent.",
+      "fields": {
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant dont la prochaine tâche doit être terminée"
+        }
+      }
+    },
+    "post_bounty": {
+      "name": "Publier une prime",
+      "description": "Publier une tâche ponctuelle sur le tableau des primes pour un nombre de points fixe. Tout enfant éligible peut la réserver ; une fois faite, elle passe par la validation habituelle.",
+      "fields": {
+        "title": {
+          "name": "Titre",
+          "description": "La tâche, p. ex. « Laver la voiture »"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Points fixes versés quand un parent valide la tâche terminée"
+        },
+        "description": {
+          "name": "Description",
+          "description": "Détails facultatifs pour les enfants"
+        },
+        "icon": {
+          "name": "Icône",
+          "description": "Icône MDI affichée sur le tableau"
+        },
+        "expires_at": {
+          "name": "Expire le",
+          "description": "Date et heure facultatives auxquelles la prime quitte le tableau si personne ne l'a réservée. Laisser vide pour ne pas expirer."
+        },
+        "eligible_child_ids": {
+          "name": "Enfants éligibles",
+          "description": "ID des enfants qui peuvent la réserver. Vide = tous les enfants."
+        },
+        "claim_hours": {
+          "name": "Réservation (heures)",
+          "description": "Durée d'une réservation avant que la prime ne revienne sur le tableau"
+        },
+        "require_photo": {
+          "name": "Photo obligatoire",
+          "description": "L'enfant doit joindre une photo en la marquant comme faite"
+        },
+        "notify_children": {
+          "name": "Prévenir les enfants",
+          "description": "Envoyer la notification « Nouvelle prime » aux enfants éligibles"
+        }
+      }
+    },
+    "update_bounty": {
+      "name": "Modifier une prime",
+      "description": "Modifier une prime. Une fois réservée, seuls ses points et son expiration peuvent changer.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID de la prime",
+          "description": "L'ID de la prime à modifier"
+        },
+        "title": {
+          "name": "Titre",
+          "description": "La tâche, p. ex. « Laver la voiture »"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Points fixes versés quand un parent valide la tâche terminée"
+        },
+        "description": {
+          "name": "Description",
+          "description": "Détails facultatifs pour les enfants"
+        },
+        "icon": {
+          "name": "Icône",
+          "description": "Icône MDI affichée sur le tableau"
+        },
+        "expires_at": {
+          "name": "Expire le",
+          "description": "Date et heure facultatives auxquelles la prime quitte le tableau si personne ne l'a réservée. Laisser vide pour ne pas expirer."
+        },
+        "eligible_child_ids": {
+          "name": "Enfants éligibles",
+          "description": "ID des enfants qui peuvent la réserver. Vide = tous les enfants."
+        },
+        "claim_hours": {
+          "name": "Réservation (heures)",
+          "description": "Durée d'une réservation avant que la prime ne revienne sur le tableau"
+        },
+        "require_photo": {
+          "name": "Photo obligatoire",
+          "description": "L'enfant doit joindre une photo en la marquant comme faite"
+        },
+        "notify_children": {
+          "name": "Prévenir les enfants",
+          "description": "Envoyer la notification « Nouvelle prime » aux enfants éligibles"
+        }
+      }
+    },
+    "remove_bounty": {
+      "name": "Retirer une prime",
+      "description": "Retirer une prime du tableau. Impossible tant qu'une tâche terminée attend la validation.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID de la prime",
+          "description": "L'ID de la prime à retirer"
+        }
+      }
+    },
+    "claim_bounty": {
+      "name": "Réserver une prime",
+      "description": "Réserver une prime pour un enfant, qui la garde pendant la durée de réservation. Un enfant ne peut en réserver qu'une à la fois.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID de la prime",
+          "description": "L'ID de la prime à réserver"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant qui la réserve"
+        }
+      }
+    },
+    "give_back_bounty": {
+      "name": "Rendre une prime",
+      "description": "Remettre une prime réservée sur le tableau pour qu'un autre enfant puisse la prendre",
+      "fields": {
+        "bounty_id": {
+          "name": "ID de la prime",
+          "description": "L'ID de la prime réservée"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant qui l'a réservée"
+        }
+      }
+    },
+    "complete_bounty": {
+      "name": "Terminer une prime",
+      "description": "Marquer une prime réservée comme faite. Elle part en validation comme une tâche.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID de la prime",
+          "description": "L'ID de la prime réservée"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant qui l'a réservée"
+        },
+        "photo_url": {
+          "name": "URL de la photo",
+          "description": "Photo de la tâche terminée (obligatoire si la prime en demande une)"
         }
       }
     },
@@ -806,6 +1027,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Ajuster les gels de série",
+      "description": "Donne des gels de série à un enfant (nombre positif) ou en retire (négatif). Un ajout ne dépasse jamais la limite streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant dont les gels changent"
+        },
+        "amount": {
+          "name": "Nombre",
+          "description": "Gels à ajouter (positif) ou à retirer (négatif)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Reporter la tâche obligatoire",
       "description": "Accorde à une tâche obligatoire manquée une autre période (ou demain) sans pénalité et supprime l'élément à vérifier.",
@@ -853,6 +1088,238 @@
           "description": "Points à convertir en argent et à déduire"
         }
       }
+    },
+    "add_wish": {
+      "name": "Ajouter un souhait",
+      "description": "Un enfant ajoute quelque chose pour lequel il veut économiser. Le souhait attend l'approbation d'un parent.",
+      "fields": {
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant qui fait le souhait"
+        },
+        "name": {
+          "name": "Nom",
+          "description": "Ce que l'enfant souhaite"
+        },
+        "target": {
+          "name": "Objectif",
+          "description": "Nombre de points proposé. Le parent peut le modifier lors de l'approbation."
+        },
+        "link": {
+          "name": "Lien",
+          "description": "Adresse web facultative (http ou https) de l'article"
+        },
+        "photo_url": {
+          "name": "Image",
+          "description": "Image facultative tout juste envoyée via le point d'accès photo de TaskMate"
+        }
+      }
+    },
+    "withdraw_wish": {
+      "name": "Retirer un souhait",
+      "description": "Un enfant retire un souhait encore en attente d'approbation, ou efface un souhait refusé.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant à qui appartient le souhait"
+        }
+      }
+    },
+    "move_points_to_wish": {
+      "name": "Placer des points dans un souhait",
+      "description": "Transfère des points du solde disponible d'un enfant vers l'un de ses souhaits approuvés.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant à qui appartient le souhait"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Nombre de points à transférer (plafonné au solde et à ce qu'il manque au souhait)"
+        }
+      }
+    },
+    "take_points_from_wish": {
+      "name": "Reprendre des points d'un souhait",
+      "description": "Rend à l'enfant une partie de ses propres points économisés. Les points promis ne sortent jamais.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant à qui appartient le souhait"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Nombre de points économisés à reprendre (plafonné à ce que l'enfant a économisé)"
+        }
+      }
+    },
+    "request_wish_redeem": {
+      "name": "Demander à obtenir le souhait",
+      "description": "Un souhait entièrement financé devient une demande de récompense en attente d'approbation.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "child_id": {
+          "name": "ID de l'enfant",
+          "description": "L'ID de l'enfant à qui appartient le souhait"
+        }
+      }
+    },
+    "approve_wish": {
+      "name": "Approuver un souhait",
+      "description": "Transforme un souhait en attente en objectif d'épargne, éventuellement avec un autre objectif.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "target": {
+          "name": "Objectif",
+          "description": "Points que coûte le souhait. Laisser vide pour garder la proposition de l'enfant."
+        }
+      }
+    },
+    "decline_wish": {
+      "name": "Refuser un souhait",
+      "description": "Refuse un souhait. Les points économisés reviennent à l'enfant et les promesses sont annulées.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "reason": {
+          "name": "Raison",
+          "description": "Raison facultative affichée à l'enfant"
+        }
+      }
+    },
+    "pledge_to_wish": {
+      "name": "Promettre pour un souhait",
+      "description": "Enregistre des points offerts par un proche pour le souhait d'un enfant. Ils ne touchent aucun solde.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "name": {
+          "name": "De la part de",
+          "description": "De qui vient la promesse, p. ex. Mamie"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Nombre de points promis (plafonné à ce qu'il manque au souhait)"
+        },
+        "message": {
+          "name": "Message",
+          "description": "Message facultatif pour l'enfant"
+        }
+      }
+    },
+    "remove_wish_pledge": {
+      "name": "Retirer une promesse",
+      "description": "Annule une promesse. Possible tant que le souhait n'est pas obtenu.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        },
+        "pledge_id": {
+          "name": "ID de la promesse",
+          "description": "L'ID de la promesse à retirer"
+        }
+      }
+    },
+    "remove_wish": {
+      "name": "Supprimer un souhait",
+      "description": "Supprime un souhait. Les points économisés reviennent à l'enfant et les promesses sont annulées.",
+      "fields": {
+        "wish_id": {
+          "name": "ID du souhait",
+          "description": "L'ID du souhait"
+        }
+      }
+    },
+    "start_inspection": {
+      "name": "Lancer une inspection",
+      "description": "Marque une tâche approuvée au cours des dernières 24 heures pour une inspection surprise. Valide-la ou refuse-la avant la fin du délai ; une inspection non tranchée se ferme discrètement.",
+      "fields": {
+        "completion_id": {
+          "name": "ID de réalisation",
+          "description": "L'ID de la réalisation approuvée à inspecter"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Points versés si elle est réussie. Par défaut, la valeur des Paramètres."
+        },
+        "window": {
+          "name": "Délai",
+          "description": "Combien de temps tu as pour vérifier : 1h, 2h, 4h ou bed (jusqu'au coucher). Par défaut, la valeur des Paramètres."
+        },
+        "tell_child": {
+          "name": "Prévenir l'enfant",
+          "description": "Affiche « Inspection en approche » sur la carte de l'enfant dès maintenant. Désactive pour une vérification secrète."
+        }
+      }
+    },
+    "pass_inspection": {
+      "name": "Valider l'inspection",
+      "description": "La tâche inspectée est réussie. Verse le bonus comme une entrée de points normale et fête ça sur la carte de l'enfant.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID d'inspection",
+          "description": "L'ID de l'inspection en cours"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Points à verser. Par défaut, le bonus fixé au lancement."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Note facultative affichée à l'enfant"
+        }
+      }
+    },
+    "fail_inspection": {
+      "name": "Refuser l'inspection",
+      "description": "La tâche inspectée n'est pas réussie. Aucun point n'est retiré. Elle peut être renvoyée à refaire ; la refaire ne rapporte rien de plus.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID d'inspection",
+          "description": "L'ID de l'inspection en cours"
+        },
+        "redo": {
+          "name": "Renvoyer à refaire",
+          "description": "Remet la tâche sur la liste de l'enfant comme non faite pour aujourd'hui. Par défaut, la valeur des Paramètres."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Note facultative affichée à l'enfant (ce qu'il faut corriger)"
+        }
+      }
+    },
+    "cancel_inspection": {
+      "name": "Annuler l'inspection",
+      "description": "Annule une inspection en cours, comme si elle n'avait jamais commencé.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID d'inspection",
+          "description": "L'ID de l'inspection en cours"
+        }
+      }
     }
   },
   "entity": {
@@ -862,6 +1329,13 @@
       },
       "child_badges": {
         "unit_of_measurement": "badges"
+      },
+      "child_watch": {
+        "state": {
+          "left": "Encore #",
+          "all_done": "Tout est fait",
+          "no_chores": "Aucune tâche"
+        }
       }
     },
     "number": {
@@ -879,6 +1353,35 @@
       "card_design": {
         "name": "Design de carte"
       }
+    }
+  },
+  "exceptions": {
+    "calendar_unknown_event": {
+      "message": "Cet événement n'est pas une tâche TaskMate du calendrier de cet enfant."
+    },
+    "calendar_series_not_supported": {
+      "message": "Une tâche récurrente ne peut être déplacée ou supprimée depuis le calendrier qu'un jour à la fois. Pour modifier toute la série, modifiez la tâche dans TaskMate."
+    },
+    "calendar_repeating_create": {
+      "message": "Les événements récurrents ne peuvent pas être ajoutés depuis le calendrier. Créez plutôt une tâche récurrente dans TaskMate."
+    },
+    "calendar_rename_series": {
+      "message": "Renommez une tâche récurrente dans TaskMate. Depuis le calendrier, vous ne pouvez déplacer ou supprimer qu'un seul jour."
+    },
+    "calendar_time_follows_chore": {
+      "message": "Une tâche récurrente garde son moment de la journée. Seule la date d'une occurrence peut être modifiée depuis le calendrier."
+    },
+    "calendar_past_date": {
+      "message": "Une tâche ne peut pas être ajoutée à un jour passé, ni déplacée vers ou depuis un jour passé."
+    },
+    "calendar_already_scheduled": {
+      "message": "{chore} est déjà prévue le {date}."
+    },
+    "calendar_empty_title": {
+      "message": "Donnez un titre à la tâche."
+    },
+    "calendar_own_event": {
+      "message": "Cet événement a été publié par TaskMate lui-même : il n'est donc pas ajouté comme nouvelle tâche."
     }
   }
 }

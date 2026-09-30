@@ -43,6 +43,9 @@ Settings:
 
 All commands require admin. Mutations write through coordinator methods so
 TaskMate's existing business logic (refunds, cleanup, recompute) runs.
+
+The kiosk card's commands (taskmate/kiosk/*) live in kiosk.py and are
+registered alongside these; status and verify_pin serve any signed-in user.
 """
 
 from __future__ import annotations
@@ -59,19 +62,32 @@ from homeassistant.core import HomeAssistant
 
 from . import images, photos
 from .const import (
+    AGE_GROUPS,
     ASSIGNMENT_MODES,
+    BOUNTY_CLAIM_HOURS_DEFAULT,
+    BOUNTY_CLAIM_HOURS_MAX,
+    BOUNTY_DESCRIPTION_MAX_LENGTH,
+    BOUNTY_POINTS_MAX,
+    BOUNTY_TITLE_MAX_LENGTH,
     DEFAULT_NOTIFICATION_GROUP,
     DEFAULT_NOTIFICATION_NAV_URL,
     DEFAULT_TIME_PERIODS,
     DIFFICULTY_TIERS,
     DOMAIN,
+    MAX_CHORE_TAGS,
     MAX_TIME_PERIODS,
     SCHEDULE_MODES,
+    TAG_ID_MAX_LENGTH,
+    TEAM_POINTS_MODES,
+    TEAM_SIZE_MAX,
     TIME_CATEGORY_ICONS,
     is_valid_completion_sound,
 )
+from .coord_birthdays import normalize_birthday
+from .coord_inspections import INSPECTION_BONUS_MAX, INSPECTION_FAIL_MODES, INSPECTION_WINDOWS
+from .coord_teamwork import teamwork_config_error
 from .coordinator import TaskMateCoordinator
-from .models import BonusSubTask, Reward
+from .models import REJECT_REASON_MAX, BonusSubTask, Reward, normalize_tag_ids
 from .sounds import MAX_NAME_LEN as MAX_SOUND_NAME_LEN
 
 _LOGGER = logging.getLogger(__name__)
@@ -94,9 +110,14 @@ WS_REPORT_FAIRNESS: Final = "taskmate/reports/fairness"
 WS_REPORT_FRICTION: Final = "taskmate/reports/friction"
 WS_REPORT_PROJECTION: Final = "taskmate/reports/projection"
 WS_REPORT_HEALTH: Final = "taskmate/reports/health"
+WS_REPORT_QUALITY: Final = "taskmate/reports/quality"
 WS_SCHEDULED_LIST: Final = "taskmate/scheduled/list"
 WS_SCHEDULED_ADD: Final = "taskmate/scheduled/add"
 WS_SCHEDULED_REMOVE: Final = "taskmate/scheduled/remove"
+
+# Setup wizard (#980); the handlers live in websocket_setup.py.
+WS_SETUP_CATALOGUE: Final = "taskmate/setup_wizard/catalogue"
+WS_SETUP_APPLY: Final = "taskmate/setup_wizard/apply"
 
 WS_ADD_REWARD: Final = "taskmate/add_reward"
 WS_UPDATE_REWARD: Final = "taskmate/update_reward"
@@ -122,6 +143,11 @@ WS_SET_CHILD_AVATAR: Final = "taskmate/set_child_avatar"
 WS_CREATE_CHALLENGE: Final = "taskmate/create_challenge"
 WS_UPDATE_CHALLENGE: Final = "taskmate/update_challenge"
 WS_DELETE_CHALLENGE: Final = "taskmate/delete_challenge"
+
+WS_BOUNTY_POST: Final = "taskmate/bounty_post"
+WS_BOUNTY_UPDATE: Final = "taskmate/bounty_update"
+WS_BOUNTY_REMOVE: Final = "taskmate/bounty_remove"
+WS_BOUNTY_RELEASE: Final = "taskmate/bounty_release"
 
 WS_ADD_TASK_GROUP: Final = "taskmate/add_task_group"
 WS_UPDATE_TASK_GROUP: Final = "taskmate/update_task_group"
@@ -171,6 +197,7 @@ WS_NOTIF_DELETE_CUSTOM: Final = "taskmate/notifications/delete_custom"
 WS_NOTIF_LIST_NOTIFY: Final = "taskmate/notifications/list_notify_services"
 WS_NOTIF_SET_STREAK_CUTOFF: Final = "taskmate/notifications/set_streak_cutoff"
 WS_NOTIF_SET_ESCALATION: Final = "taskmate/notifications/set_escalation"
+WS_NOTIF_SET_PRESENCE_ARRIVAL: Final = "taskmate/notifications/set_presence_arrival"
 WS_NOTIF_SEND_TEST: Final = "taskmate/notifications/send_test"
 WS_NOTIF_SET_NAV_URL: Final = "taskmate/notifications/set_nav_url"
 WS_NOTIF_SET_GROUP: Final = "taskmate/notifications/set_group"
@@ -208,6 +235,8 @@ WS_CONFIG_IMPORT: Final = "taskmate/config/import"
 # Everything else routed through @_admin_only mutates state and is logged.
 _AUDIT_EXCLUDE: Final = {
     WS_GET_STATE,
+    # Chore auctions (#982): the start sheet's read-only occurrence lookup.
+    "taskmate/auctions/occurrences",
     WS_NOTIF_GET_STATE,
     WS_NOTIF_LIST_NOTIFY,
     WS_TEMPLATES_LIST,
@@ -222,12 +251,14 @@ _AUDIT_EXCLUDE: Final = {
     WS_REPORT_FRICTION,
     WS_REPORT_PROJECTION,
     WS_REPORT_HEALTH,
+    WS_REPORT_QUALITY,
+    WS_SETUP_CATALOGUE,
 }
 
 
 def _audit_target(coordinator, msg: dict) -> str:
     """Best-effort human-readable target for an admin action from its payload."""
-    name = msg.get("name")
+    name = msg.get("name") or msg.get("title")
     if isinstance(name, str) and name.strip():
         return name.strip()
     for key, getter in (
@@ -252,6 +283,9 @@ def _audit_target(coordinator, msg: dict) -> str:
         "awarded_badge_id",
         "type_id",
         "transaction_id",
+        "bounty_id",
+        "auction_id",
+        "inspection_id",
     ):
         if msg.get(key):
             return str(msg[key])
@@ -316,6 +350,14 @@ def _opt_str(v: Any) -> str:
     return str(v).strip()
 
 
+def _validate_presence_entity(value):
+    """voluptuous validator: '' (off) or a person.* / device_tracker.* entity id (#926)."""
+    value = _opt_str(value)
+    if value and not value.startswith(("person.", "device_tracker.")):
+        raise vol.Invalid("presence_entity must be a person.* or device_tracker.* entity")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # State snapshot
 # ---------------------------------------------------------------------------
@@ -363,7 +405,14 @@ def _build_state_snapshot(coordinator: TaskMateCoordinator) -> dict[str, Any]:
         "quest_progress": dict(data.get("quest_progress", {}) or {}),
         "avatar_catalog": coordinator.avatar_catalog(),
         "challenges": list(data.get("challenges", [])),
+        # Bounty board (#931): every bounty, history included — the panel
+        # splits them into Active / Waiting approval / History.
+        "bounties": list(data.get("bounties", [])),
+        # Chore auctions (#982): every auction with its bids — parents see the
+        # amounts, and a won occurrence carries how the chore itself is going.
+        "auctions": coordinator.auctions_state(),
         "pool_allocations": list(data.get("pool_allocations", [])),
+        "wishes": coordinator.wishlist_state(),  # wishlist (#932), images signed
         "timed_sessions": list(data.get("timed_sessions", [])),
         "templates": coordinator.get_all_templates(),
         # Operational state — used by the panel's Activity tab + approval banner
@@ -383,14 +432,38 @@ def _build_state_snapshot(coordinator: TaskMateCoordinator) -> dict[str, Any]:
             "points_name": data.get("points_name", "Stars"),
             "points_icon": data.get("points_icon", "mdi:star"),
             "card_design": "classic",
+            # Child undo window (#918): off unless a parent opts in.
+            "chore_undo_seconds": 0,
             # Difficulty multiplier defaults; overridden by stored values below.
             "difficulty_multiplier_easy": 0.5,
             "difficulty_multiplier_medium": 1.0,
             "difficulty_multiplier_hard": 2.0,
+            # Quality-rating multipliers (#927); overridden by stored values.
+            "quality_rating_multiplier_1": 0.75,
+            "quality_rating_multiplier_2": 1.0,
+            "quality_rating_multiplier_3": 1.25,
             **(data.get("settings", {}) or {}),
         },
         "parent_completable": parent_completable,
+        # Kiosk (#930): which children have a PIN — never the hash itself.
+        "kiosk_pin_children": coordinator.storage.get_kiosk_pin_child_ids(),
+        # Today page (#966): each child's chores today + the last 7 days.
+        "today": _today_state(coordinator),
+        # Surprise inspections (#981): the kept log, and which approved
+        # completions can still be flagged (the magnifier).
+        "inspections": coordinator.inspections_state(),
+        "inspectable_completions": coordinator.inspectable_completion_ids(),
+        "inspection_bed_rule": coordinator.inspection_bed_rule(),
     }
+
+
+def _today_state(coordinator) -> dict | None:
+    """Today page data; a failure here must not break the rest of the panel."""
+    try:
+        return coordinator.daily_progress_state()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("TaskMate: could not build the Today board")
+        return None
 
 
 @websocket_api.websocket_command({vol.Required("type"): WS_GET_STATE})
@@ -416,11 +489,19 @@ async def _ws_get_state(hass, connection, msg, coordinator):
         vol.Optional("pause_streak_when_unavailable", default=False): bool,
         vol.Optional("linked_user_id", default=""): str,
         vol.Optional("picture_entity", default=""): str,
+        vol.Optional("birthday", default=""): vol.All(str, vol.Length(max=10)),
+        vol.Optional("presence_entity", default=""): _validate_presence_entity,
+        vol.Optional("age_group", default=""): vol.In(("", *AGE_GROUPS)),
     }
 )
 @websocket_api.async_response
 @_admin_only
 async def _ws_add_child(hass, connection, msg, coordinator):
+    try:
+        birthday = normalize_birthday(msg.get("birthday", ""))
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid_format", str(err))
+        return
     child = await coordinator.async_add_child(
         name=msg["name"].strip(),
         avatar=msg.get("avatar") or "mdi:account-circle",
@@ -430,6 +511,9 @@ async def _ws_add_child(hass, connection, msg, coordinator):
         pause_streak_when_unavailable=bool(msg.get("pause_streak_when_unavailable", False)),
         linked_user_id=_opt_str(msg.get("linked_user_id")),
         picture_entity=_opt_str(msg.get("picture_entity")),
+        birthday=birthday,
+        presence_entity=msg.get("presence_entity", ""),
+        age_group=msg.get("age_group", ""),
     )
     connection.send_result(msg["id"], {"id": child.id})
 
@@ -446,8 +530,11 @@ async def _ws_add_child(hass, connection, msg, coordinator):
         vol.Optional("pause_streak_when_unavailable"): bool,
         vol.Optional("linked_user_id"): str,
         vol.Optional("picture_entity"): str,
+        vol.Optional("presence_entity"): _validate_presence_entity,
         vol.Optional("is_guest"): bool,
         vol.Optional("guest_expires_on"): str,
+        vol.Optional("birthday"): vol.All(str, vol.Length(max=10)),
+        vol.Optional("age_group"): vol.In(("", *AGE_GROUPS)),
     }
 )
 @websocket_api.async_response
@@ -473,6 +560,16 @@ async def _ws_update_child(hass, connection, msg, coordinator):
         existing.linked_user_id = _opt_str(msg["linked_user_id"])
     if "picture_entity" in msg:
         existing.picture_entity = _opt_str(msg["picture_entity"])
+    if "birthday" in msg:
+        try:
+            existing.birthday = normalize_birthday(msg["birthday"])
+        except ValueError as err:
+            connection.send_error(msg["id"], "invalid_format", str(err))
+            return
+    if "presence_entity" in msg:
+        existing.presence_entity = msg["presence_entity"]
+    if "age_group" in msg:
+        existing.age_group = msg["age_group"]
     if "is_guest" in msg or "guest_expires_on" in msg:
         # Routed through the coordinator so the expiry is validated and an
         # archived guest is un-archived when promoted to a family member.
@@ -581,6 +678,7 @@ _CHORE_EDITABLE_FIELDS = {
     "time_category",
     "claim_allowance_minutes",
     "daily_limit",
+    "weekly_target",
     "completion_sound",
     "icon",
     "image_url",
@@ -607,6 +705,10 @@ _CHORE_EDITABLE_FIELDS = {
     "early_bonus",
     "late_penalty",
     "require_photo",
+    "open_ended",
+    "team_size",
+    "team_points_mode",
+    "team_bonus",
     "mandatory",
     "mandatory_penalty_points",
     "assignment_mode",
@@ -618,7 +720,23 @@ _CHORE_EDITABLE_FIELDS = {
     "timed_rate_points",
     "timed_rate_minutes",
     "timed_max_daily_minutes",
+    "tag_ids",
 }
+
+
+def _tag_id_list(value):
+    """Validate the NFC / QR tag ids linked to a chore (#923).
+
+    Raises rather than returning a falsy value — voluptuous treats a callable
+    as a coercer (see ``_image_url_or_blank``).
+    """
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise vol.Invalid("tag_ids must be a list of strings")
+    if any(len(v.strip()) > TAG_ID_MAX_LENGTH for v in value):
+        raise vol.Invalid(f"Tag ids are limited to {TAG_ID_MAX_LENGTH} characters")
+    if len({v.strip() for v in value if v.strip()}) > MAX_CHORE_TAGS:
+        raise vol.Invalid(f"A chore can be linked to at most {MAX_CHORE_TAGS} tags")
+    return normalize_tag_ids(value)
 
 
 def _chore_payload_schema(*, require_name: bool):
@@ -634,6 +752,9 @@ def _chore_payload_schema(*, require_name: bool):
         vol.Optional("time_category"): str,
         vol.Optional("claim_allowance_minutes"): vol.All(int, vol.Range(min=0)),
         vol.Optional("daily_limit"): vol.All(int, vol.Range(min=1)),
+        # Weekly target (#883): 0 = no quota, which is the case for almost
+        # every chore, so it has to be a valid value rather than a floor of 1.
+        vol.Optional("weekly_target"): vol.All(int, vol.Range(min=0)),
         vol.Optional("completion_sound"): _completion_sound,
         vol.Optional("icon"): str,
         vol.Optional("image_url"): _image_url_or_blank,
@@ -663,6 +784,13 @@ def _chore_payload_schema(*, require_name: bool):
         vol.Optional("mandatory"): bool,
         vol.Optional("mandatory_penalty_points"): vol.All(int, vol.Range(min=0)),
         vol.Optional("require_photo"): bool,
+        vol.Optional("open_ended"): bool,
+        # Teamwork chores (#928): 0 = an ordinary chore, otherwise 2..max.
+        # The cross-field rules (not first-come, not open-ended) are checked
+        # by teamwork_config_error once the whole chore is known.
+        vol.Optional("team_size"): vol.All(int, vol.Range(min=0, max=TEAM_SIZE_MAX)),
+        vol.Optional("team_points_mode"): vol.In(TEAM_POINTS_MODES),
+        vol.Optional("team_bonus"): vol.All(int, vol.Range(min=0)),
         vol.Optional("assignment_mode"): vol.In(ASSIGNMENT_MODES),
         vol.Optional("assignment_rotation_anchor"): str,
         vol.Optional("require_availability"): bool,
@@ -679,6 +807,7 @@ def _chore_payload_schema(*, require_name: bool):
         vol.Optional("timed_rate_points"): vol.All(int, vol.Range(min=1)),
         vol.Optional("timed_rate_minutes"): vol.All(int, vol.Range(min=1)),
         vol.Optional("timed_max_daily_minutes"): vol.All(int, vol.Range(min=0)),
+        vol.Optional("tag_ids"): _tag_id_list,
     }
 
 
@@ -707,6 +836,18 @@ async def _maybe_apply_manual_start(coordinator, chore_id: str, child_id: str | 
 @websocket_api.async_response
 @_admin_only
 async def _ws_add_chore(hass, connection, msg, coordinator):
+    # The chore is created and then updated with the remaining fields, so a bad
+    # teamwork combination (#928) has to be refused before the create — the
+    # update would reject it only after an ordinary chore already existed.
+    team_error = teamwork_config_error(
+        msg.get("team_size", 0),
+        assignment_mode=msg.get("assignment_mode", "everyone"),
+        open_ended=bool(msg.get("open_ended", False)),
+        task_type=msg.get("task_type", "standard"),
+        team_points_mode=msg.get("team_points_mode", "each"),
+    )
+    if team_error:
+        raise ValueError(team_error)
     chore = await coordinator.async_add_chore(
         name=msg["name"].strip(),
         points=msg.get("points", 10),
@@ -894,6 +1035,18 @@ async def _ws_print_chart(hass, connection, msg, coordinator):
     connection.send_result(msg["id"], {"html": html})
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_REPORT_QUALITY,
+        vol.Optional("days"): vol.All(int, vol.Range(min=1, max=90)),
+    }
+)
+@websocket_api.async_response
+@_admin_only
+async def _ws_report_quality(hass, connection, msg, coordinator):
+    connection.send_result(msg["id"], coordinator.quality_report(msg.get("days")))
+
+
 @websocket_api.websocket_command({vol.Required("type"): WS_REPORT_HEALTH})
 @websocket_api.async_response
 @_admin_only
@@ -1000,6 +1153,7 @@ _REWARD_FIELDS = {
     "available_days",
     "available_from",
     "available_until",
+    "streak_freeze",
 }
 
 
@@ -1025,6 +1179,7 @@ def _reward_payload_schema(*, require_name: bool):
         vol.Optional("available_days"): [vol.All(int, vol.Range(min=0, max=6))],
         vol.Optional("available_from"): _validate_hhmm_or_empty,
         vol.Optional("available_until"): _validate_hhmm_or_empty,
+        vol.Optional("streak_freeze"): bool,
     }
 
 
@@ -1069,6 +1224,7 @@ async def _ws_add_reward(hass, connection, msg, coordinator):
         available_days=sorted(set(msg.get("available_days", []) or [])),
         available_from=msg.get("available_from", "") or "",
         available_until=msg.get("available_until", "") or "",
+        streak_freeze=msg.get("streak_freeze", False),
     )
     coordinator.storage.add_reward(reward)
     await coordinator.storage.async_save()
@@ -1253,6 +1409,83 @@ async def _ws_set_child_avatar(hass, connection, msg, coordinator):
         connection.send_error(msg["id"], "invalid", str(err))
         return
     connection.send_result(msg["id"], {"id": msg["child_id"]})
+
+
+# ---------------------------------------------------------------------------
+# Bounty board (#931)
+# ---------------------------------------------------------------------------
+
+_BOUNTY_EDITABLE = {
+    vol.Optional("description"): vol.All(str, vol.Length(max=BOUNTY_DESCRIPTION_MAX_LENGTH)),
+    vol.Optional("icon"): str,
+    # ISO date-time, or null / "" for no expiry.
+    vol.Optional("expires_at"): vol.Any(None, str),
+    vol.Optional("eligible_child_ids"): [str],
+    vol.Optional("claim_hours"): vol.All(int, vol.Range(min=1, max=BOUNTY_CLAIM_HOURS_MAX)),
+    vol.Optional("require_photo"): bool,
+    vol.Optional("notify_children"): bool,
+}
+_BOUNTY_FIELDS = (
+    "title",
+    "points",
+    "description",
+    "icon",
+    "expires_at",
+    "eligible_child_ids",
+    "claim_hours",
+    "require_photo",
+    "notify_children",
+)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_BOUNTY_POST,
+        vol.Required("title"): vol.All(str, vol.Length(min=1, max=BOUNTY_TITLE_MAX_LENGTH)),
+        vol.Required("points"): vol.All(int, vol.Range(min=1, max=BOUNTY_POINTS_MAX)),
+        **_BOUNTY_EDITABLE,
+    }
+)
+@websocket_api.async_response
+@_admin_only
+async def _ws_bounty_post(hass, connection, msg, coordinator):
+    extra = {k: msg[k] for k in _BOUNTY_FIELDS if k in msg and k not in ("title", "points")}
+    extra.setdefault("claim_hours", BOUNTY_CLAIM_HOURS_DEFAULT)
+    bounty = await coordinator.async_post_bounty(msg["title"], msg["points"], **extra)
+    connection.send_result(msg["id"], {"id": bounty.id})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_BOUNTY_UPDATE,
+        vol.Required("bounty_id"): str,
+        vol.Optional("title"): vol.All(str, vol.Length(min=1, max=BOUNTY_TITLE_MAX_LENGTH)),
+        vol.Optional("points"): vol.All(int, vol.Range(min=1, max=BOUNTY_POINTS_MAX)),
+        **_BOUNTY_EDITABLE,
+    }
+)
+@websocket_api.async_response
+@_admin_only
+async def _ws_bounty_update(hass, connection, msg, coordinator):
+    changes = {k: msg[k] for k in _BOUNTY_FIELDS if k in msg}
+    bounty = await coordinator.async_update_bounty(msg["bounty_id"], **changes)
+    connection.send_result(msg["id"], {"id": bounty.id})
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_BOUNTY_REMOVE, vol.Required("bounty_id"): str})
+@websocket_api.async_response
+@_admin_only
+async def _ws_bounty_remove(hass, connection, msg, coordinator):
+    await coordinator.async_remove_bounty(msg["bounty_id"])
+    connection.send_result(msg["id"], {"id": msg["bounty_id"]})
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_BOUNTY_RELEASE, vol.Required("bounty_id"): str})
+@websocket_api.async_response
+@_admin_only
+async def _ws_bounty_release(hass, connection, msg, coordinator):
+    await coordinator.async_release_bounty(msg["bounty_id"])
+    connection.send_result(msg["id"], {"id": msg["bounty_id"]})
 
 
 # ---------------------------------------------------------------------------
@@ -1644,14 +1877,25 @@ async def _ws_remove_custom_sound(hass, connection, msg, coordinator):
 # Top-level fields stored at storage._data root
 _TOP_LEVEL_SETTINGS = {"points_name", "points_icon"}
 # Allowed values for the global default card-design style (per-card design styles).
-_ALLOWED_CARD_DESIGNS = {"classic", "playroom", "console", "cleanpro", "accessible"}
+_ALLOWED_CARD_DESIGNS = {"classic", "playroom", "console", "cleanpro", "accessible", "graphite"}
 # Settings stored under storage._data["settings"][key]
 _SUBKEY_SETTINGS = {
     "require_linked_child",
+    "chore_undo_seconds",
     "history_days",
+    # Recaps (#929)
+    "recap_frequencies",
+    "recap_child_frequencies",
+    "recap_notify_children",
+    "recap_notify_parents",
+    "recap_send_time",
+    "recap_retention",
+    "recap_compare",
     "streak_reset_mode",
     "card_design",
     "weekend_multiplier",
+    "birthday_points_multiplier",
+    "birthday_chores_off",
     "streak_milestones_enabled",
     "perfect_week_enabled",
     "perfect_week_bonus",
@@ -1659,9 +1903,15 @@ _SUBKEY_SETTINGS = {
     "quick_point_amounts",
     "streak_requires_all_chores",
     "perfect_week_requires_all_chores",
+    "streak_freeze_max",
+    "streak_freeze_earn_every",
     "difficulty_multiplier_easy",
     "difficulty_multiplier_medium",
     "difficulty_multiplier_hard",
+    "quality_rating_enabled",
+    "quality_rating_multiplier_1",
+    "quality_rating_multiplier_2",
+    "quality_rating_multiplier_3",
     "unlock_allowlist",
     "parent_routing",
     "read_aloud_media_player",
@@ -1677,6 +1927,17 @@ _SUBKEY_SETTINGS = {
     "surprise_bonus_chance",
     "surprise_bonus_min",
     "surprise_bonus_max",
+    # Surprise inspections (#981)
+    "inspections_enabled",
+    "inspection_bonus",
+    "inspection_window",
+    "inspection_bedtime",
+    "inspection_fail_mode",
+    "inspection_tell_child",
+    "inspection_pick_enabled",
+    "inspection_pick_time",
+    "inspection_pick_chance",
+    "inspection_pick_children",
     "points_decay_enabled",
     "points_decay_period",
     "points_decay_percent",
@@ -1835,6 +2096,42 @@ def _validate_vacation_periods(raw: list) -> tuple[list[dict] | None, str | None
     return sorted(periods, key=lambda p: p["start"]), None
 
 
+def _validate_recap_child_frequencies(value: Any) -> dict[str, list[str]]:
+    """Per-child recap overrides (#929): {child_id: [frequency, ...]}.
+
+    A child present here is on "Custom" (an empty list = recaps off); a child
+    absent inherits the family default.
+    """
+    from .coord_recaps import RECAP_FREQUENCIES
+
+    if not isinstance(value, dict) or len(value) > 100:
+        raise vol.Invalid("recap_child_frequencies must be an object of child id -> frequencies")
+    out: dict[str, list[str]] = {}
+    for child_id, freqs in value.items():
+        if not isinstance(child_id, str) or not isinstance(freqs, list):
+            raise vol.Invalid("recap_child_frequencies must map child ids to lists")
+        bad = [f for f in freqs if f not in RECAP_FREQUENCIES]
+        if bad:
+            raise vol.Invalid(f"unknown recap frequency: {bad[0]}")
+        out[child_id] = [f for f in RECAP_FREQUENCIES if f in freqs]
+    return out
+
+
+def _validate_recap_frequencies(value: Any) -> list[str]:
+    from .coord_recaps import RECAP_FREQUENCIES
+
+    if not isinstance(value, list) or any(f not in RECAP_FREQUENCIES for f in value):
+        raise vol.Invalid("recap_frequencies must be a list of recap frequencies")
+    return [f for f in RECAP_FREQUENCIES if f in value]
+
+
+def _validate_chore_undo_seconds(value: Any) -> int:
+    """A whole number of seconds from 0 to 3600 (#918). Booleans are refused."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 3600:
+        raise vol.Invalid("chore_undo_seconds must be a whole number from 0 to 3600")
+    return value
+
+
 # Extracted to a module constant so the accepted settings keys can be unit-tested
 # (the websocket_command decorator does not expose the compiled schema). Every key
 # accepted here must also be routed in _ws_update_settings below.
@@ -1846,16 +2143,32 @@ _UPDATE_SETTINGS_SCHEMA = {
     vol.Optional("history_days"): vol.All(int, vol.Range(min=30, max=365)),
     vol.Optional("streak_reset_mode"): vol.In(["reset", "pause"]),
     vol.Optional("weekend_multiplier"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=5.0)),
+    vol.Optional("birthday_points_multiplier"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=5.0)),
+    vol.Optional("birthday_chores_off"): bool,
     vol.Optional("streak_milestones_enabled"): bool,
     vol.Optional("perfect_week_enabled"): bool,
     vol.Optional("perfect_week_bonus"): vol.All(int, vol.Range(min=0)),
     vol.Optional("streak_requires_all_chores"): bool,
     vol.Optional("perfect_week_requires_all_chores"): bool,
+    vol.Optional("streak_freeze_max"): vol.All(vol.Coerce(int), vol.Range(min=0, max=10)),
+    vol.Optional("streak_freeze_earn_every"): vol.All(vol.Coerce(int), vol.Range(min=0, max=365)),
     vol.Optional("difficulty_multiplier_easy"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
     vol.Optional("difficulty_multiplier_medium"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
     vol.Optional("difficulty_multiplier_hard"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=10.0)),
+    vol.Optional("quality_rating_enabled"): bool,
+    vol.Optional("quality_rating_multiplier_1"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=5.0)),
+    vol.Optional("quality_rating_multiplier_2"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=5.0)),
+    vol.Optional("quality_rating_multiplier_3"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=5.0)),
     vol.Optional("unlock_allowlist"): [str],
     vol.Optional("require_linked_child"): bool,
+    vol.Optional("chore_undo_seconds"): _validate_chore_undo_seconds,
+    vol.Optional("recap_frequencies"): _validate_recap_frequencies,
+    vol.Optional("recap_child_frequencies"): _validate_recap_child_frequencies,
+    vol.Optional("recap_notify_children"): bool,
+    vol.Optional("recap_notify_parents"): bool,
+    vol.Optional("recap_send_time"): vol.Match(r"^([01]\d|2[0-3]):[0-5]\d$"),
+    vol.Optional("recap_retention"): vol.In(["1y", "2y", "forever"]),
+    vol.Optional("recap_compare"): bool,
     vol.Optional("parent_routing"): vol.In(["all", "home", "round_robin"]),
     vol.Optional("read_aloud_media_player"): str,
     vol.Optional("read_aloud_tts_entity"): str,
@@ -1870,6 +2183,16 @@ _UPDATE_SETTINGS_SCHEMA = {
     vol.Optional("surprise_bonus_chance"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=100.0)),
     vol.Optional("surprise_bonus_min"): vol.All(int, vol.Range(min=0, max=10000)),
     vol.Optional("surprise_bonus_max"): vol.All(int, vol.Range(min=0, max=10000)),
+    vol.Optional("inspections_enabled"): bool,
+    vol.Optional("inspection_bonus"): vol.All(vol.Coerce(int), vol.Range(min=0, max=INSPECTION_BONUS_MAX)),
+    vol.Optional("inspection_window"): vol.In(INSPECTION_WINDOWS),
+    vol.Optional("inspection_bedtime"): vol.Match(r"^([01]\d|2[0-3]):[0-5]\d$"),
+    vol.Optional("inspection_fail_mode"): vol.In(INSPECTION_FAIL_MODES),
+    vol.Optional("inspection_tell_child"): bool,
+    vol.Optional("inspection_pick_enabled"): bool,
+    vol.Optional("inspection_pick_time"): vol.Match(r"^([01]\d|2[0-3]):[0-5]\d$"),
+    vol.Optional("inspection_pick_chance"): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+    vol.Optional("inspection_pick_children"): vol.All([str], vol.Length(max=100)),
     vol.Optional("points_decay_enabled"): bool,
     vol.Optional("points_decay_period"): vol.In(["weekly", "monthly"]),
     vol.Optional("points_decay_percent"): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=100.0)),
@@ -1960,6 +2283,12 @@ async def _ws_update_settings(hass, connection, msg, coordinator):
         # Period boundaries moved → re-arm the mandatory-chore end-of-period checks (#532)
         if "time_periods" in changed:
             await coordinator.async_rearm_mandatory_schedules()
+        # Recaps (#929): note when a frequency was switched on, re-arm the send time.
+        if any(k.startswith("recap_") for k in changed):
+            await coordinator.async_recap_settings_changed()
+        # Surprise inspections (#981): move the daily pick to its new time.
+        if "inspection_pick_time" in changed:
+            await coordinator.async_inspection_settings_changed()
         await coordinator.async_refresh()
     connection.send_result(msg["id"], {"updated": changed})
 
@@ -1980,8 +2309,9 @@ async def _ws_update_settings(hass, connection, msg, coordinator):
 @websocket_api.async_response
 @_admin_only
 async def _ws_complete_bonus_subtask(hass, connection, msg, coordinator):
+    # Ticked from the admin panel, so not the child's to undo (#918).
     completion = await coordinator.async_complete_bonus_subtask(
-        msg["chore_id"], msg["bonus_subtask_id"], msg["child_id"]
+        msg["chore_id"], msg["bonus_subtask_id"], msg["child_id"], by_child=False
     )
     connection.send_result(msg["id"], {"id": completion.id})
 
@@ -1990,12 +2320,16 @@ async def _ws_complete_bonus_subtask(hass, connection, msg, coordinator):
     {
         vol.Required("type"): WS_APPROVE_CHORE,
         vol.Required("completion_id"): str,
+        # Optional per-approval award (#832) — replaces the chore's own points.
+        vol.Optional("points"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+        # Optional 1-3 star quality rating (#927).
+        vol.Optional("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
     }
 )
 @websocket_api.async_response
 @_admin_only
 async def _ws_approve_chore(hass, connection, msg, coordinator):
-    await coordinator.async_approve_chore(msg["completion_id"])
+    await coordinator.async_approve_chore(msg["completion_id"], points=msg.get("points"), rating=msg.get("rating"))
     connection.send_result(msg["id"], {"completion_id": msg["completion_id"]})
 
 
@@ -2003,12 +2337,13 @@ async def _ws_approve_chore(hass, connection, msg, coordinator):
     {
         vol.Required("type"): WS_APPROVE_ALL_CHORES,
         vol.Optional("completion_ids"): [str],
+        vol.Optional("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
     }
 )
 @websocket_api.async_response
 @_admin_only
 async def _ws_approve_all_chores(hass, connection, msg, coordinator):
-    count = await coordinator.async_approve_chores_bulk(msg.get("completion_ids"))
+    count = await coordinator.async_approve_chores_bulk(msg.get("completion_ids"), rating=msg.get("rating"))
     connection.send_result(msg["id"], {"count": count})
 
 
@@ -2016,12 +2351,13 @@ async def _ws_approve_all_chores(hass, connection, msg, coordinator):
     {
         vol.Required("type"): WS_REJECT_CHORE,
         vol.Required("completion_id"): str,
+        vol.Optional("reason", default=""): vol.All(str, vol.Length(max=REJECT_REASON_MAX)),
     }
 )
 @websocket_api.async_response
 @_admin_only
 async def _ws_reject_chore(hass, connection, msg, coordinator):
-    await coordinator.async_reject_chore(msg["completion_id"])
+    await coordinator.async_reject_chore(msg["completion_id"], reason=msg.get("reason", ""))
     connection.send_result(msg["id"], {"completion_id": msg["completion_id"]})
 
 
@@ -2042,12 +2378,13 @@ async def _ws_approve_reward(hass, connection, msg, coordinator):
     {
         vol.Required("type"): WS_REJECT_REWARD,
         vol.Required("claim_id"): str,
+        vol.Optional("reason", default=""): vol.All(str, vol.Length(max=REJECT_REASON_MAX)),
     }
 )
 @websocket_api.async_response
 @_admin_only
 async def _ws_reject_reward(hass, connection, msg, coordinator):
-    await coordinator.async_reject_reward(msg["claim_id"])
+    await coordinator.async_reject_reward(msg["claim_id"], reason=msg.get("reason", ""))
     connection.send_result(msg["id"], {"claim_id": msg["claim_id"]})
 
 
@@ -2321,6 +2658,7 @@ async def ws_notif_get_state(hass, connection, msg, coordinator):
             "streak_at_risk_cutoff_time": c.storage.get_streak_at_risk_cutoff(),
             "mandatory_escalation_reminder_minutes": c.storage.get_escalation_reminder_minutes(),
             "mandatory_escalation_parent_minutes": c.storage.get_escalation_parent_minutes(),
+            "presence_arrival_min_away": c.storage.get_presence_arrival_min_away(),
             "notification_nav_url": c.storage.get_setting("notification_nav_url", DEFAULT_NOTIFICATION_NAV_URL),
             "notification_group": c.storage.get_setting("notification_group", DEFAULT_NOTIFICATION_GROUP),
         },
@@ -2538,6 +2876,19 @@ async def ws_notif_set_streak_cutoff(hass, connection, msg, coordinator):
 async def ws_notif_set_escalation(hass, connection, msg, coordinator):
     coordinator.storage.set_escalation_minutes(msg["reminder_minutes"], msg["parent_minutes"])
     await coordinator.storage.async_save()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_NOTIF_SET_PRESENCE_ARRIVAL,
+        vol.Required("min_away_minutes"): vol.All(vol.Coerce(int), vol.Range(min=0, max=1440)),
+    }
+)
+@websocket_api.async_response
+@_admin_only
+async def ws_notif_set_presence_arrival(hass, connection, msg, coordinator):
+    await coordinator.notifications.set_presence_arrival_min_away(msg["min_away_minutes"])
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -2788,6 +3139,7 @@ _COMMANDS = (
     _ws_report_friction,
     _ws_report_projection,
     _ws_report_health,
+    _ws_report_quality,
     _ws_templates_export,
     _ws_templates_import,
     _ws_print_chart,
@@ -2807,6 +3159,10 @@ _COMMANDS = (
     _ws_update_avatar_catalog,
     _ws_set_child_avatar,
     _ws_create_challenge,
+    _ws_bounty_post,
+    _ws_bounty_update,
+    _ws_bounty_remove,
+    _ws_bounty_release,
     _ws_update_challenge,
     _ws_delete_challenge,
     _ws_add_penalty,
@@ -2855,6 +3211,7 @@ _COMMANDS = (
     ws_notif_set_streak_cutoff,
     ws_notif_send_test,
     ws_notif_set_escalation,
+    ws_notif_set_presence_arrival,
     ws_notif_set_nav_url,
     ws_notif_set_group,
     ws_cal_get_url,
@@ -2867,7 +3224,16 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     if hass.data.get(DOMAIN, {}).get(WS_REGISTERED):
         _LOGGER.debug("TaskMate WS commands already registered, skipping")
         return
-    for cmd in _COMMANDS:
+    # Imported here: kiosk.py, websocket_recaps.py and websocket_auctions.py
+    # build on this module's _admin_only / _get_coordinator helpers.
+    from .kiosk import KIOSK_COMMANDS
+    from .websocket_auctions import AUCTION_COMMANDS
+    from .websocket_inspections import INSPECTION_COMMANDS
+    from .websocket_recaps import RECAP_COMMANDS
+    from .websocket_setup import SETUP_COMMANDS
+
+    extra = (*KIOSK_COMMANDS, *RECAP_COMMANDS, *INSPECTION_COMMANDS, *SETUP_COMMANDS, *AUCTION_COMMANDS)
+    for cmd in (*_COMMANDS, *extra):
         websocket_api.async_register_command(hass, cmd)
     hass.data.setdefault(DOMAIN, {})[WS_REGISTERED] = True
-    _LOGGER.info("Registered %d TaskMate WebSocket commands", len(_COMMANDS))
+    _LOGGER.info("Registered %d TaskMate WebSocket commands", len(_COMMANDS) + len(extra))

@@ -212,6 +212,65 @@ class TestRejectReward:
         run(coord.async_reject_reward("claim1"))
         assert child.points == 100  # points were never deducted
 
+    def test_unknown_claim_is_a_no_op(self):
+        coord = _make_coord()
+        run(coord.async_reject_reward("does-not-exist"))
+
+    def test_an_approved_claim_cannot_be_rejected(self):
+        """A stale second review must not delete a purchase that was paid for."""
+        import datetime as dt
+
+        now = dt.datetime.now(dt.timezone.utc)
+        child = _child(points=50)  # already paid the 50-point cost
+        reward = _reward(cost=50)
+        reward.quantity = 2
+        claim = RewardClaim(
+            reward_id="reward1",
+            child_id="kid1",
+            claimed_at=now,
+            approved=True,
+            approved_at=now,
+            id="claim1",
+        )
+        coord = _make_coord(children=[child], rewards=[reward], claims=[claim])
+
+        with pytest.raises(ValueError, match="already been approved"):
+            run(coord.async_reject_reward("claim1"))
+
+        # The purchase, the price paid and the stock all survive the attempt.
+        assert [c["id"] for c in coord.storage._data["reward_claims"]] == ["claim1"]
+        assert child.points == 50
+        assert reward.quantity == 2
+        coord.storage.remove_reward_claim.assert_not_called()
+        coord.storage.async_save.assert_not_called()
+        coord.hass.bus.async_fire.assert_not_called()
+
+    def test_the_refusal_names_the_reward(self):
+        import datetime as dt
+
+        now = dt.datetime.now(dt.timezone.utc)
+        claim = RewardClaim(
+            reward_id="reward1", child_id="kid1", claimed_at=now, approved=True, approved_at=now, id="claim1"
+        )
+        coord = _make_coord(rewards=[_reward()], claims=[claim])
+
+        with pytest.raises(ValueError, match="Movie night"):
+            run(coord.async_reject_reward("claim1"))
+
+    def test_a_deleted_reward_still_refuses_an_approved_claim(self):
+        """The claim outlives its reward, and the guard must not depend on it."""
+        import datetime as dt
+
+        now = dt.datetime.now(dt.timezone.utc)
+        claim = RewardClaim(
+            reward_id="gone", child_id="kid1", claimed_at=now, approved=True, approved_at=now, id="claim1"
+        )
+        coord = _make_coord(claims=[claim])
+
+        with pytest.raises(ValueError, match="already been approved"):
+            run(coord.async_reject_reward("claim1"))
+        assert [c["id"] for c in coord.storage._data["reward_claims"]] == ["claim1"]
+
 
 # ---------------------------------------------------------------------------
 # async_allocate_points_to_pool (v3.0 pool mode)
@@ -824,6 +883,13 @@ def _ts():
     return _dt.datetime(2024, 3, 20, 12, 0, 0, tzinfo=_dt.timezone.utc)
 
 
+def _now():
+    """Now, for records that have to land inside the current cap period."""
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
 class TestClaimFloodControl:
     def test_duplicate_pending_claim_is_rejected(self):
         child = _child(points=500)
@@ -925,3 +991,490 @@ class TestApprovalRechecksAvailability:
         assert claim.approved is True
         assert alice.points == 490
         assert reward.quantity == 4
+
+
+# ---------------------------------------------------------------------------
+# jackpot rewards share one pending claim (#873)
+# ---------------------------------------------------------------------------
+
+
+class TestJackpotSharedPendingClaim:
+    """A jackpot is funded from one shared pool, so it can only be redeemed
+    once per funding cycle. A pending claim from any contributor has to block
+    every other child — otherwise the parent approves the second claim after
+    the pool is already spent and it silently falls through to wallet mode,
+    charging that child the full cost a second time (#873).
+    """
+
+    def _jackpot_coord(self, *, cost=50, pool_total=50, claim_child="kidA"):
+        alice = Child(name="Alice", points=0, id="kidA")
+        # Bob is deliberately wallet-rich: without the shared-claim block he
+        # sails straight past the balance check and queues a second claim.
+        bob = Child(name="Bob", points=500, id="kidB")
+        reward = Reward(name="Family Trip", cost=cost, is_jackpot=True, id="rewardJ")
+        claim = RewardClaim(reward_id="rewardJ", child_id=claim_child, claimed_at=_ts(), approved=False, id="c1")
+        coord = _make_coord(children=[alice, bob], rewards=[reward], claims=[claim])
+        coord.storage.get_total_allocated_for_reward = MagicMock(return_value=pool_total)
+        return coord, alice, bob, reward
+
+    def test_second_child_cannot_claim_while_a_claim_is_pending(self):
+        coord, _alice, _bob, _reward = self._jackpot_coord()
+
+        with pytest.raises(ValueError, match="already waiting"):
+            run(coord.async_claim_reward("rewardJ", "kidB"))
+
+        coord.storage.add_reward_claim.assert_not_called()
+
+    def test_claiming_child_still_blocked_by_their_own_claim(self):
+        coord, _alice, _bob, _reward = self._jackpot_coord()
+
+        with pytest.raises(ValueError, match="already waiting"):
+            run(coord.async_claim_reward("rewardJ", "kidA"))
+
+    def test_partially_funded_jackpot_also_blocked(self):
+        # The pool need not be full for the block to apply — a queued claim
+        # still owns the pool until it is approved or rejected.
+        coord, _alice, _bob, _reward = self._jackpot_coord(pool_total=20)
+
+        with pytest.raises(ValueError, match="already waiting"):
+            run(coord.async_claim_reward("rewardJ", "kidB"))
+
+    def test_jackpot_claim_allowed_once_the_pending_claim_clears(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        bob = Child(name="Bob", points=0, id="kidB")
+        reward = Reward(name="Family Trip", cost=50, is_jackpot=True, id="rewardJ")
+        coord = _make_coord(children=[alice, bob], rewards=[reward], claims=[])
+        coord.storage.get_total_allocated_for_reward = MagicMock(return_value=50)
+
+        run(coord.async_claim_reward("rewardJ", "kidB"))
+        coord.storage.add_reward_claim.assert_called_once()
+
+    def test_non_jackpot_pool_reward_is_still_per_child(self):
+        # Regression guard: only jackpots share a pool. A pool-enabled reward
+        # with per-child jars keeps independent claims.
+        alice = Child(name="Alice", points=0, id="kidA")
+        bob = Child(name="Bob", points=500, id="kidB")
+        reward = Reward(name="Cinema", cost=50, pool_enabled=True, id="rewardP")
+        claim = RewardClaim(reward_id="rewardP", child_id="kidA", claimed_at=_ts(), approved=False, id="c1")
+        coord = _make_coord(children=[alice, bob], rewards=[reward], claims=[claim])
+
+        run(coord.async_claim_reward("rewardP", "kidB"))
+        coord.storage.add_reward_claim.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# a jackpot is only ever paid from its shared pool
+# ---------------------------------------------------------------------------
+
+
+class TestJackpotPoolOnlyFunding:
+    """Jackpots are pool-funded by definition (#552), but the claim and approve
+    paths both fell back to wallet mode whenever the shared pool did not cover
+    the cost. That let a single child buy a family jackpot out of their own
+    balance — and left the other contributors' savings sitting in the pool.
+    """
+
+    def _coord(self, *, cost=50, pool_total=0, claims=(), allocations=()):
+        alice = Child(name="Alice", points=500, id="kidA")
+        bob = Child(name="Bob", points=500, id="kidB")
+        reward = Reward(name="Family Trip", cost=cost, is_jackpot=True, id="rewardJ")
+        coord = _make_coord(children=[alice, bob], rewards=[reward], claims=list(claims))
+        coord.storage.get_total_allocated_for_reward = MagicMock(return_value=pool_total)
+        coord.storage.get_pool_allocations = MagicMock(return_value=list(allocations))
+        return coord, alice, bob, reward
+
+    # ── claiming ────────────────────────────────────────────────────────
+    def test_claiming_an_underfunded_jackpot_is_refused(self):
+        coord, alice, _bob, _reward = self._coord(cost=50, pool_total=20)
+
+        with pytest.raises(ValueError, match="pool is not full"):
+            run(coord.async_claim_reward("rewardJ", "kidA"))
+
+        coord.storage.add_reward_claim.assert_not_called()
+        assert alice.points == 500  # a rich wallet is not a substitute
+
+    def test_the_refusal_reports_the_shortfall(self):
+        coord, _alice, _bob, _reward = self._coord(cost=50, pool_total=20)
+
+        with pytest.raises(ValueError, match="Need 50, have 20 saved up"):
+            run(coord.async_claim_reward("rewardJ", "kidA"))
+
+    def test_claiming_a_funded_jackpot_still_works(self):
+        coord, _alice, _bob, _reward = self._coord(cost=50, pool_total=50)
+
+        claim = run(coord.async_claim_reward("rewardJ", "kidA"))
+
+        assert claim.reward_id == "rewardJ"
+        coord.storage.add_reward_claim.assert_called_once()
+
+    # ── approving ───────────────────────────────────────────────────────
+    def test_approving_a_drained_jackpot_is_refused(self):
+        """The cost was raised (or a contributor left) after the claim was made."""
+        claim = RewardClaim(reward_id="rewardJ", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, alice, _bob, reward = self._coord(cost=50, pool_total=30, claims=[claim])
+        reward.quantity = 3
+
+        with pytest.raises(ValueError, match="pool is not full"):
+            run(coord.async_approve_reward("c1"))
+
+        assert alice.points == 500  # never charged to the claimer's wallet
+        assert claim.approved is False
+        assert reward.quantity == 3
+        coord.storage.update_child.assert_not_called()
+
+    def test_approving_a_funded_jackpot_consumes_the_pool_not_a_wallet(self):
+        claim = RewardClaim(reward_id="rewardJ", child_id="kidA", claimed_at=_ts(), id="c1")
+        allocations = [
+            PoolAllocation(child_id="kidA", reward_id="rewardJ", allocated_points=30, id="a1"),
+            PoolAllocation(child_id="kidB", reward_id="rewardJ", allocated_points=20, id="a2"),
+        ]
+        coord, alice, bob, _reward = self._coord(cost=50, pool_total=50, claims=[claim], allocations=allocations)
+
+        run(coord.async_approve_reward("c1"))
+
+        assert claim.approved is True
+        assert (alice.points, bob.points) == (500, 500)  # already paid at allocation time
+        assert {c.args for c in coord.storage.remove_pool_allocation.call_args_list} == {
+            ("kidA", "rewardJ"),
+            ("kidB", "rewardJ"),
+        }
+
+    # ── legacy duplicate claims ─────────────────────────────────────────
+    def test_approving_retires_other_pending_claims_on_the_same_pool(self):
+        """Claims stored before #873 limited a jackpot to one pending claim."""
+        first = RewardClaim(reward_id="rewardJ", child_id="kidA", claimed_at=_ts(), id="c1")
+        second = RewardClaim(reward_id="rewardJ", child_id="kidB", claimed_at=_ts(), id="c2")
+        coord, _alice, _bob, _reward = self._coord(cost=50, pool_total=50, claims=[first, second])
+
+        run(coord.async_approve_reward("c1"))
+
+        assert first.approved is True
+        coord.storage.remove_reward_claim.assert_called_once_with("c2")
+        coord.notifications.clear_approval.assert_any_await("pending_reward_claim", "c2")
+
+    def test_an_already_approved_claim_on_the_same_pool_is_left_alone(self):
+        """A second redemption in an earlier funding cycle stays in history."""
+        history = RewardClaim(
+            reward_id="rewardJ", child_id="kidB", claimed_at=_ts(), approved=True, approved_at=_ts(), id="old"
+        )
+        claim = RewardClaim(reward_id="rewardJ", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, _alice, _bob, _reward = self._coord(cost=50, pool_total=50, claims=[history, claim])
+
+        run(coord.async_approve_reward("c1"))
+
+        coord.storage.remove_reward_claim.assert_not_called()
+
+    def test_another_rewards_pending_claim_is_left_alone(self):
+        other = RewardClaim(reward_id="rewardX", child_id="kidB", claimed_at=_ts(), id="cX")
+        claim = RewardClaim(reward_id="rewardJ", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, _alice, _bob, _reward = self._coord(cost=50, pool_total=50, claims=[other, claim])
+
+        run(coord.async_approve_reward("c1"))
+
+        coord.storage.remove_reward_claim.assert_not_called()
+
+    def test_a_non_jackpot_approval_retires_nothing(self):
+        alice = Child(name="Alice", points=500, id="kidA")
+        bob = Child(name="Bob", points=500, id="kidB")
+        reward = Reward(name="Cinema", cost=20, id="rewardC")
+        mine = RewardClaim(reward_id="rewardC", child_id="kidA", claimed_at=_ts(), id="c1")
+        theirs = RewardClaim(reward_id="rewardC", child_id="kidB", claimed_at=_ts(), id="c2")
+        coord = _make_coord(children=[alice, bob], rewards=[reward], claims=[mine, theirs])
+
+        run(coord.async_approve_reward("c1"))
+
+        assert alice.points == 480  # ordinary rewards still use the wallet
+        coord.storage.remove_reward_claim.assert_not_called()
+
+    # ── committed-points accounting ─────────────────────────────────────
+    def test_a_pending_jackpot_claim_never_commits_the_claimers_wallet(self):
+        """Their deposit already left their balance; the wallet is not on the hook."""
+        claim = RewardClaim(reward_id="rewardJ", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, _alice, _bob, _reward = self._coord(cost=50, pool_total=20, claims=[claim])
+        coord.storage.get_reward = MagicMock(
+            side_effect=lambda rid: {
+                "rewardJ": Reward(name="Family Trip", cost=50, is_jackpot=True, id="rewardJ"),
+                "rewardC": Reward(name="Cinema", cost=20, id="rewardC"),
+            }.get(rid)
+        )
+
+        assert coord.is_pool_mode_claim(claim) is True
+
+        # ... so an ordinary claim alongside it is judged on the full balance.
+        run(coord.async_claim_reward("rewardC", "kidA"))
+        coord.storage.add_reward_claim.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# an edit that takes the savings jar away must hand the points back
+# ---------------------------------------------------------------------------
+
+
+class TestRewardEditSettlesThePool:
+    """Pool allocations are locked — there is no withdraw operation — so an
+    edit that removes the jar a child was saving into strands their points
+    for good. Switching a reward between jackpot and ordinary, turning pool
+    mode off, and dropping a child from assigned_to all did exactly that, and
+    left behind pending claims that could no longer be honoured.
+    """
+
+    def _coord(self, old, *, children, allocations=(), claims=()):
+        coord = _make_coord(children=children, rewards=[old], claims=list(claims))
+        coord.storage.get_pool_allocations = MagicMock(return_value=list(allocations))
+        return coord
+
+    # ── funding changed ─────────────────────────────────────────────────
+    def test_jackpot_turned_into_an_ordinary_reward_refunds_every_saver(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        bob = Child(name="Bob", points=5, id="kidB")
+        old = Reward(name="Trip", cost=100, is_jackpot=True, pool_enabled=True, id="rw")
+        allocations = [
+            PoolAllocation(child_id="kidA", reward_id="rw", allocated_points=30, id="a1"),
+            PoolAllocation(child_id="kidB", reward_id="rw", allocated_points=20, id="a2"),
+        ]
+        coord = self._coord(old, children=[alice, bob], allocations=allocations)
+
+        run(coord.async_update_reward(Reward(name="Trip", cost=100, is_jackpot=False, pool_enabled=True, id="rw")))
+
+        assert (alice.points, bob.points) == (30, 25)
+        assert {c.args for c in coord.storage.remove_pool_allocation.call_args_list} == {("kidA", "rw"), ("kidB", "rw")}
+        reasons = [c.args[0].reason for c in coord.storage.add_points_transaction.call_args_list]
+        assert reasons == ["Pool refund (reward funding changed): Trip"] * 2
+
+    def test_turning_pool_mode_off_refunds_every_saver(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        old = Reward(name="Cinema", cost=50, pool_enabled=True, id="rw")
+        allocations = [PoolAllocation(child_id="kidA", reward_id="rw", allocated_points=40, id="a1")]
+        coord = self._coord(old, children=[alice], allocations=allocations)
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=50, pool_enabled=False, id="rw")))
+
+        assert alice.points == 40
+
+    def test_an_ordinary_reward_promoted_to_a_jackpot_refunds_the_old_jars(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        old = Reward(name="Cinema", cost=50, pool_enabled=True, id="rw")
+        allocations = [PoolAllocation(child_id="kidA", reward_id="rw", allocated_points=40, id="a1")]
+        coord = self._coord(old, children=[alice], allocations=allocations)
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=50, is_jackpot=True, id="rw")))
+
+        assert alice.points == 40
+
+    def test_a_pending_claim_is_cancelled_when_the_funding_changes(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        old = Reward(name="Trip", cost=50, is_jackpot=True, pool_enabled=True, id="rw")
+        claim = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        allocations = [PoolAllocation(child_id="kidA", reward_id="rw", allocated_points=50, id="a1")]
+        coord = self._coord(old, children=[alice], allocations=allocations, claims=[claim])
+
+        run(coord.async_update_reward(Reward(name="Trip", cost=50, is_jackpot=False, pool_enabled=True, id="rw")))
+
+        coord.storage.remove_reward_claim.assert_called_once_with("c1")
+        coord.notifications.clear_approval.assert_any_await("pending_reward_claim", "c1")
+
+    # ── assignment changed ──────────────────────────────────────────────
+    def test_dropping_a_child_refunds_only_their_savings(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        bob = Child(name="Bob", points=0, id="kidB")
+        old = Reward(name="Cinema", cost=50, pool_enabled=True, assigned_to=["kidA", "kidB"], id="rw")
+        allocations = [
+            PoolAllocation(child_id="kidA", reward_id="rw", allocated_points=30, id="a1"),
+            PoolAllocation(child_id="kidB", reward_id="rw", allocated_points=20, id="a2"),
+        ]
+        coord = self._coord(old, children=[alice, bob], allocations=allocations)
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=50, pool_enabled=True, assigned_to=["kidA"], id="rw")))
+
+        assert (alice.points, bob.points) == (0, 20)
+        coord.storage.remove_pool_allocation.assert_called_once_with("kidB", "rw")
+        reason = coord.storage.add_points_transaction.call_args[0][0].reason
+        assert reason == "Pool refund (reward assignment changed): Cinema"
+
+    def test_dropping_a_child_cancels_only_their_pending_claim(self):
+        alice = Child(name="Alice", points=100, id="kidA")
+        bob = Child(name="Bob", points=100, id="kidB")
+        old = Reward(name="Cinema", cost=50, assigned_to=["kidA", "kidB"], id="rw")
+        mine = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        theirs = RewardClaim(reward_id="rw", child_id="kidB", claimed_at=_ts(), id="c2")
+        coord = self._coord(old, children=[alice, bob], claims=[mine, theirs])
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=50, assigned_to=["kidA"], id="rw")))
+
+        coord.storage.remove_reward_claim.assert_called_once_with("c2")
+
+    def test_widening_the_assignment_changes_nothing(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        old = Reward(name="Cinema", cost=50, pool_enabled=True, assigned_to=["kidA"], id="rw")
+        allocations = [PoolAllocation(child_id="kidA", reward_id="rw", allocated_points=30, id="a1")]
+        claim = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord = self._coord(old, children=[alice], allocations=allocations, claims=[claim])
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=50, pool_enabled=True, assigned_to=[], id="rw")))
+
+        assert alice.points == 0
+        coord.storage.remove_pool_allocation.assert_not_called()
+        coord.storage.remove_reward_claim.assert_not_called()
+
+    # ── everything else is left alone ───────────────────────────────────
+    def test_an_unrelated_edit_leaves_savings_and_claims_alone(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        old = Reward(name="Cinema", cost=50, pool_enabled=True, id="rw")
+        allocations = [PoolAllocation(child_id="kidA", reward_id="rw", allocated_points=30, id="a1")]
+        claim = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord = self._coord(old, children=[alice], allocations=allocations, claims=[claim])
+
+        run(
+            coord.async_update_reward(
+                Reward(name="Cinema night", cost=50, pool_enabled=True, icon="mdi:movie", id="rw")
+            )
+        )
+
+        assert alice.points == 0
+        coord.storage.remove_pool_allocation.assert_not_called()
+        coord.storage.remove_reward_claim.assert_not_called()
+
+    def test_an_approved_claim_is_never_cancelled_by_an_edit(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        old = Reward(name="Trip", cost=50, is_jackpot=True, pool_enabled=True, assigned_to=["kidA"], id="rw")
+        history = RewardClaim(
+            reward_id="rw", child_id="kidA", claimed_at=_ts(), approved=True, approved_at=_ts(), id="old"
+        )
+        coord = self._coord(old, children=[alice], claims=[history])
+
+        run(coord.async_update_reward(Reward(name="Trip", cost=50, is_jackpot=False, assigned_to=[], id="rw")))
+
+        coord.storage.remove_reward_claim.assert_not_called()
+
+    def test_another_rewards_savings_are_left_alone(self):
+        alice = Child(name="Alice", points=0, id="kidA")
+        old = Reward(name="Trip", cost=50, is_jackpot=True, pool_enabled=True, id="rw")
+        other = PoolAllocation(child_id="kidA", reward_id="other", allocated_points=30, id="a2")
+        coord = self._coord(old, children=[alice], allocations=[other])
+
+        run(coord.async_update_reward(Reward(name="Trip", cost=50, is_jackpot=False, id="rw")))
+
+        assert alice.points == 0
+        coord.storage.remove_pool_allocation.assert_not_called()
+
+    def test_a_brand_new_reward_has_nothing_to_settle(self):
+        coord = _make_coord(children=[], rewards=[])
+
+        run(coord.async_update_reward(Reward(name="Trip", cost=50, id="rw")))
+
+        coord.storage.remove_pool_allocation.assert_not_called()
+        coord.storage.remove_reward_claim.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# a purchase keeps the price it was approved at
+# ---------------------------------------------------------------------------
+
+
+class TestApprovedCostIsRecorded:
+    """History read the reward's live cost, so re-pricing a reward silently
+    rewrote every past purchase of it — in the activity feed, in the panel's
+    timeline, and in the per-period spending cap.
+    """
+
+    def _coord(self, *, cost=50, points=500, claims=()):
+        child = Child(name="Alice", points=points, id="kidA")
+        reward = Reward(name="Cinema", cost=cost, id="rw")
+        coord = _make_coord(children=[child], rewards=[reward], claims=list(claims))
+        # Make stored rewards actually change on update, so a test can approve
+        # a claim after an edit and see the new price rather than the old one.
+        stored = {reward.id: reward}
+        coord.storage.get_reward = MagicMock(side_effect=stored.get)
+        coord.storage.update_reward = MagicMock(side_effect=lambda r: stored.__setitem__(r.id, r))
+        return coord, child, reward
+
+    def test_approval_records_what_was_paid(self):
+        claim = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, child, _reward = self._coord(cost=50, claims=[claim])
+
+        run(coord.async_approve_reward("c1"))
+
+        assert claim.approved_cost == 50
+        assert child.points == 450
+
+    def test_a_later_price_change_leaves_the_record_alone(self):
+        claim = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, _child, _reward = self._coord(cost=50, claims=[claim])
+        run(coord.async_approve_reward("c1"))
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=5, id="rw")))
+
+        assert claim.approved_cost == 50
+
+    def test_a_free_reward_records_a_zero_price(self):
+        claim = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, _child, _reward = self._coord(cost=0, claims=[claim])
+
+        run(coord.async_approve_reward("c1"))
+
+        assert claim.approved_cost == 0  # not None: it really was free
+
+    # ── records written before the price was stored ─────────────────────
+    def test_a_price_change_freezes_unrecorded_history_first(self):
+        legacy = RewardClaim(
+            reward_id="rw", child_id="kidA", claimed_at=_ts(), approved=True, approved_at=_ts(), id="old"
+        )
+        coord, _child, _reward = self._coord(cost=50, claims=[legacy])
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=5, id="rw")))
+
+        assert legacy.approved_cost == 50  # the price it was approved at
+
+    def test_a_pending_claim_is_not_given_a_price_by_an_edit(self):
+        pending = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, _child, _reward = self._coord(cost=50, claims=[pending])
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=5, id="rw")))
+
+        assert pending.approved_cost is None  # it will be priced when approved
+        run(coord.async_approve_reward("c1"))
+        assert pending.approved_cost == 5
+
+    def test_an_edit_that_does_not_move_the_price_freezes_nothing(self):
+        legacy = RewardClaim(
+            reward_id="rw", child_id="kidA", claimed_at=_ts(), approved=True, approved_at=_ts(), id="old"
+        )
+        coord, _child, _reward = self._coord(cost=50, claims=[legacy])
+
+        run(coord.async_update_reward(Reward(name="Cinema night", cost=50, icon="mdi:movie", id="rw")))
+
+        assert legacy.approved_cost is None
+
+    def test_another_rewards_history_is_not_touched(self):
+        other = RewardClaim(
+            reward_id="other", child_id="kidA", claimed_at=_ts(), approved=True, approved_at=_ts(), id="old"
+        )
+        coord, _child, _reward = self._coord(cost=50, claims=[other])
+
+        run(coord.async_update_reward(Reward(name="Cinema", cost=5, id="rw")))
+
+        assert other.approved_cost is None
+
+    # ── the spending cap ────────────────────────────────────────────────
+    def test_the_spending_cap_counts_what_was_paid(self):
+        spent = RewardClaim(
+            reward_id="rw",
+            child_id="kidA",
+            claimed_at=_ts(),
+            approved=True,
+            approved_at=_now(),
+            approved_cost=95,
+            id="old",
+        )
+        claim = RewardClaim(reward_id="rw", child_id="kidA", claimed_at=_ts(), id="c1")
+        coord, _child, _reward = self._coord(cost=10, claims=[spent, claim])
+        settings = {"spend_cap_enabled": True, "spend_cap_amount": "100"}
+        coord.storage.get_setting = MagicMock(side_effect=lambda key, default=None: settings.get(key, default))
+
+        # 95 already spent this period, so another 10 breaks a cap of 100...
+        with pytest.raises(ValueError, match="Spending cap reached"):
+            run(coord.async_approve_reward("c1"))
+
+        # ...whereas the reward's live cost alone reads as only 10 spent.
+        spent.approved_cost = None
+        run(coord.async_approve_reward("c1"))

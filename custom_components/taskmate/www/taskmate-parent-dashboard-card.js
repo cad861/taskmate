@@ -27,6 +27,9 @@ const tmSafePhotoUrl = (u) =>
 const tmClaimList = (v) => (Array.isArray(v) ? v : []);
 
 const _safeColor = (c, d) => (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : d);
+// Keeps number runs like "3 / 1" reading left to right in RTL text (#995);
+// identity until the design layer has loaded (it is also what stamps dir).
+const _ltrNums = (s) => (window.__taskmate_design && window.__taskmate_design.ltrNums ? window.__taskmate_design.ltrNums(s) : s);
 
 class TaskMateParentDashboardCard extends LitElement {
   static get properties() {
@@ -278,7 +281,7 @@ class TaskMateParentDashboardCard extends LitElement {
       .progress-label {
         font-size: 0.75rem; font-weight: 600;
         color: var(--secondary-text-color);
-        white-space: nowrap; min-width: 32px; text-align: right;
+        white-space: nowrap; min-width: 32px; text-align: end;
       }
 
       /* ── Approval items ── */
@@ -560,18 +563,21 @@ class TaskMateParentDashboardCard extends LitElement {
   setConfig(config) {
     if (!config.entity) throw new Error("Please define an entity");
     this.config = {
-      title: "Parent Dashboard",
+      title: "",
       quick_points_amount: 5,
       show_claims: true,
             header_color: '#c0392b',
     ...config,
     };
+    // Dashboards saved before #1010 stored the English default title; treat it
+    // as unset so the translated default is shown instead.
+    if (this.config.title === "Parent Dashboard") this.config.title = "";
   }
 
   getCardSize() { return 6; }
   static getConfigElement() { return document.createElement("taskmate-parent-dashboard-card-editor"); }
   static getStubConfig() {
-    return { entity: "sensor.taskmate_overview", title: "Parent Dashboard" };
+    return { entity: "sensor.taskmate_overview" };
   }
 
   render() {
@@ -691,10 +697,12 @@ class TaskMateParentDashboardCard extends LitElement {
       const assigned = at.length === 0 || at.includes(child.id);
       if (!assigned) return false;
       const perChild = availability[c.id];
+      // Calendar move/removal (#977) settles today outright.
+      if (c.occ_today === false) return false;
       if (c.schedule_mode === 'one_shot') {
         if (perChild && perChild[child.id] === false) return false;
       }
-      if (c.schedule_mode === 'specific_days') {
+      if (c.schedule_mode === 'specific_days' && c.occ_today !== true) {
         const dueDays = Array.isArray(c.due_days) ? c.due_days : [];
         if (dueDays.length > 0 && !dueDays.includes(todayDow)) return false;
       }
@@ -866,7 +874,7 @@ class TaskMateParentDashboardCard extends LitElement {
             ${this._av(child.name, child, tone, 42)}
             <div style="flex:1;min-width:0">
               <div class="pd-name">${child.name}</div>
-              <div class="muted pd-sub">${this._t('dashboard.chores_done', { done: approved, total }, `${approved} / ${total} chores done`)}</div>
+              <div class="muted pd-sub">${_ltrNums(this._t('dashboard.chores_done', { done: approved, total }, `${approved} / ${total} chores done`))}</div>
             </div>
             <div class="big pd-pts">${child.points}⭐</div>
           </div>
@@ -1039,12 +1047,14 @@ class TaskMateParentDashboardCard extends LitElement {
           const assigned = at.length === 0 || at.includes(child.id);
           if (!assigned) return false;
           const perChild = availability[c.id];
+          // Calendar move/removal (#977) settles today outright.
+          if (c.occ_today === false) return false;
           // One-shot: use is_available check (same as recurring)
           if (c.schedule_mode === 'one_shot') {
             if (perChild && perChild[child.id] === false) return false;
           }
           // Mode A: due days check
-          if (c.schedule_mode === 'specific_days') {
+          if (c.schedule_mode === 'specific_days' && c.occ_today !== true) {
             const dueDays = Array.isArray(c.due_days) ? c.due_days : [];
             if (dueDays.length > 0 && !dueDays.includes(todayDow)) return false;
           }
@@ -1052,6 +1062,10 @@ class TaskMateParentDashboardCard extends LitElement {
           if (c.schedule_mode === 'recurring') {
             if (perChild && perChild[child.id] === false) return false;
           }
+          // Weekly target (#883): quota filled for the week, so it is neither
+          // outstanding nor part of today's total.
+          const weeklyTarget = Number(c.weekly_target) || 0;
+          if (weeklyTarget > 0 && Number((child.weekly_chore_progress || {})[c.id] || 0) >= weeklyTarget) return false;
           return true;
         });
         const childChoreIds = new Set(childChores.map(c => c.id));
@@ -1451,7 +1465,7 @@ class TaskMateParentDashboardCardEditor extends LitElement {
       .preset-swatch { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--divider-color, #e0e0e0); transition: transform 0.1s; padding: 0; }
       .preset-swatch:hover { transform: scale(1.15); }
       .preset-swatch.active { border-color: var(--primary-text-color); box-shadow: 0 0 0 2px var(--primary-color); }
-      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-left: auto; }
+      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-inline-start: auto; }
       .colour-helper { color: var(--secondary-text-color); font-size: 0.82rem; line-height: 1.3; }
     `;
   }

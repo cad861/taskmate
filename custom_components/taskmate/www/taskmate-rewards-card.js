@@ -23,6 +23,16 @@ const css = LitElement.prototype.css;
 const tmClaimList = (v) => (Array.isArray(v) ? v : []);
 
 const _safeColor = (c, d) => (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : d);
+// Keeps number runs like "3 / 1" reading left to right in RTL text (#995);
+// identity until the design layer has loaded (it is also what stamps dir).
+const _ltrNums = (s) => (window.__taskmate_design && window.__taskmate_design.ltrNums ? window.__taskmate_design.ltrNums(s) : s);
+// "a / b" for a template: the same text nodes as a literal `${a} / ${b}` in
+// LTR (so it renders pixel-for-pixel as before), the isolated string in RTL.
+const _ltrRatio = (a, b) => {
+  const s = `${a} / ${b}`;
+  const r = _ltrNums(s);
+  return r === s ? html`${a} / ${b}` : r;
+};
 
 class TaskMateRewardsCard extends LitElement {
   static get properties() {
@@ -295,7 +305,7 @@ class TaskMateRewardsCard extends LitElement {
         content: '';
         position: absolute;
         top: 0;
-        left: -100%;
+        inset-inline-start: -100%;
         width: 50%;
         height: 100%;
         background: linear-gradient(
@@ -308,8 +318,8 @@ class TaskMateRewardsCard extends LitElement {
       }
 
       @keyframes shimmer {
-        0% { left: -100%; }
-        100% { left: 200%; }
+        0% { inset-inline-start: -100%; }
+        100% { inset-inline-start: 200%; }
       }
 
       .progress-text {
@@ -318,7 +328,7 @@ class TaskMateRewardsCard extends LitElement {
         color: var(--text-secondary);
         white-space: nowrap;
         min-width: 0;
-        text-align: right;
+        text-align: end;
       }
 
       /* Jackpot reward styles */
@@ -333,8 +343,8 @@ class TaskMateRewardsCard extends LitElement {
         content: '';
         position: absolute;
         top: 0;
-        left: 0;
-        right: 0;
+        inset-inline-start: 0;
+        inset-inline-end: 0;
         bottom: 0;
         background: linear-gradient(
           45deg,
@@ -401,7 +411,7 @@ class TaskMateRewardsCard extends LitElement {
         content: '';
         position: absolute;
         top: 0;
-        left: -100%;
+        inset-inline-start: -100%;
         width: 100%;
         height: 100%;
         background: linear-gradient(
@@ -415,21 +425,21 @@ class TaskMateRewardsCard extends LitElement {
 
       /* Shimmer 3 times then wait ~30s before repeating */
       @keyframes jackpot-segment-shimmer {
-        0% { left: -100%; }
-        2.5% { left: 200%; }
-        5% { left: -100%; }
-        7.5% { left: 200%; }
-        10% { left: -100%; }
-        12.5% { left: 200%; }
-        15%, 100% { left: -100%; opacity: 0; }
+        0% { inset-inline-start: -100%; }
+        2.5% { inset-inline-start: 200%; }
+        5% { inset-inline-start: -100%; }
+        7.5% { inset-inline-start: 200%; }
+        10% { inset-inline-start: -100%; }
+        12.5% { inset-inline-start: 200%; }
+        15%, 100% { inset-inline-start: -100%; opacity: 0; }
       }
 
       .jackpot-segment:first-child {
-        border-radius: 9px 0 0 9px;
+        border-start-start-radius: 9px; border-start-end-radius: 0; border-end-end-radius: 0; border-end-start-radius: 9px;
       }
 
       .jackpot-segment:last-child {
-        border-radius: 0 9px 9px 0;
+        border-start-start-radius: 0; border-start-end-radius: 9px; border-end-end-radius: 9px; border-end-start-radius: 0;
       }
 
       .jackpot-segment:only-child {
@@ -554,7 +564,21 @@ class TaskMateRewardsCard extends LitElement {
       /* Pending approval state */
       .reward-row.pending-approval {
         opacity: 0.6;
-        border-left: 3px solid #e67e22;
+        border-inline-start: 3px solid #e67e22;
+      }
+
+      /* Reject reason (#976) */
+      .reject-note {
+        margin-top: 6px;
+        padding: 4px 8px;
+        border-radius: 8px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        line-height: 1.3;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        background: rgba(244, 67, 54, 0.12);
+        color: var(--error-color, #d32f2f);
       }
 
       .pending-label {
@@ -755,14 +779,14 @@ class TaskMateRewardsCard extends LitElement {
         font-weight: 700;
         font-size: 1.15rem;
         color: var(--text-primary);
-        margin-left: auto;
+        margin-inline-start: auto;
       }
 
       .spendable-banner .spendable-of {
         font-weight: 400;
         color: var(--text-secondary);
         font-size: 0.82rem;
-        margin-left: 4px;
+        margin-inline-start: 4px;
       }
 
       /* Pool Mode controls — render BELOW the progress bar, full width */
@@ -809,7 +833,7 @@ class TaskMateRewardsCard extends LitElement {
         display: flex;
         align-items: stretch;
         gap: 6px;
-        margin-left: auto;
+        margin-inline-start: auto;
         flex: 0 0 auto;
       }
       .deposit-custom input {
@@ -949,7 +973,7 @@ class TaskMateRewardsCard extends LitElement {
         flex-direction: column;
         gap: 6px;
         font-size: 0.9rem;
-        text-align: left;
+        text-align: start;
       }
       .dialog-points-row {
         display: flex;
@@ -1003,6 +1027,12 @@ class TaskMateRewardsCard extends LitElement {
       .rw-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
       .rw-name { font-weight: 800; font-size: 15px; }
       .rw-desc { font-size: 12px; }
+      .rw-reject {
+        margin: 2px 0 6px; padding: 4px 8px; border-radius: 8px;
+        font-size: 12px; font-weight: 700; line-height: 1.3;
+        white-space: normal; overflow-wrap: anywhere;
+        background: color-mix(in srgb, var(--tmd-bad, #e74c3c) 14%, transparent); color: var(--tmd-bad, #e74c3c);
+      }
       .rw-avail { align-self: flex-start; font-size: 11px; }
       .rw-avail-warn { background: color-mix(in srgb, var(--tmd-warn) 16%, transparent);
                        color: var(--tmd-warn); }
@@ -1018,7 +1048,7 @@ class TaskMateRewardsCard extends LitElement {
       .rw-status { font-size: 12px; }
       .rw-status-good { color: var(--tmd-good); font-weight: 800; }
       .rw-pool-btns { gap: 6px; flex-wrap: wrap; align-items: center; }
-      .rw-pool-btns .deposit-custom { margin-left: auto; gap: 6px; }
+      .rw-pool-btns .deposit-custom { margin-inline-start: auto; gap: 6px; }
       .rw-deposit-input {
         width: 70px;
         min-width: 0;
@@ -1055,6 +1085,9 @@ class TaskMateRewardsCard extends LitElement {
       header_color: '#e67e22',
       ...config,
     };
+    // Dashboards saved before #1010 stored the English default title; treat it
+    // as unset so the translated default is shown instead.
+    if (this.config.title === "Rewards") this.config.title = "";
   }
 
   getCardSize() {
@@ -1068,7 +1101,6 @@ class TaskMateRewardsCard extends LitElement {
   static getStubConfig() {
     return {
       entity: "sensor.taskmate_overview",
-      title: "Rewards",
       child_id: null,
       show_child_badges: true,
       enable_pool_mode: false,
@@ -1295,8 +1327,10 @@ class TaskMateRewardsCard extends LitElement {
         <ha-icon icon="${pointsIcon}"></ha-icon>
         <span class="spendable-label">${this._t('rewards.spendable_balance')}</span>
         <span class="spendable-value">
-          ${spendable}
-          ${detail}
+          ${spendable !== gross && this.getAttribute("dir") === "rtl"
+            // "12 / 40" spans two elements, so isolate it with markup (#995).
+            ? html`<bdi dir="ltr">${spendable} ${detail}</bdi>`
+            : html`${spendable} ${detail}`}
         </span>
       </div>
     `;
@@ -1347,25 +1381,17 @@ class TaskMateRewardsCard extends LitElement {
     let childContributions = [];
 
     if (isJackpot) {
-      const sharePerChild = relevantChildren.length > 0
-        ? Math.round(displayCost / relevantChildren.length)
-        : displayCost;
       relevantChildren.forEach((child, index) => {
         // In pool mode, show allocated points only; in wallet mode show wallet points
         const points = enablePoolMode
           ? (poolAllocations[child.id] || 0)
           : (child.points || 0);
-        const shareOfGoal = relevantChildren.length > 0 ? (100 / relevantChildren.length) : 100;
-        const weightedProgress = sharePerChild > 0 ? Math.min((points / sharePerChild) * 100, 100) : 0;
 
         currentStars += points;
         childContributions.push({
           name: child.name,
           points: points,
           colorIndex: index % 6,
-          expectedContribution: sharePerChild,
-          weightedProgress: weightedProgress,
-          shareOfGoal: shareOfGoal,
         });
       });
     } else {
@@ -1386,8 +1412,11 @@ class TaskMateRewardsCard extends LitElement {
     const pcAttrs = (window.__taskmate_attrs && window.__taskmate_attrs(this.hass, this.config?.entity)) || this.hass?.states?.[this.config?.entity]?.attributes || {};
     // Always a list, even if the attribute arrives as something else (#834).
     const pendingClaims = tmClaimList(pcAttrs.pending_reward_claims);
+    // A jackpot is one shared pool redeemed once per funding cycle, so a claim
+    // from any contributor puts the reward into "awaiting approval" for every
+    // child — not just the one who tapped Redeem (#873).
     const hasPendingClaim = pendingClaims.some(c =>
-      c.reward_id === reward.id && (!childId || c.child_id === childId)
+      c.reward_id === reward.id && (isJackpot || !childId || c.child_id === childId)
     );
 
     // Pool mode affordability / redeem state
@@ -1450,7 +1479,7 @@ class TaskMateRewardsCard extends LitElement {
               <ha-icon icon="mdi:clock-outline"></ha-icon>
               ${this._t('rewards.awaiting_approval')}
             </div>
-          ` : ''}
+          ` : this._renderRejectNote(reward, childId ? relevantChild : null, 'reject-note')}
 
           ${showChildBadges && !isJackpot
             ? html`
@@ -1483,6 +1512,17 @@ class TaskMateRewardsCard extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Reject reasons (#976): why a parent turned down this child's last claim.
+   * Only with a child in context — the reason is personal. Called from the
+   * classic row AND _designRewardRow, so every design shows it.
+   */
+  _renderRejectNote(reward, child, cls) {
+    const rej = ((child && child.rejections) || []).find(r => r.kind === "reward" && r.id === reward.id);
+    if (!rej || !rej.reason) return '';
+    return html`<div class="${cls}" role="note">↩️ ${this._t('rewards.rejected_note', { reason: rej.reason })}</div>`;
   }
 
   /** "Available Fri, Sat · 18:00–21:00" for a time-locked reward (#857). */
@@ -1754,25 +1794,16 @@ class TaskMateRewardsCard extends LitElement {
   _renderJackpotProgress(reward, childContributions, totalStars, pointsIcon, displayCost) {
     const cost = displayCost || reward.cost;
 
-    // For weighted display: each child's segment shows their progress toward their expected share
-    // The meter shows how much of their "responsibility" each child has fulfilled
-    const hasWeightedData = childContributions.some(c => c.expectedContribution > 0);
-
-    // Calculate weighted segments - each segment width = (child's share of goal) * (their progress %)
-    // This way, if a child has 50% share and is at 100% progress, they fill 50% of the bar
+    // Every segment is measured against the shared goal (#874): a child who
+    // puts in 40 of a 50-point jackpot fills 80% of the bar. Sizing segments
+    // against an equal per-child share instead capped the over-contributor at
+    // their own slice, so a fully funded jackpot drew a part-empty bar.
     const segments = childContributions.map((contrib) => {
-      let width;
-      if (hasWeightedData && contrib.shareOfGoal > 0) {
-        // Weighted: segment width = share of goal * progress percentage
-        // e.g., 40% share at 50% progress = 20% of bar filled
-        width = (contrib.shareOfGoal / 100) * (contrib.weightedProgress / 100) * 100;
-      } else {
-        // Fallback: raw contribution relative to cost
-        width = cost > 0 ? Math.min((contrib.points / cost) * 100, 100) : 0;
-      }
+      const sharePct = cost > 0 ? Math.min((contrib.points / cost) * 100, 100) : 0;
       return {
         ...contrib,
-        width: width
+        sharePct: sharePct,
+        width: sharePct,
       };
     });
 
@@ -1788,14 +1819,14 @@ class TaskMateRewardsCard extends LitElement {
           <span class="progress-text">${totalStars}/${cost} <ha-icon icon="${pointsIcon}" style="--mdc-icon-size: 14px;"></ha-icon></span>
         </div>
         <div class="jackpot-breakdown">
-          ${childContributions.map((contrib) => html`
+          ${segments.map((contrib) => html`
             <span class="jackpot-child-contribution">
               <span class="color-dot color-${contrib.colorIndex}"></span>
               <strong>${contrib.name}</strong>:
               ${contrib.points}
               <ha-icon icon="${pointsIcon}" style="--mdc-icon-size: 12px;"></ha-icon>
-              ${hasWeightedData && contrib.expectedContribution > 0 ? html`
-                <span class="jackpot-pct">(${Math.round(contrib.weightedProgress)}%)</span>
+              ${cost > 0 ? html`
+                <span class="jackpot-pct">(${Math.round(contrib.sharePct)}%)</span>
               ` : ''}
             </span>
           `)}
@@ -1881,8 +1912,11 @@ class TaskMateRewardsCard extends LitElement {
       || this.hass?.states?.[this.config?.entity]?.attributes || {};
     // Always a list, even if the attribute arrives as something else (#834).
     const pendingClaims = tmClaimList(pcAttrs.pending_reward_claims);
+    // A jackpot is one shared pool redeemed once per funding cycle, so a claim
+    // from any contributor puts the reward into "awaiting approval" for every
+    // child — not just the one who tapped Redeem (#873).
     const hasPendingClaim = pendingClaims.some(c =>
-      c.reward_id === reward.id && (!childId || c.child_id === childId)
+      c.reward_id === reward.id && (isJackpot || !childId || c.child_id === childId)
     );
 
     const spendable = relevantChild
@@ -2079,7 +2113,7 @@ class TaskMateRewardsCard extends LitElement {
       ? html`<span class="muted rw-status">⏳ ${this._t('rewards.awaiting_approval')}</span>`
       : d.canAfford && d.showClaim
         ? html`<span class="rw-status rw-status-good">${this._t('reward_progress.ready_to_claim')}</span>`
-        : html`<span class="muted rw-status">${d.currentStars} / ${d.displayCost}</span>`;
+        : html`<span class="muted rw-status">${_ltrRatio(d.currentStars, d.displayCost)}</span>`;
 
     return html`
       <div class="rw-card ${d.isJackpot ? 'rw-jackpot' : ''} ${d.isUnavailable || d.isTimeLocked ? 'rw-unavail' : ''}"
@@ -2095,6 +2129,7 @@ class TaskMateRewardsCard extends LitElement {
           </div>
           ${costBadge}
         </div>
+        ${d.hasPendingClaim ? '' : this._renderRejectNote(reward, d.childId ? d.relevantChild : null, 'rw-reject')}
         ${bar}
         ${d.isJackpot ? html`
           <div class="row rw-pool-foot">
@@ -2250,7 +2285,7 @@ class TaskMateRewardsCardEditor extends LitElement {
         border-radius: 4px;
         padding: 4px 10px;
         cursor: pointer;
-        margin-left: auto;
+        margin-inline-start: auto;
       }
       .colour-helper {
         color: var(--secondary-text-color);

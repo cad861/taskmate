@@ -140,6 +140,18 @@ class TaskMateStreakCard extends LitElement {
 
       .streak-emoji { font-size: 1.4rem; }
 
+      /* Streak freeze tokens (#925) */
+      .streak-freeze {
+        margin-inline-start: auto;
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        white-space: nowrap;
+        background: rgba(52, 152, 219, 0.14);
+        color: #1f6fa8;
+      }
+
       /* Streak bar - visual days */
       .streak-days {
         display: flex;
@@ -255,6 +267,9 @@ class TaskMateStreakCard extends LitElement {
       .sk-seg-cp { flex: 1; height: 9px; border-radius: 3px; background: var(--tmd-surface-2); }
       .sk-seg-cp.on { background: var(--tmd-good); }
       .sk-badges-cp { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+
+      /* Streak freeze tokens (#925), every designed layout */
+      .sk-freeze { white-space: nowrap; flex: none; }
     `;
     const tokens = window.__taskmate_design && window.__taskmate_design.styles
       ? window.__taskmate_design.styles() : null;
@@ -348,6 +363,7 @@ class TaskMateStreakCard extends LitElement {
               <span class="streak-number ${streakClass}">${streak}</span>
               <span class="streak-label">${this._t('streak.day_streak')}</span>
               <span class="streak-emoji">${streakEmoji}</span>
+              ${this._freezeChip(child, "streak-freeze")}
             </div>
           </div>
         </div>
@@ -373,6 +389,20 @@ class TaskMateStreakCard extends LitElement {
         ` : ''}
       </div>
     `;
+  }
+
+  /**
+   * Streak-freeze tokens (#925): "❄️ N". The sensor only sends
+   * streak_freezes while the feature is on, so an absent field means
+   * "not in use" and renders nothing — a 0 still shows, so a child can
+   * see they have none left. Used by the classic tile AND every designed
+   * layout (the two-render-paths rule).
+   */
+  _freezeChip(child, cls) {
+    const n = child.streak_freezes;
+    if (typeof n !== "number") return "";
+    return html`<span class="${cls}" title="${this._t('streak.freezes_tooltip')}"
+      aria-label="${this._t('streak.freezes_aria', { count: n })}">❄️ ${n}</span>`;
   }
 
   _calculateStreak(completions) {
@@ -582,6 +612,7 @@ class TaskMateStreakCard extends LitElement {
                 <div class="muted sk-sub">${this._t('streak.day_streak')}</div>
               </div>
               <div class="big sk-count">${r.streak} ${this._streakEmoji(r.streak)}</div>
+              ${this._freezeChip(r.child, "chip soft sk-freeze")}
             </div>
             <div class="sk-dots">
               ${r.dayDots.map((d) => html`<i class="sk-dot ${d.cssClass !== "inactive" ? "on" : ""}" title="${d.label}"></i>`)}
@@ -603,6 +634,7 @@ class TaskMateStreakCard extends LitElement {
                 <div class="muted sk-combo-label">${this._t('streak.achievements')}</div>
               </div>
               <div class="num sk-combo">x${r.streak} ${this._streakEmoji(r.streak)}</div>
+              ${this._freezeChip(r.child, "chip sk-freeze")}
             </div>
             <div class="sk-segs">
               ${r.dayDots.map((d) => html`<i class="sk-seg ${d.cssClass !== "inactive" ? "on" : ""}"></i>`)}
@@ -623,6 +655,7 @@ class TaskMateStreakCard extends LitElement {
               ${this._av(r.child, r.tone, 34)}
               <div style="flex:1;min-width:0"><div style="font-weight:600">${r.child.name}</div></div>
               <div class="num" style="color:${tone(r.streak)}">${this._streakEmoji(r.streak)} ${this._t('common.d_streak', { count: r.streak })}</div>
+              ${this._freezeChip(r.child, "chip sk-freeze")}
             </div>
             <div class="sk-segs-cp">
               ${r.dayDots.map((d) => html`<i class="sk-seg-cp ${d.cssClass !== "inactive" ? "on" : ""}"></i>`)}
@@ -659,7 +692,7 @@ class TaskMateStreakCardEditor extends LitElement {
       .preset-swatch { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--divider-color, #e0e0e0); transition: transform 0.1s; padding: 0; }
       .preset-swatch:hover { transform: scale(1.15); }
       .preset-swatch.active { border-color: var(--primary-text-color); box-shadow: 0 0 0 2px var(--primary-color); }
-      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-left: auto; }
+      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-inline-start: auto; }
       .colour-helper { color: var(--secondary-text-color); font-size: 0.82rem; line-height: 1.3; }
     `;
   }

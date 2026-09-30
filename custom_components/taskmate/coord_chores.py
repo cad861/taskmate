@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING
 from homeassistant.util import dt as dt_util
 
 from . import images, photos
+from .chore_undo import child_can_undo, undo_window_seconds
+from .const import CHORE_NOTE_MAX_LENGTH, CHORE_SUGGESTED_POINTS_MAX, DAILY_PROGRESS_KEEP_DAYS, QUALITY_RATINGS
+from .coord_rejections import clean_reject_reason
+from .coord_teamwork import teamwork_config_error
 from .models import Chore, ChoreCompletion, PointsTransaction
 
 if TYPE_CHECKING:
@@ -75,8 +79,18 @@ class ChoresMixin:
         manual_start_child_id: str = "",
         deadline_at: str = "",
         speed_bonus_points: int = 0,
+        team_size: int = 0,
+        team_points_mode: str = "each",
+        team_bonus: int = 0,
+        due_time: str = "",
     ) -> Chore:
         """Add a new chore."""
+        # Teamwork (#928) is refused up front, before anything is stored.
+        team_error = teamwork_config_error(
+            team_size, assignment_mode=assignment_mode, team_points_mode=team_points_mode
+        )
+        if team_error:
+            raise ValueError(team_error)
         # One-shot chores: force daily_limit=1, set created_date to today
         if schedule_mode == "one_shot":
             daily_limit = 1
@@ -126,6 +140,10 @@ class ChoresMixin:
             require_availability=require_availability,
             deadline_at=deadline_at,
             speed_bonus_points=max(0, int(speed_bonus_points or 0)),
+            team_size=int(team_size or 0),
+            team_points_mode=team_points_mode,
+            team_bonus=max(0, int(team_bonus or 0)),
+            due_time=due_time,
         )
         # Cache today's active child so the card can show it immediately
         active = self._compute_active_children(chore, today)
@@ -156,6 +174,9 @@ class ChoresMixin:
             raise ValueError(f"Chore {chore_id} not found")
         if getattr(chore, "assignment_mode", "everyone") in ("everyone", "unassigned"):
             raise ValueError("Only rotation chores can be swapped")
+        # A chore won at auction (#982) is the winner's by their own bid.
+        if self.auction_winner(chore):
+            raise ValueError("This chore was won at auction today, so it can't be swapped")
         requester = self.get_child(requester_id)
         if not requester:
             raise ValueError(f"Child {requester_id} not found")
@@ -340,6 +361,7 @@ class ChoresMixin:
         data["assignment_swap_child_id"] = ""
         data["assignment_swap_date"] = ""
         data["publish_calendar_published_dates"] = []
+        data["moved_occurrences"] = {}
         data["disabled_for"] = []
         data["enabled"] = True
 
@@ -373,12 +395,15 @@ class ChoresMixin:
         if action not in ("delete", "enable", "disable", "reassign"):
             raise ValueError(f"Unknown bulk action {action}")
         count = 0
+        called_off = []
         for cid in ids:
             chore = self.storage.get_chore(cid)
             if not chore:
                 continue
             if action == "delete":
                 self.storage.remove_chore(cid)
+                # Its auctions go with it, live ones called off (#999).
+                called_off += self.remove_chore_from_auctions(cid)
             elif action == "enable":
                 chore.enabled = True
                 chore.disabled_for = []
@@ -392,9 +417,13 @@ class ChoresMixin:
             count += 1
         await self.storage.async_save()
         await self.async_refresh()
+        for auction, bidders in called_off:
+            await self._async_tell_bidders_called_off(auction, bidders)
         return count
 
-    async def async_approve_chores_bulk(self, completion_ids: list[str] | None = None) -> int:
+    async def async_approve_chores_bulk(
+        self, completion_ids: list[str] | None = None, rating: int | None = None
+    ) -> int:
         """Approve several pending chore completions at once. Returns count approved.
 
         If completion_ids is given, only those (still-pending) completions are
@@ -410,6 +439,9 @@ class ChoresMixin:
         the button reads as broken. The batch refreshes once at the end instead.
         Safe because the per-approval side-effects (badges, quests, challenges,
         the all-done check) all read `storage` directly, never `self.data`.
+
+        ``rating`` (#927) applies the same 1-3 star quality rating to every
+        approval in the batch; see ``async_approve_chore``.
         """
         pending = {c.id for c in self.storage.get_completions() if not c.approved}
         if completion_ids:
@@ -417,9 +449,10 @@ class ChoresMixin:
             targets = [cid for cid in dict.fromkeys(completion_ids) if cid in pending]
         else:
             targets = [c.id for c in self.storage.get_completions() if not c.approved]
+        rated = {"rating": rating} if rating is not None else {}
         count = 0
         for cid in targets:
-            await self.async_approve_chore(cid, refresh=False)
+            await self.async_approve_chore(cid, refresh=False, **rated)
             count += 1
         if count:
             await self.async_refresh()
@@ -474,6 +507,16 @@ class ChoresMixin:
 
     async def async_update_chore(self, chore: Chore) -> None:
         """Update a chore."""
+        # Checked before storage is touched so a refused edit changes nothing.
+        team_error = teamwork_config_error(
+            getattr(chore, "team_size", 0),
+            assignment_mode=getattr(chore, "assignment_mode", "everyone"),
+            open_ended=bool(getattr(chore, "open_ended", False)),
+            task_type=getattr(chore, "task_type", "standard") or "standard",
+            team_points_mode=getattr(chore, "team_points_mode", "each"),
+        )
+        if team_error:
+            raise ValueError(team_error)
         today = dt_util.as_local(dt_util.now()).date()
         # Capture pre-update state before storage is mutated below.
         existing = self.storage.get_chore(chore.id)
@@ -556,6 +599,10 @@ class ChoresMixin:
         # Drop pending swap requests (#785), else they sit in the parent's
         # approval queue forever showing "?" for the chore that no longer exists.
         self.storage.remove_swap_requests_for_chore(chore_id)
+        # Teamwork joins (#928) belong to the occurrence of a chore that's gone.
+        self.storage.remove_team_joins_for_chore(chore_id)
+        # Its auctions (#982) go with it; live ones are called off (#999).
+        called_off = self.remove_chore_from_auctions(chore_id)
         # Remove chore from children's chore_order lists
         for child in self.storage.get_children():
             if chore_id in child.chore_order:
@@ -563,6 +610,8 @@ class ChoresMixin:
                 self.storage.update_child(child)
         await self.storage.async_save()
         await self.async_refresh()
+        for auction, bidders in called_off:
+            await self._async_tell_bidders_called_off(auction, bidders)
 
     def get_chore(self, chore_id: str) -> Chore | None:
         """Get a chore by ID."""
@@ -685,7 +734,13 @@ class ChoresMixin:
         return chore
 
     async def async_complete_chore(
-        self, chore_id: str, child_id: str, as_parent: bool = False, photo_url: str = ""
+        self,
+        chore_id: str,
+        child_id: str,
+        as_parent: bool = False,
+        photo_url: str = "",
+        note: str = "",
+        suggested_points: int = 0,
     ) -> ChoreCompletion | None:
         """Mark a chore as completed by a child.
 
@@ -719,6 +774,18 @@ class ChoresMixin:
                 chore_id,
             )
             photo_url = ""
+
+        # The note and the suggested points are typed by a child, so bound both
+        # before they reach storage: an unbounded note bloats the store and the
+        # sensor attribute slice, and the suggestion is only ever a hint for the
+        # parent. Over-long notes are truncated rather than refused — losing a
+        # child's tail end beats refusing their chore.
+        note = (note or "").strip()[:CHORE_NOTE_MAX_LENGTH]
+        try:
+            suggested_points = int(suggested_points or 0)
+        except (TypeError, ValueError):
+            suggested_points = 0
+        suggested_points = min(max(0, suggested_points), CHORE_SUGGESTED_POINTS_MAX)
 
         now = dt_util.now()
         today = dt_util.as_local(now).date()
@@ -788,10 +855,14 @@ class ChoresMixin:
             )
             return None
 
-        # Check daily limit (only count parent completions, not bonus sub-tasks)
+        # Check daily limit (only count parent completions, not bonus sub-tasks).
+        # A completion an inspection sent back to redo (#981) no longer counts.
         all_completions = self.storage.get_completions()
+        redo_ids = self.inspection_redo_completion_ids()
         todays_completions_count = 0
         for comp in all_completions:
+            if comp.id in redo_ids:
+                continue
             if comp.chore_id == chore_id and comp.child_id == child_id and not comp.bonus_subtask_id:
                 comp_dt = comp.completed_at
                 if isinstance(comp_dt, str):
@@ -814,6 +885,18 @@ class ChoresMixin:
             )
             return None
 
+        # Weekly target (#883): the same cap one level up. Parents completing on
+        # behalf are bound by it too — the quota is the point of the chore, and
+        # the daily limit above already treats them the same way.
+        if self.weekly_target_met(chore, child_id):
+            _LOGGER.debug(
+                "complete_chore no-op: weekly target reached for '%s' (%d/%d this week)",
+                chore.name,
+                self.weekly_completion_count(chore_id, child_id),
+                getattr(chore, "weekly_target", 0),
+            )
+            return None
+
         # A photo-required chore always goes through parent approval (unless a
         # parent is completing on behalf), so the evidence gets reviewed.
         requires_photo = bool(getattr(chore, "require_photo", False))
@@ -824,24 +907,109 @@ class ChoresMixin:
         # ServiceValidationError by the service layer.
         if requires_photo and not as_parent and not (photo_url or "").strip():
             raise ValueError("This chore requires a photo as evidence.")
-        auto_approve = as_parent or (not chore.requires_approval and not requires_photo)
-        effective_points = self._apply_roulette_multiplier(
-            chore,
-            child_id,
-            self._apply_speed_bonus(
+        # An open-ended chore is a placeholder for unlisted work, so the note IS
+        # the chore — without it the parent has nothing to review. Same shape as
+        # the photo gate above: enforced here rather than only in the card, so
+        # the button entity, automations and Dev Tools can't bypass it.
+        is_open_ended = bool(getattr(chore, "open_ended", False))
+        if is_open_ended and not as_parent and not note:
+            raise ValueError("Say what you did to submit this one.")
+        # Teamwork chores (#928): this tap joins the day's occurrence. Only the
+        # join that fills the team records anything — a completion for every
+        # participant at once — so a lone join returns None like the other
+        # soft outcomes above. Every gate above has already run for the joiner.
+        if self.teamwork_size(chore):
+            return await self._async_join_team_chore(chore, child, now, as_parent=as_parent, photo_url=photo_url)
+        # Open-ended completions always go to a parent: the child suggested the
+        # point value, so self-awarding it would let them set their own pay.
+        auto_approve = as_parent or (not chore.requires_approval and not requires_photo and not is_open_ended)
+        # Won at auction (#982): the winner is paid their winning bid for this
+        # occurrence instead of the chore's own points — exactly what they bid.
+        auction_price = self.auction_price_for(chore, child_id, today)
+        if auction_price is not None:
+            effective_points = auction_price
+        else:
+            effective_points = self._apply_roulette_multiplier(
                 chore,
-                self._apply_time_adjustment(chore, self.effective_chore_points(chore), now),
-                now,
-            ),
+                child_id,
+                self._apply_speed_bonus(
+                    chore,
+                    self._apply_time_adjustment(chore, self.effective_chore_points(chore), now),
+                    now,
+                ),
+            )
+        # Redoing a chore an inspection sent back (#981): the original
+        # completion's points stand, so this one earns nothing extra. It still
+        # goes through the normal approval path.
+        redo = self._inspection_redo_for(chore.id, child_id)
+        if redo is not None:
+            effective_points = 0
+        completion = await self._async_record_completion(
+            chore,
+            child,
+            now,
+            auto_approve=auto_approve,
+            points=effective_points,
+            as_parent=as_parent,
+            photo_url=photo_url,
+            note=note,
+            suggested_points=suggested_points,
         )
+        if redo is not None:
+            self._inspection_on_redo_recorded(redo, completion.id)
+        await self._async_after_completions(
+            chore,
+            # An open-ended chore has no points of its own, so quote the
+            # child's own estimate — otherwise every one of these pushes
+            # announces "+0" (#832).
+            [
+                (
+                    child,
+                    completion,
+                    0
+                    if redo is not None
+                    else auction_price
+                    if auction_price is not None
+                    else (completion.suggested_points if is_open_ended else chore.points),
+                )
+            ],
+            auto_approve=auto_approve,
+        )
+        return completion
 
+    async def _async_record_completion(
+        self,
+        chore,
+        child,
+        now,
+        *,
+        auto_approve: bool,
+        points: int,
+        as_parent: bool = False,
+        photo_url: str = "",
+        note: str = "",
+        suggested_points: int = 0,
+    ) -> ChoreCompletion:
+        """Store one completion and, when auto-approved, pay it.
+
+        The part of completing a chore that is per child. The caller has already
+        run every eligibility gate and then calls _async_after_completions once
+        for the whole batch (one child normally, a whole team for #928).
+        """
         completion = ChoreCompletion(
-            chore_id=chore_id,
-            child_id=child_id,
+            chore_id=chore.id,
+            child_id=child.id,
             completed_at=now,
             approved=auto_approve,
-            points_awarded=effective_points if auto_approve else 0,
+            points_awarded=points if auto_approve else 0,
+            submitted_points=points,
             photo_url=photo_url or "",
+            note=note,
+            suggested_points=suggested_points,
+            # A child's own submission may be taken back inside the undo
+            # window (#918); one a parent made on their behalf may not, and
+            # nothing made while the window is 0 (off) ever can.
+            child_undo_allowed=not as_parent and undo_window_seconds(self.storage) > 0,
         )
 
         # Record the completion before awarding anything. Awarding can suspend
@@ -852,7 +1020,7 @@ class ChoresMixin:
         self.storage.add_completion(completion)
 
         if auto_approve:
-            total_awarded = await self._award_points(child, effective_points, chore_id=chore_id)
+            total_awarded = await self._award_points(child, points, chore_id=chore.id)
             completion.approved = True
             completion.approved_at = dt_util.now()
             completion.points_awarded = total_awarded
@@ -865,50 +1033,61 @@ class ChoresMixin:
                 "child_name": child.name,
                 "chore_id": chore.id,
                 "chore_name": chore.name,
-                "points": effective_points,
+                "points": points,
                 "difficulty": getattr(chore, "difficulty", "medium"),
                 "timestamp": dt_util.now().isoformat(),
             },
         )
 
         # Update last_completed store (window starts at completion time, midnight-rounded)
-        self.storage.set_last_completed(chore_id, child_id, now.isoformat())
+        self.storage.set_last_completed(chore.id, child.id, now.isoformat())
 
         # One-shot: if auto-approved, disable for this child immediately
         if getattr(chore, "schedule_mode", "specific_days") == "one_shot" and auto_approve:
-            if child_id not in chore.disabled_for:
-                chore.disabled_for.append(child_id)
+            if child.id not in chore.disabled_for:
+                chore.disabled_for.append(child.id)
             self._check_one_shot_fully_disabled(chore)
             self.storage.update_chore(chore)
 
+        return completion
+
+    async def _async_after_completions(self, chore, recorded: list, *, auto_approve: bool) -> None:
+        """Save, notify and refresh once for completions just recorded.
+
+        ``recorded`` is a list of ``(child, completion, notify_points)``. One
+        save and one refresh cover the batch (a refresh per child is the cost
+        #794 measured); the approval push and the progression hooks stay per
+        child.
+        """
         await self.storage.async_save()
 
         # Fire approval notification only if it stays pending
         if not auto_approve:
-            await self._async_notify_pending_approval(
-                child.name,
-                chore.name,
-                chore.points,
-                completion_id=completion.id,
-                photo_url=completion.photo_url,
-            )
+            for child, completion, notify_points in recorded:
+                await self._async_notify_pending_approval(
+                    child.name,
+                    chore.name,
+                    notify_points,
+                    completion_id=completion.id,
+                    photo_url=completion.photo_url,
+                )
 
         await self.async_refresh()
 
-        # Trigger badge evaluation for anything that auto-approved
-        if auto_approve and getattr(self, "badges", None):
-            await self.badges.evaluate_for_child(child_id, "manual")
+        if not auto_approve:
+            return
+        for child, _completion, _points in recorded:
+            # Trigger badge evaluation for anything that auto-approved
+            if getattr(self, "badges", None):
+                await self.badges.evaluate_for_child(child.id, "manual")
 
-        # Auto-approved completions skip the parent-approval path, so they must
-        # run the same post-approval progression hooks here — otherwise quest
-        # steps and challenges only advance for approval-required chores (#558).
-        if auto_approve:
+            # Auto-approved completions skip the parent-approval path, so they must
+            # run the same post-approval progression hooks here — otherwise quest
+            # steps and challenges only advance for approval-required chores (#558).
             if hasattr(self, "_async_advance_quests"):
-                await self._async_advance_quests(child_id, chore_id)
+                await self._async_advance_quests(child.id, chore.id)
             if hasattr(self, "_async_evaluate_challenges"):
-                await self._async_evaluate_challenges(child_id)
-
-        return completion
+                await self._async_evaluate_challenges(child.id)
 
     # How far back a grown-up may log a job that was done but not ticked.
     BACKDATE_MAX_DAYS = 7
@@ -1049,6 +1228,7 @@ class ChoresMixin:
             approved=True,
             approved_at=now,
             points_awarded=0,
+            submitted_points=0,
         )
 
         self.storage.add_completion(completion)
@@ -1077,9 +1257,13 @@ class ChoresMixin:
         return completion
 
     async def async_complete_bonus_subtask(
-        self, chore_id: str, bonus_subtask_id: str, child_id: str
+        self, chore_id: str, bonus_subtask_id: str, child_id: str, by_child: bool = True
     ) -> ChoreCompletion:
-        """Complete a bonus sub-task (only available after parent chore is completed today)."""
+        """Complete a bonus sub-task (only available after parent chore is completed today).
+
+        ``by_child=False`` marks a completion made from the admin panel, which
+        the child may not undo (#918).
+        """
         chore = self.get_chore(chore_id)
         if not chore:
             raise ValueError(f"Chore {chore_id} not found")
@@ -1135,7 +1319,9 @@ class ChoresMixin:
             completed_at=now,
             approved=not chore.requires_approval,
             points_awarded=subtask.points if not chore.requires_approval else 0,
+            submitted_points=subtask.points,
             bonus_subtask_id=bonus_subtask_id,
+            child_undo_allowed=by_child and undo_window_seconds(self.storage) > 0,
         )
 
         # Written before the award for the same reason as the main completion
@@ -1159,12 +1345,35 @@ class ChoresMixin:
         await self.async_refresh()
         return completion
 
-    async def async_approve_chore(self, completion_id: str, refresh: bool = True) -> None:
+    async def async_approve_chore(
+        self,
+        completion_id: str,
+        refresh: bool = True,
+        points: int | None = None,
+        rating: int | None = None,
+    ) -> None:
         """Approve a chore completion.
 
         ``refresh=False`` is used by ``async_approve_chores_bulk`` so a batch
         pays for one coordinator rebuild rather than one per completion (#794).
         The caller must refresh once it is done.
+
+        ``points`` lets the approving parent set what the chore was actually
+        worth (#832) — needed for open-ended submissions, useful for any chore.
+        It replaces the chore's *base* points, so the streak and level
+        multipliers ``_award_points`` applies still ride on top exactly as they
+        would for an ordinary approval. ``None`` means "pay what the submission
+        was worth when it was made", falling back to the chore's value for
+        completions recorded before that was stored.
+
+        ``rating`` is the parent's optional 1-3 star quality rating (#927),
+        honoured only while the ``quality_rating_enabled`` setting is on. It
+        scales the base points by that star's multiplier before the streak and
+        weekend multipliers ride on top, and is stored on the completion. No
+        rating pays 100%. An explicit ``points`` award is already the parent's
+        own valuation, so it is paid as-is and the rating is only recorded.
+        Because the scaled total lands in ``points_awarded``, undo and reject
+        reverse exactly what the rating paid.
         """
         completions = self.storage.get_completions()
         for completion in completions:
@@ -1175,13 +1384,23 @@ class ChoresMixin:
                         completion_id,
                     )
                     return
-                chore = self.get_chore(completion.chore_id)
+                # A bounty's completion (#931) has no chore of its own; it is
+                # priced and paid through this same path.
+                chore = self.get_chore(completion.chore_id) or self.bounty_completion_chore(completion)
                 child = self.get_child(completion.child_id)
 
                 if chore and child:
                     comp_date = dt_util.as_local(completion.completed_at).date()
                     is_bonus = bool(completion.bonus_subtask_id)
-                    if is_bonus:
+                    if completion.submitted_points is not None:
+                        # Pay what the child was promised when they submitted.
+                        # Recalculating here reads the chore's *current* points
+                        # — so an edit made while the work sat in the queue
+                        # changed the price after the fact — and silently drops
+                        # the speed bonus and roulette multiplier that were in
+                        # the figure they saw.
+                        pts = completion.submitted_points
+                    elif is_bonus:
                         subtask = next((b for b in chore.bonus_subtasks if b.id == completion.bonus_subtask_id), None)
                         pts = subtask.points if subtask else 0
                     elif completion.timed_duration_seconds > 0 and chore.task_type == "timed":
@@ -1195,6 +1414,33 @@ class ChoresMixin:
                         pts = self._apply_time_adjustment(
                             chore, self.effective_chore_points(chore), completion.completed_at
                         )
+                    stars = 0
+                    if rating is not None and self.quality_rating_enabled():
+                        try:
+                            stars = int(rating)
+                        except (TypeError, ValueError):
+                            stars = 0
+                        if stars not in QUALITY_RATINGS:
+                            _LOGGER.warning("Ignoring invalid quality rating %r for %s", rating, completion_id)
+                            stars = 0
+                    if stars and points is None:
+                        # Half-up, like the cards' preview (Python's round() is
+                        # half-to-even, so ★ on a 30-point chore would pay 22
+                        # where the card showed 23).
+                        pts = max(0, int(pts * self.quality_rating_multipliers()[stars] + 0.5))
+                    if points is not None:
+                        # An explicit award overrides every per-chore
+                        # calculation above (bonus sub-task, timed rate,
+                        # time-of-day adjustment) — the parent has looked at
+                        # what was actually done and priced it themselves.
+                        try:
+                            pts = max(0, int(points))
+                        except (TypeError, ValueError):
+                            _LOGGER.warning(
+                                "Ignoring non-numeric points override %r for completion %s",
+                                points,
+                                completion_id,
+                            )
                     # Claim the completion before awarding. The "already
                     # approved" check above and the award are separated by an
                     # await that can suspend, so two approvals landing together
@@ -1203,6 +1449,10 @@ class ChoresMixin:
                     completion.approved = True
                     completion.approved_at = dt_util.now()
                     completion.points_awarded = 0
+                    completion.quality_rating = stars
+                    # A parent has reviewed it: the child can no longer undo
+                    # it, whatever the window says (#918).
+                    completion.child_undo_allowed = False
                     self.storage.update_completion(completion)
 
                     total_awarded = await self._award_points(
@@ -1214,6 +1464,8 @@ class ChoresMixin:
                     )
                     completion.points_awarded = total_awarded
                     self.storage.update_completion(completion)
+                    if getattr(completion, "bounty_id", ""):
+                        self._bounty_on_approved(completion)
 
                     # Dismiss the mobile approval push now this completion is
                     # reviewed (covers single approve AND "approve all", which
@@ -1228,6 +1480,7 @@ class ChoresMixin:
                             "chore_id": completion.chore_id,
                             "completion_id": completion.id,
                             "timestamp": dt_util.now().isoformat(),
+                            **({"quality_rating": stars} if stars else {}),
                         },
                     )
 
@@ -1291,8 +1544,11 @@ class ChoresMixin:
         NOT remove or modify the completion records themselves.
         """
         completion = target_completion
-        if completion.points_awarded > 0:
-            child = self.get_child(completion.child_id)
+        child = self.get_child(completion.child_id)
+        # Approval, not a positive payout, is what marks an award to reverse: a
+        # 0-point chore still bumps the chore count and can advance the streak.
+        # Pending submissions have been awarded nothing yet.
+        if completion.approved:
             if child:
                 child.points = max(0, child.points - completion.points_awarded)
                 child.total_points_earned = max(0, child.total_points_earned - completion.points_awarded)
@@ -1306,18 +1562,23 @@ class ChoresMixin:
                     other_same_day = any(
                         c.id != completion.id
                         and c.child_id == completion.child_id
+                        and c.approved
                         and not c.bonus_subtask_id
                         and dt_util.as_local(c.completed_at).date() == reject_date
                         for c in completions
                     )
                     if not other_same_day:
+                        streak_before_undo = child.current_streak or 0
                         child.current_streak = max(0, child.current_streak - 1)
+                        # A streak freeze this completion earned goes too (#925).
+                        self._reverse_streak_freeze_earn(child, streak_before_undo)
                         if getattr(child, "last_completion_date", None) == reject_date.isoformat():
                             remaining = [
                                 dt_util.as_local(c.completed_at).date()
                                 for c in completions
                                 if c.id != completion.id
                                 and c.child_id == completion.child_id
+                                and c.approved
                                 and not c.bonus_subtask_id
                             ]
                             child.last_completion_date = max(remaining).isoformat() if remaining else None
@@ -1349,8 +1610,6 @@ class ChoresMixin:
                                 )
                             child.streak_milestones_achieved = sorted(d for d in achieved if d <= child.current_streak)
 
-                self.storage.update_child(child)
-
         bonus_completions: list = []
         is_parent = not target_completion.bonus_subtask_id
         if is_parent:
@@ -1366,15 +1625,11 @@ class ChoresMixin:
                 and c.id != target_completion.id
                 and dt_util.as_local(c.completed_at).date() == comp_date
             ]
-            if bonus_completions:
-                child = self.get_child(target_completion.child_id)
-                for bc in bonus_completions:
-                    if bc.points_awarded > 0 and child:
-                        child.points = max(0, child.points - bc.points_awarded)
-                        child.total_points_earned = max(0, child.total_points_earned - bc.points_awarded)
-                        child.total_chores_completed = max(0, child.total_chores_completed - 1)
-                if child:
-                    self.storage.update_child(child)
+            for bc in bonus_completions:
+                if bc.approved and child:
+                    child.points = max(0, child.points - bc.points_awarded)
+                    child.total_points_earned = max(0, child.total_points_earned - bc.points_awarded)
+                    child.total_chores_completed = max(0, child.total_chores_completed - 1)
 
             # Undo last_completed store so recurrence window resets correctly
             self.storage.undo_last_completed(target_completion.chore_id, target_completion.child_id)
@@ -1387,12 +1642,48 @@ class ChoresMixin:
                 chore.enabled = True
                 self.storage.update_chore(chore)
 
+        if child and (completion.approved or any(bc.approved for bc in bonus_completions)):
+            # Keep the leaderboard and its chart in step once the main award and
+            # any cascaded bonus sub-tasks have both been reversed.
+            child.career_score = child.total_points_earned - child.total_penalties_received
+            self.storage.update_child(child)
+            self.storage.append_career_score_snapshot(child.id, dt_util.now().date().isoformat(), child.career_score)
+
         return bonus_completions
 
-    async def async_reject_chore(self, completion_id: str) -> None:
-        """Reject a chore completion and fully reverse all awards if already granted."""
+    async def async_undo_chore(self, completion_id: str) -> None:
+        """A child takes back their own completion (#918).
+
+        Allowed only for a pending submission no parent has reviewed yet, or an
+        auto-approved one still inside the global undo window — see
+        ``chore_undo``. The caller has already checked the linked-child rule
+        against the completion's *stored* child. Everything from the re-read to
+        the reversal inside ``async_reject_chore`` runs without yielding, so a
+        parent's approval or a second undo can't slip in between the check and
+        the reversal.
+        """
+        completions = self.storage.get_completions()
+        completion = next((c for c in completions if c.id == completion_id), None)
+        if completion is None:
+            raise ValueError("This chore has already been undone. Refresh the card.")
+        if not child_can_undo(completion, completions, undo_window_seconds(self.storage)):
+            raise ValueError("This chore can't be undone any more. Ask a parent to undo it.")
+        await self.async_reject_chore(completion_id, event="taskmate_chore_undone")
+
+    async def async_reject_chore(
+        self, completion_id: str, event: str = "taskmate_chore_rejected", reason: str = ""
+    ) -> None:
+        """Reject a chore completion and fully reverse all awards if already granted.
+
+        ``event`` is the bus event fired afterwards; a child's own undo fires
+        ``taskmate_chore_undone`` so automations can tell it from a parent's
+        rejection. ``reason`` (#976) is the parent's optional "why", shown to
+        the child; only a parent's rejection carries one.
+        """
         completions = self.storage.get_completions()
         target_completion = next((c for c in completions if c.id == completion_id), None)
+        rejected = event == "taskmate_chore_rejected"
+        reason = clean_reject_reason(reason) if rejected else ""
 
         if target_completion:
             bonus_completions = self._reverse_completion_awards(target_completion, completions)
@@ -1400,6 +1691,10 @@ class ChoresMixin:
                 self.storage.remove_completion(bc.id)
 
         self.storage.remove_completion(completion_id)
+        if target_completion and getattr(target_completion, "bounty_id", ""):
+            # A bounty goes back to the same child rather than to the board
+            # (#931): renewed on a rejection, as it was on their own undo.
+            self._bounty_on_withdrawn(target_completion, rejected=rejected)
         if target_completion and target_completion.approved and not target_completion.bonus_subtask_id:
             # Same as undo: a rejected completion must not leave the quest
             # chain standing on the step it unlocked.
@@ -1409,23 +1704,35 @@ class ChoresMixin:
         # delete it (best-effort; foreign/blank URLs are ignored).
         if target_completion and getattr(target_completion, "photo_url", ""):
             await photos.async_delete_photo(self.hass, target_completion.photo_url)
+        chore_name = ""
+        if target_completion:
+            chore = self.get_chore(target_completion.chore_id)
+            bounty = None if chore else self.storage.get_bounty(getattr(target_completion, "bounty_id", "") or "")
+            chore_name = getattr(chore, "name", "") or getattr(bounty, "title", "") or ""
+            if rejected and not target_completion.bonus_subtask_id:
+                self._record_rejection(
+                    "chore", target_completion.child_id, target_completion.chore_id, chore_name, reason
+                )
+            # An open inspection of it is void; a redo it was is owed again (#981).
+            self._inspection_on_completion_removed(completion_id)
         await self.storage.async_save()
         await self.async_refresh()
 
         if target_completion:
             child = self.get_child(target_completion.child_id)
-            chore = self.get_chore(target_completion.chore_id)
-            self.hass.bus.async_fire(
-                "taskmate_chore_rejected",
-                {
-                    "child_id": target_completion.child_id,
-                    "child_name": getattr(child, "name", ""),
-                    "chore_id": target_completion.chore_id,
-                    "chore_name": getattr(chore, "name", ""),
-                    "completion_id": completion_id,
-                    "timestamp": dt_util.now().isoformat(),
-                },
-            )
+            payload = {
+                "child_id": target_completion.child_id,
+                "child_name": getattr(child, "name", ""),
+                "chore_id": target_completion.chore_id,
+                "chore_name": chore_name,
+                "completion_id": completion_id,
+                "timestamp": dt_util.now().isoformat(),
+            }
+            if rejected:
+                payload["reason"] = reason
+            self.hass.bus.async_fire(event, payload)
+            if rejected and not target_completion.bonus_subtask_id:
+                await self._async_notify_rejected("chore", child, chore_name, reason)
             # Dismiss the mobile approval push for this reviewed completion. Also
             # covers undoing an already-approved chore (whose push was cleared at
             # approval): re-clearing a stale tag is a harmless no-op.
@@ -1463,12 +1770,21 @@ class ChoresMixin:
             bc.approved = False
             bc.approved_at = None
             bc.points_awarded = 0
+            bc.quality_rating = 0
+            bc.child_undo_allowed = False
             self.storage.update_completion(bc)
 
         target.approved = False
         target.approved_at = None
         target.points_awarded = 0
+        # The rating belonged to the approval being undone (#927); a
+        # re-approval rates it afresh.
+        target.quality_rating = 0
+        # A parent touched it, so child undo stays locked (#918).
+        target.child_undo_allowed = False
         self.storage.update_completion(target)
+        if getattr(target, "bounty_id", ""):
+            self._bounty_on_unapproved(target)
 
         # Quest progress advanced on approval, so it has to come back too —
         # otherwise re-approving the same completion advances the chain a
@@ -1518,6 +1834,10 @@ class ChoresMixin:
         if self._is_child_on_vacation(self._cached_child(child_id)):
             return False
 
+        # Birthday day off (#924): only mandatory chores stay on the list.
+        if not getattr(chore, "mandatory", False) and self.is_birthday_day_off(self._cached_child(child_id)):
+            return False
+
         # Check if chore is globally disabled (soft-disabled one-shot chores)
         if not getattr(chore, "enabled", True):
             return False
@@ -1525,6 +1845,12 @@ class ChoresMixin:
         # Check per-child disabling (one-shot chores completed by this child)
         disabled_for = getattr(chore, "disabled_for", [])
         if child_id in disabled_for:
+            return False
+
+        # Chore auction (#982): today's occurrence was won at auction, so it is
+        # the winner's alone — whatever the mode, "everyone" included.
+        winner = self.auction_winner(chore)
+        if winner and winner != child_id:
             return False
 
         # Dynamic assignment — only the active child(ren) see alternating/random chores
@@ -1575,6 +1901,13 @@ class ChoresMixin:
                 if not satisfied:
                     return False
 
+        # Calendar moves/removals (#977): an occurrence removed from today, or
+        # moved away from it, takes the chore off today's list; one moved onto
+        # today puts it on, whatever the regular schedule says.
+        override = self.occurrence_override(chore, dt_util.as_local(dt_util.now()).date())
+        if override is False:
+            return False
+
         schedule_mode = getattr(chore, "schedule_mode", "specific_days")
 
         # One-shot chores: only available on the day they were created
@@ -1609,6 +1942,14 @@ class ChoresMixin:
         record = self.storage.get_last_completed(chore.id, child_id)
         current_iso = record.get("current")
 
+        if override is True:
+            # Moved onto today: open until it is done today. The regular window
+            # and anchor maths would measure from the wrong day.
+            try:
+                return not current_iso or date.fromisoformat(current_iso[:10]) < today
+            except (ValueError, TypeError):
+                return True
+
         if not current_iso:
             # Never completed — a future recurrence anchor always defers
             # availability, regardless of first_occurrence_mode
@@ -1628,6 +1969,9 @@ class ChoresMixin:
             last_dt = date.fromisoformat(current_iso[:10])
         except (ValueError, TypeError):
             return True
+        # A completion of a moved occurrence counts from the day it was moved
+        # from, so moving one week's chore doesn't shift every week after it.
+        last_dt = self.occurrence_origin(chore, last_dt)
 
         # every_2_days with anchor — check alignment
         if recurrence == "every_2_days" and recurrence_start:
@@ -1658,6 +2002,34 @@ class ChoresMixin:
         days_since = (today - last_dt).days
         return days_since >= window_days
 
+    def weekly_completion_count(self, chore_id: str, child_id: str) -> int:
+        """How many times ``child_id`` has completed ``chore_id`` this week.
+
+        Monday-anchored, matching the Challenges period convention. Bonus
+        sub-tasks don't count; pending completions do, so a chore can't be
+        submitted a fourth time just because the parent hasn't got round to
+        approving the third yet.
+        """
+        today = dt_util.as_local(dt_util.now()).date()
+        week_start = today - timedelta(days=today.weekday())
+        count = 0
+        for comp in self._cached_completions_for_chore(chore_id):
+            if comp.child_id != child_id or getattr(comp, "bonus_subtask_id", ""):
+                continue
+            try:
+                if dt_util.as_local(comp.completed_at).date() >= week_start:
+                    count += 1
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return count
+
+    def weekly_target_met(self, chore, child_id: str) -> bool:
+        """True when a weekly-target chore has had its quota filled this week."""
+        target = int(getattr(chore, "weekly_target", 0) or 0)
+        if target <= 0:
+            return False
+        return self.weekly_completion_count(chore.id, child_id) >= target
+
     def _is_chore_completable_by_child(self, chore, child_id: str) -> bool:
         """Whether ``child_id`` may complete ``chore`` right now (card parity).
 
@@ -1678,7 +2050,8 @@ class ChoresMixin:
             if due_days:
                 today = dt_util.as_local(dt_util.now()).date()
                 dow = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")[today.weekday()]
-                if dow not in due_days:
+                # An occurrence moved onto today (#977) is due whatever the weekday.
+                if dow not in due_days and self.occurrence_override(chore, today) is not True:
                     return False
         return True
 
@@ -1695,8 +2068,10 @@ class ChoresMixin:
         """
         today = dt_util.as_local(dt_util.now()).date()
         out = []
+        # Sent back to redo by an inspection (#981): owed again today.
+        redo_ids = self.inspection_redo_completion_ids()
         with self.availability_build_scope():
-            completions = self._cached_completions()
+            completions = [c for c in self._cached_completions() if c.id not in redo_ids]
             for chore in self.storage.get_chores():
                 if not self._is_chore_completable_by_child(chore, child_id):
                     continue
@@ -1714,8 +2089,105 @@ class ChoresMixin:
                         continue
                 if done >= limit:
                     continue
+                # Weekly target (#883): filled the week's quota, so nothing is
+                # owed until Monday even on a day the chore is scheduled.
+                if self.weekly_target_met(chore, child_id):
+                    continue
                 out.append(chore)
         return out
+
+    def get_today_board(self) -> dict:
+        """Every chore each child has today and where it stands (#966).
+
+        Feeds the admin panel's Today page. Unlike ``get_due_chores_for_child``
+        (outstanding only) this keeps the chores already done, so the panel can
+        show done/total. A chore is on a child's board when it is still
+        completable today, when they completed it today (a finished recurring
+        chore is no longer "available", but it was still today's), or when a
+        mandatory miss is waiting for it today.
+
+        Status per chore: ``done`` (approved, up to the daily limit), ``pending``
+        (up to the limit, some awaiting approval), ``missed`` (a pending
+        mandatory miss for today) or ``todo``.
+        """
+        today = dt_util.as_local(dt_util.now()).date()
+        today_iso = today.isoformat()
+        missed = {(m.child_id, m.chore_id) for m in self.storage.get_mandatory_misses() if m.due_date == today_iso}
+        children = []
+        redo_ids = self.inspection_redo_completion_ids()
+        with self.availability_build_scope():
+            done_today: dict[tuple[str, str], list[bool]] = {}
+            for c in self._cached_completions():
+                # Sent back to redo by an inspection (#981): not done any more.
+                if getattr(c, "bonus_subtask_id", "") or c.id in redo_ids:
+                    continue
+                try:
+                    if dt_util.as_local(c.completed_at).date() != today:
+                        continue
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                done_today.setdefault((c.child_id, c.chore_id), []).append(bool(c.approved))
+            chores = self.storage.get_chores()
+            for child in self.storage.get_children():
+                items = []
+                for chore in chores:
+                    flags = done_today.get((child.id, chore.id), [])
+                    limit = max(int(getattr(chore, "daily_limit", 1) or 1), 1)
+                    open_today = (
+                        len(flags) < limit
+                        and self._is_chore_completable_by_child(chore, child.id)
+                        and not self.weekly_target_met(chore, child.id)
+                    )
+                    if open_today:
+                        status = "missed" if (child.id, chore.id) in missed else "todo"
+                    elif flags:
+                        status = "done" if all(flags) else "pending"
+                    elif (child.id, chore.id) in missed:
+                        status = "missed"
+                    else:
+                        continue
+                    items.append({"chore_id": chore.id, "status": status, "count": len(flags), "limit": limit})
+                children.append(
+                    {
+                        "child_id": child.id,
+                        "due": len(items),
+                        "done": sum(1 for i in items if i["status"] in ("done", "pending")),
+                        "chores": items,
+                    }
+                )
+        return {"date": today_iso, "children": children}
+
+    async def async_record_daily_progress(self, _now=None) -> None:
+        """Store today's done/total per child for the Today page's week view (#966).
+
+        Runs just before midnight, while "today" is still the day being recorded;
+        the scheduled-chore rules only know about the current day, so a past
+        day's total can't be worked out afterwards.
+        """
+        board = self.get_today_board()
+        cutoff = (dt_util.as_local(dt_util.now()).date() - timedelta(days=DAILY_PROGRESS_KEEP_DAYS)).isoformat()
+        for entry in board["children"]:
+            self.storage.upsert_daily_progress(entry["child_id"], board["date"], entry["due"], entry["done"], cutoff)
+        await self.storage.async_save()
+
+    def daily_progress_state(self, days: int = 7) -> dict:
+        """Last ``days`` days of stored done/total per child, today included live."""
+        board = self.get_today_board()
+        today = date.fromisoformat(board["date"])
+        dates = [(today - timedelta(days=n)).isoformat() for n in range(days - 1, -1, -1)]
+        out = {}
+        for child in self.storage.get_children():
+            stored = {e.get("date"): e for e in self.storage.get_daily_progress(child.id)}
+            live = next((e for e in board["children"] if e["child_id"] == child.id), None)
+            if live:
+                stored[board["date"]] = {"due": live["due"], "done": live["done"]}
+            out[child.id] = [
+                {"date": d, "due": stored[d].get("due", 0), "done": stored[d].get("done", 0)}
+                if d in stored
+                else {"date": d}
+                for d in dates
+            ]
+        return {"board": board, "history": out}
 
     async def _async_expire_dated_chores(self) -> None:
         """Soft-disable any enabled chore whose expires_on date has passed."""

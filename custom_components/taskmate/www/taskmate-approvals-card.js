@@ -33,6 +33,9 @@ class TaskMateApprovalsCard extends LitElement {
       config: { type: Object },
       _loading: { type: Object },
       _signed: { state: true },
+      _review: { state: true },
+      _ratings: { state: true },
+      _rejecting: { state: true },
     };
   }
 
@@ -48,6 +51,7 @@ class TaskMateApprovalsCard extends LitElement {
   constructor() {
     super();
     this._loading = {};
+    this._ratings = {};       // completion_id -> picked 1-3 star rating (#927)
     this._signed = {};        // safe photo path -> per-viewer signed path
     this._inflight = new Set();
   }
@@ -211,7 +215,7 @@ class TaskMateApprovalsCard extends LitElement {
       }
 
       .time-group {
-        margin-left: 8px;
+        margin-inline-start: 8px;
         margin-bottom: 12px;
       }
 
@@ -330,11 +334,11 @@ class TaskMateApprovalsCard extends LitElement {
       }
 
       .action-buttons.left {
-        margin-right: 12px;
+        margin-inline-end: 12px;
       }
 
       .action-buttons.right {
-        margin-left: 12px;
+        margin-inline-start: 12px;
       }
 
       .action-button {
@@ -368,6 +372,129 @@ class TaskMateApprovalsCard extends LitElement {
         color: white;
       }
 
+      /* Review-and-award sheet (#832) */
+      .action-button.adjust {
+        background: var(--secondary-background-color, #f1f1f1);
+        color: var(--primary-text-color, #33373d);
+        font-size: 1rem;
+        line-height: 1;
+      }
+
+      /* Fixed, not absolute: ha-card sets overflow:hidden, which would clip an
+         absolutely-positioned overlay to the card's own box. */
+      .tm-rv-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(20, 20, 30, 0.72);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        z-index: 10000;
+      }
+
+      .tm-rv-sheet {
+        width: 100%;
+        max-width: 340px;
+        box-sizing: border-box;
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #33373d);
+        border-radius: 16px;
+        padding: 18px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+        max-height: 88vh;
+        overflow-y: auto;
+      }
+
+      .tm-rv-title { font-size: 1.05rem; font-weight: 800; }
+      .tm-rv-sub {
+        font-size: 0.82rem;
+        color: var(--secondary-text-color, #6b7280);
+        margin: 2px 0 12px;
+      }
+
+      .tm-rv-quote {
+        border-inline-start: 3px solid var(--accent-color, #ffc107);
+        padding-block: 6px; padding-inline: 10px 0;
+        margin-bottom: 12px;
+        font-size: 0.92rem;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      /* Capped: a portrait photo would otherwise push the award field and the
+         buttons off the bottom of the sheet. */
+      .tm-rv-photo img {
+        width: 100%;
+        max-height: 34vh;
+        object-fit: cover;
+        border-radius: 12px;
+        display: block;
+        margin-bottom: 12px;
+      }
+
+      .tm-rv-label {
+        display: block;
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: var(--secondary-text-color, #6b7280);
+        margin-bottom: 6px;
+      }
+
+      .tm-rv-points {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        font-size: 1.1rem;
+        font-weight: 800;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 2px solid var(--divider-color, #e0e0e0);
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #33373d);
+      }
+
+      .tm-rv-points:focus { outline: none; border-color: #4caf50; }
+
+      .tm-rv-row { display: flex; gap: 10px; margin-top: 16px; }
+      .tm-rv-btn {
+        flex: 1;
+        border: none;
+        border-radius: 12px;
+        padding: 11px 0;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .tm-rv-btn.ghost {
+        background: var(--secondary-background-color, #f1f1f1);
+        color: var(--primary-text-color, #33373d);
+      }
+      .tm-rv-btn.primary { background: #4caf50; color: #fff; }
+      .tm-rv-btn.danger { background: #f44336; color: #fff; }
+
+      /* Reject-with-a-reason sheet (#976) */
+      .tm-rj-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+      .tm-rj-chip {
+        border: 2px solid var(--divider-color, #e0e0e0);
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #33373d);
+        border-radius: 999px;
+        padding: 5px 12px;
+        font: inherit;
+        font-size: 0.85rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .tm-rj-chip.on { border-color: #f44336; background: rgba(244, 67, 54, 0.12); }
+      .tm-rj-input { font-size: 0.95rem; font-weight: 600; }
+      .tm-rj-input:focus { border-color: #f44336; }
+      .tm-rj-hint {
+        font-size: 0.75rem;
+        color: var(--secondary-text-color, #6b7280);
+        margin-top: 6px;
+      }
+
       /* Mandatory-miss review actions (#532) */
       .action-button.penalty {
         background: var(--fun-red, #e74c3c);
@@ -385,7 +512,7 @@ class TaskMateApprovalsCard extends LitElement {
       }
 
       .approval-item.mandatory {
-        border-left: 5px solid var(--fun-red, #e74c3c);
+        border-inline-start: 5px solid var(--fun-red, #e74c3c);
       }
 
       .approval-item.mandatory .penalty-note {
@@ -502,7 +629,9 @@ class TaskMateApprovalsCard extends LitElement {
       .ap-cn-photo img { width: 100%; height: 100%; object-fit: cover; }
 
       /* Clean Pro — divided list */
-      .ap-cp-item { padding: 10px 0; }
+      .ap-cp-item { padding: 10px 0; flex-wrap: wrap; row-gap: 8px; }
+      .ap-cp-mid { flex: 1 1 130px; min-width: 130px; }
+      .ap-cp-actions { display: flex; gap: 8px; flex: 0 0 auto; margin-inline-start: auto; }
       .ap-cp-title { font-weight: 600; }
       .ap-cp-sub { font-size: 12px; }
       .ap-cp-photo { width: 32px; height: 32px; border-radius: 8px; overflow: hidden;
@@ -512,6 +641,22 @@ class TaskMateApprovalsCard extends LitElement {
       .ap-gold-soft { color: var(--tmd-gold); }
 
       .ap-d-photo-link { line-height: 0; text-decoration: none; }
+
+      /* Quality rating star picker (#927) — shared by every design. */
+      .ap-stars { display: inline-flex; align-items: center; gap: 1px; flex: none; }
+      .ap-star {
+        background: none; border: 0; margin: 0; padding: 2px 3px; cursor: pointer;
+        font: inherit; font-size: 20px; line-height: 1; border-radius: 6px;
+        color: var(--tmd-dim, var(--secondary-text-color, #9e9e9e));
+      }
+      .ap-star:hover, .ap-star.on { color: var(--tmd-gold, #f5b301); }
+      /* Console rows are one tight line: the picker sits under the subtitle. */
+      .ap-cn-stars { margin-top: 3px; }
+      .ap-cn-stars .ap-star { font-size: 17px; padding: 1px 2px; }
+      .ap-star:focus-visible { outline: 2px solid var(--tmd-accent, var(--primary-color)); outline-offset: 1px; }
+      .ap-star:disabled { cursor: default; opacity: .5; }
+      .tm-rv-stars { margin: 4px 0 10px; }
+      .tm-rv-stars .ap-star { font-size: 28px; }
 
       /* Scrollable list (parity with classic content) */
       .ap-d-scroll { max-height: 360px; overflow-y: auto; }
@@ -530,6 +675,9 @@ class TaskMateApprovalsCard extends LitElement {
       header_color: '#27ae60',
       ...config,
     };
+    // Dashboards saved before #1010 stored the English default title; treat it
+    // as unset so the translated default is shown instead.
+    if (this.config.title === "Pending Approvals") this.config.title = "";
   }
 
   getCardSize() {
@@ -543,7 +691,6 @@ class TaskMateApprovalsCard extends LitElement {
   static getStubConfig() {
     return {
       entity: "sensor.taskmate_overview",
-      title: "Pending Approvals",
     };
   }
 
@@ -628,6 +775,8 @@ class TaskMateApprovalsCard extends LitElement {
                 ${filteredCompletions.length > 0 ? this._renderApprovals(groupedByDay) : ''}
               `}
         </div>
+        ${this._renderReview()}
+        ${this._renderRejectSheet()}
       </ha-card>
     `;
   }
@@ -792,6 +941,8 @@ class TaskMateApprovalsCard extends LitElement {
     return html`<ha-card class="tmd" style="--hd:${hd}">
       ${this._designHeader(hd, items.length, completions)}
       <div class="tmd-bd">${body}</div>
+      ${this._renderReview()}
+      ${this._renderRejectSheet()}
     </ha-card>`;
   }
 
@@ -818,11 +969,11 @@ class TaskMateApprovalsCard extends LitElement {
     if (it.kind === "completion") {
       const approve = () => this._handleApprove(it.completion);
       const reject = () => this._handleReject(it.completion);
-      return this._apActionPair(approve, reject, isLoading, shape);
+      return this._apActionPair(approve, reject, isLoading, shape, it.completion);
     }
     if (it.kind === "claim") {
       const approve = () => this._handleApproveReward(it.id);
-      const reject = () => this._handleRejectReward(it.id);
+      const reject = () => this._handleRejectReward(it.id, it.title, it.childName);
       return this._apActionPair(approve, reject, isLoading, shape);
     }
     // mandatory miss: apply penalty (if any) / postpone / dismiss
@@ -848,9 +999,15 @@ class TaskMateApprovalsCard extends LitElement {
         @click="${() => this._handleDismiss(it.id)}">${this._t('approvals.dismiss')}</button>`;
   }
 
-  _apActionPair(approve, reject, isLoading, shape) {
+  _apActionPair(approve, reject, isLoading, shape, completion = null) {
+    const adjust = completion
+      ? html`${shape === "round" ? "" : this._renderStars(completion)}<button class="btn ghost sm ${shape === "round" ? "round" : ""}" ?disabled="${isLoading}"
+          title="${this._t('approvals.award_label')}"
+          @click="${() => this._openReview(completion)}">${this._reviewGlyph(completion)}</button>`
+      : "";
     if (shape === "round") {
       return html`
+        ${adjust}
         <button class="btn good sm round" ?disabled="${isLoading}"
           title="${this._t('approvals.approve')}" @click="${approve}">✓</button>
         <button class="btn bad sm round" ?disabled="${isLoading}"
@@ -858,10 +1015,12 @@ class TaskMateApprovalsCard extends LitElement {
     }
     if (shape === "ghost") {
       return html`
+        ${adjust}
         <button class="btn good sm" ?disabled="${isLoading}" @click="${approve}">${this._t('approvals.approve')}</button>
         <button class="btn ghost sm" ?disabled="${isLoading}" @click="${reject}">${this._t('approvals.reject')}</button>`;
     }
     return html`
+      ${adjust}
       <button class="btn good" style="flex:1" ?disabled="${isLoading}" @click="${approve}">👍 ${this._t('approvals.approve')}</button>
       <button class="btn bad" style="flex:1" ?disabled="${isLoading}" @click="${reject}">👎 ${this._t('approvals.reject')}</button>`;
   }
@@ -926,6 +1085,7 @@ class TaskMateApprovalsCard extends LitElement {
         <div style="flex:1;min-width:0">
           <div class="ap-cn-title">${it.title}</div>
           <div class="muted num ap-cn-sub">${(it.childName || '').toUpperCase()} · +${it.points} XP</div>
+          ${it.kind === "completion" ? this._renderStars(it.completion, "ap-cn-stars") : ""}
         </div>
         ${this._apPhotoDesigned(it, "ap-cn-photo")}
         ${this._designActions(it, "round")}
@@ -940,13 +1100,13 @@ class TaskMateApprovalsCard extends LitElement {
     return html`
       <div class="row ap-cp-item" style="--ac:${tone}">
         ${this._av(it.childName, this._childAvatar(it.childId), tone, 38)}
-        <div style="flex:1;min-width:0">
+        <div class="ap-cp-mid">
           <div class="ap-cp-title">${it.title}</div>
           <div class="muted ap-cp-sub">${it.childName}${time ? html` · ${time}` : ""}</div>
         </div>
         ${this._apPhotoDesigned(it, "ap-cp-photo")}
         <span class="chip soft ap-gold-soft">+${it.points}</span>
-        ${this._designActions(it, "ghost")}
+        <div class="ap-cp-actions">${this._designActions(it, "ghost")}</div>
       </div>`;
   }
 
@@ -968,7 +1128,7 @@ class TaskMateApprovalsCard extends LitElement {
     return html`
       <div class="day-group">
         <div class="day-header">
-          <ha-icon icon="mdi:gift-outline" style="--mdc-icon-size: 18px; vertical-align: -3px; margin-right: 6px;"></ha-icon>
+          <ha-icon icon="mdi:gift-outline" style="--mdc-icon-size: 18px; vertical-align: -3px; margin-inline-end: 6px;"></ha-icon>
           ${this._t('approvals.reward_claims_section')}
         </div>
         ${claims.map((claim) => this._renderClaimItem(claim))}
@@ -988,7 +1148,7 @@ class TaskMateApprovalsCard extends LitElement {
         <div class="action-buttons left">
           <button
             class="action-button reject ${isLoading ? 'loading' : ''}"
-            @click="${() => this._handleRejectReward(claimId)}"
+            @click="${() => this._handleRejectReward(claimId, rewardName, childName)}"
             title="${this._t('approvals.reject')}"
             ?disabled="${isLoading}"
           >
@@ -997,7 +1157,7 @@ class TaskMateApprovalsCard extends LitElement {
         </div>
         <div class="item-info">
           <span class="chore-name">
-            <ha-icon icon="${claim.reward_icon || 'mdi:gift'}" style="--mdc-icon-size: 16px; vertical-align: -3px; margin-right: 4px;"></ha-icon>
+            <ha-icon icon="${claim.reward_icon || 'mdi:gift'}" style="--mdc-icon-size: 16px; vertical-align: -3px; margin-inline-end: 4px;"></ha-icon>
             ${rewardName}
           </span>
           <div class="item-details">
@@ -1029,16 +1189,16 @@ class TaskMateApprovalsCard extends LitElement {
     await this._callClaimService('approve_reward', claimId);
   }
 
-  async _handleRejectReward(claimId) {
-    await this._callClaimService('reject_reward', claimId);
+  _handleRejectReward(claimId, name = "", childName = "") {
+    this._openRejectSheet({ kind: "reward", id: claimId, name, childName });
   }
 
-  async _callClaimService(service, claimId) {
+  async _callClaimService(service, claimId, extra = null) {
     if (this._loading[claimId]) return;
     this._loading = { ...this._loading, [claimId]: true };
     this.requestUpdate();
     try {
-      await this.hass.callService('taskmate', service, { claim_id: claimId });
+      await this.hass.callService('taskmate', service, { claim_id: claimId, ...(extra || {}) });
     } catch (error) {
       console.error(`Failed to call ${service}:`, error);
       if (this.hass.callService) {
@@ -1067,7 +1227,7 @@ class TaskMateApprovalsCard extends LitElement {
     return html`
       <div class="day-group">
         <div class="day-header">
-          <ha-icon icon="mdi:alert-octagon-outline" style="--mdc-icon-size: 18px; vertical-align: -3px; margin-right: 6px;"></ha-icon>
+          <ha-icon icon="mdi:alert-octagon-outline" style="--mdc-icon-size: 18px; vertical-align: -3px; margin-inline-end: 6px;"></ha-icon>
           ${this._t('approvals.mandatory_section')}
         </div>
         ${misses.map((miss) => this._renderMissItem(miss))}
@@ -1086,7 +1246,7 @@ class TaskMateApprovalsCard extends LitElement {
       <div class="approval-item mandatory ${isLoading ? 'loading' : ''}">
         <div class="item-info">
           <span class="chore-name">
-            <ha-icon icon="mdi:alert-circle-outline" style="--mdc-icon-size: 16px; vertical-align: -3px; margin-right: 4px;"></ha-icon>
+            <ha-icon icon="mdi:alert-circle-outline" style="--mdc-icon-size: 16px; vertical-align: -3px; margin-inline-end: 4px;"></ha-icon>
             ${choreName}
           </span>
           <div class="item-details">
@@ -1393,6 +1553,7 @@ class TaskMateApprovalsCard extends LitElement {
               <ha-icon icon="mdi:star"></ha-icon>
               ${completion.points}
             </span>
+            ${this._renderStars(completion)}
           </div>
           ${this._photoHref(completion.photo_url) ? html`
             <a class="approval-photo" href="${this._photoHref(completion.photo_url)}" target="_blank" rel="noopener"
@@ -1403,6 +1564,12 @@ class TaskMateApprovalsCard extends LitElement {
           ` : ''}
         </div>
         <div class="action-buttons right">
+          <button
+            class="action-button adjust"
+            @click="${() => this._openReview(completion)}"
+            title="${this._t('approvals.award_label')}"
+            ?disabled="${isLoading}"
+          >${this._reviewGlyph(completion)}</button>
           <button
             class="action-button approve ${isLoading ? "loading" : ""}"
             @click="${() => this._handleApprove(completion)}"
@@ -1417,11 +1584,157 @@ class TaskMateApprovalsCard extends LitElement {
   }
 
   async _handleApprove(completion) {
-    await this._callService("approve_chore", completion.completion_id);
+    const id = completion.completion_id;
+    const rating = this._ratingMultipliers() ? this._ratings[id] || 0 : 0;
+    await this._callService("approve_chore", id, rating ? { rating } : null);
+    if (rating) this._clearRating(id);
   }
 
-  async _handleReject(completion) {
-    await this._callService("reject_chore", completion.completion_id);
+  /* ── Quality rating (#927) ────────────────────────────────────────────
+     Published by the pending-approvals sensor only while the feature is on,
+     so its absence is the "off" switch. Picking a star is a selection, not an
+     approval — Approve still does the approving, and tapping the picked star
+     again clears it back to "unrated" (100%). */
+
+  _ratingMultipliers() {
+    const attrs = (window.__taskmate_attrs && window.__taskmate_attrs(this.hass, this.config.entity))
+      || this.hass?.states?.[this.config.entity]?.attributes || {};
+    const m = attrs.quality_rating && attrs.quality_rating.multipliers;
+    return Array.isArray(m) && m.length === 3 ? m : null;
+  }
+
+  _pickRating(completion, n) {
+    const id = completion.completion_id;
+    const next = this._ratings[id] === n ? 0 : n;
+    this._ratings = { ...this._ratings, [id]: next };
+    // In the review sheet the parent sees the number they will pay, so a star
+    // rescales it there rather than silently on the server.
+    if (this._review && this._review.completion.completion_id === id) {
+      const input = this.renderRoot && this.renderRoot.querySelector("#tm-review-points");
+      const mults = this._ratingMultipliers();
+      if (input && mults) {
+        const base = Number(this._review.base) || 0;
+        input.value = String(Math.max(0, Math.round(next ? base * mults[next - 1] : base)));
+      }
+    }
+  }
+
+  _clearRating(id) {
+    if (!(id in this._ratings)) return;
+    const next = { ...this._ratings };
+    delete next[id];
+    this._ratings = next;
+  }
+
+  _renderStars(completion, extraClass = "") {
+    const mults = this._ratingMultipliers();
+    if (!mults || !completion) return "";
+    const id = completion.completion_id;
+    const sel = this._ratings[id] || 0;
+    const busy = !!this._loading[id];
+    return html`<span class="ap-stars ${extraClass}" role="group" aria-label="${this._t('approvals.rating_label')}">
+      ${[1, 2, 3].map((n) => {
+        const label = this._t('approvals.rating_star_title', { count: n, percent: Math.round(Number(mults[n - 1]) * 100) });
+        // Filled vs outlined, not just gold vs grey, so the pick reads without colour.
+        return html`<button type="button" class="ap-star ${n <= sel ? "on" : ""}" ?disabled="${busy}"
+          aria-pressed="${n === sel ? "true" : "false"}" title="${label}" aria-label="${label}"
+          @click="${(e) => { e.stopPropagation(); this._pickRating(completion, n); }}">${n <= sel ? "★" : "☆"}</button>`;
+      })}
+    </span>`;
+  }
+
+  _handleReject(completion) {
+    this._openRejectSheet({
+      kind: "chore",
+      id: completion.completion_id,
+      name: completion.chore_name || "",
+      childName: completion.child_name || "",
+    });
+  }
+
+  /* ── Reject with a reason (#976) ─────────────────────────────────────
+     Reject opens a small sheet: quick-pick chips or free text, both
+     optional — an empty box rejects exactly as before. Rendered from both
+     the classic and the designed paths. The input is uncontrolled so a
+     coordinator refresh can't wipe what the parent is typing. */
+
+  _rejectChips() {
+    return ["reject.chip_not_finished", "reject.chip_redo", "reject.chip_not_today"].map(k => this._t(k));
+  }
+
+  _rejectInput() {
+    return this.renderRoot && this.renderRoot.querySelector("#tm-reject-reason");
+  }
+
+  _openRejectSheet(target) {
+    this._rejecting = { ...target, chip: "" };
+    this.updateComplete.then(() => {
+      const input = this._rejectInput();
+      if (!input) return;
+      input.value = "";
+      input.focus();
+    });
+  }
+
+  _closeRejectSheet() {
+    this._rejecting = null;
+  }
+
+  _pickRejectChip(text) {
+    const input = this._rejectInput();
+    const chip = this._rejecting && this._rejecting.chip === text ? "" : text;
+    if (input) input.value = chip;
+    this._rejecting = { ...this._rejecting, chip };
+  }
+
+  async _confirmReject() {
+    const target = this._rejecting;
+    if (!target) return;
+    const input = this._rejectInput();
+    const reason = String((input && input.value) || "").trim().slice(0, 200);
+    this._closeRejectSheet();
+    const extra = reason ? { reason } : null;
+    if (target.kind === "reward") await this._callClaimService("reject_reward", target.id, extra);
+    else await this._callService("reject_chore", target.id, extra);
+  }
+
+  _renderRejectSheet() {
+    const target = this._rejecting;
+    if (!target) return "";
+    const stop = (e) => e.stopPropagation();
+    const onKey = (e) => { if (e.key === "Enter") this._confirmReject(); };
+    const onInput = (e) => {
+      const chip = this._rejectChips().includes(e.target.value) ? e.target.value : "";
+      if (chip !== target.chip) this._rejecting = { ...target, chip };
+    };
+    return html`
+      <div class="tm-rv-overlay" @click="${() => this._closeRejectSheet()}">
+        <div class="tm-rv-sheet tm-rj-sheet" role="dialog" aria-modal="true"
+             aria-label="${this._t('reject.title', { name: target.name })}" @click="${stop}">
+          <div class="tm-rv-title">${this._t('reject.title', { name: target.name })}</div>
+          ${target.childName ? html`<div class="tm-rv-sub">${target.childName}</div>` : ""}
+          <label class="tm-rv-label" for="tm-reject-reason">${this._t('reject.reason_label')}</label>
+          <div class="tm-rj-chips">
+            ${this._rejectChips().map(c => html`
+              <button type="button" class="tm-rj-chip ${target.chip === c ? "on" : ""}"
+                aria-pressed="${target.chip === c}"
+                @click="${() => this._pickRejectChip(c)}">${c}</button>`)}
+          </div>
+          <input id="tm-reject-reason" class="tm-rv-points tm-rj-input" type="text" maxlength="200"
+                 placeholder="${this._t('reject.reason_placeholder')}"
+                 @input="${onInput}" @keydown="${onKey}">
+          <div class="tm-rj-hint">${this._t('reject.reason_hint')}</div>
+          <div class="tm-rv-row">
+            <button class="tm-rv-btn ghost" @click="${() => this._closeRejectSheet()}">
+              ${this._t('common.cancel')}
+            </button>
+            <button class="tm-rv-btn danger" @click="${() => this._confirmReject()}">
+              ${this._t('reject.confirm')}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   async _handleApproveAll(completions) {
@@ -1448,7 +1761,96 @@ class TaskMateApprovalsCard extends LitElement {
     }
   }
 
-  async _callService(service, completionId) {
+  /* ── Review and award (#832) ──────────────────────────────────────────
+     Every approve stays one tap. This is the second control beside it: read
+     what the child wrote and set what the work was actually worth. The points
+     input is uncontrolled and filled imperatively on open — binding .value
+     would reset the parent's typing on the next coordinator refresh. */
+
+  _reviewGlyph(completion) {
+    return (completion && completion.note) ? "✍️" : "✎";
+  }
+
+  _openReview(completion) {
+    const base = completion.suggested_points || completion.points || 0;
+    this._review = { completion, base };
+    this.requestUpdate();
+    this.updateComplete.then(() => {
+      const input = this.renderRoot && this.renderRoot.querySelector("#tm-review-points");
+      if (!input) return;
+      const mults = this._ratingMultipliers();
+      const picked = this._ratings[completion.completion_id] || 0;
+      input.value = String(mults && picked ? Math.max(0, Math.round(base * mults[picked - 1])) : base);
+      input.focus();
+      input.select();
+    });
+  }
+
+  _closeReview() {
+    this._review = null;
+    this.requestUpdate();
+  }
+
+  async _confirmReview() {
+    const review = this._review;
+    if (!review) return;
+    const input = this.renderRoot && this.renderRoot.querySelector("#tm-review-points");
+    const points = Math.max(0, Math.round(Number(input && input.value) || 0));
+    const completionId = review.completion.completion_id;
+    const rating = this._ratingMultipliers() ? this._ratings[completionId] || 0 : 0;
+    this._closeReview();
+    // The typed award is paid as-is; a picked rating is recorded with it
+    // (the stars above already rescaled the number the parent confirmed).
+    await this._callService("approve_chore", completionId, rating ? { points, rating } : { points });
+    if (rating) this._clearRating(completionId);
+  }
+
+  _renderReview() {
+    const review = this._review;
+    if (!review) return "";
+    const completion = review.completion;
+    const photoUrl = this._photoHref(completion.photo_url);
+    const stop = (e) => e.stopPropagation();
+    return html`
+      <div class="tm-rv-overlay" @click="${() => this._closeReview()}">
+        <div class="tm-rv-sheet" @click="${stop}">
+          <div class="tm-rv-title">${completion.chore_name}</div>
+          <div class="tm-rv-sub">
+            ${completion.child_name}${completion.suggested_points
+              ? html` · ${this._t('approvals.suggested', { points: completion.suggested_points })}`
+              : ""}
+          </div>
+
+          ${completion.note ? html`
+            <div class="tm-rv-label">${this._t('approvals.child_said')}</div>
+            <div class="tm-rv-quote">${completion.note}</div>
+          ` : ""}
+
+          ${photoUrl ? html`<div class="tm-rv-photo"><img src="${photoUrl}" alt="" loading="lazy"></div>` : ""}
+
+          ${this._ratingMultipliers() ? html`
+            <div class="tm-rv-label">${this._t('approvals.rating_label')}</div>
+            <div class="tm-rv-stars">${this._renderStars(completion)}</div>
+          ` : ""}
+
+          <label class="tm-rv-label" for="tm-review-points">${this._t('approvals.award_label')}</label>
+          <input id="tm-review-points" class="tm-rv-points" type="number"
+                 min="0" max="9999" inputmode="numeric">
+
+          <div class="tm-rv-row">
+            <button class="tm-rv-btn ghost" @click="${() => this._closeReview()}">
+              ${this._t('common.cancel')}
+            </button>
+            <button class="tm-rv-btn primary" @click="${() => this._confirmReview()}">
+              ${this._t('approvals.approve')}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async _callService(service, completionId, extra = null) {
     if (this._loading[completionId]) return;
     this._loading = { ...this._loading, [completionId]: true };
     this.requestUpdate();
@@ -1456,6 +1858,7 @@ class TaskMateApprovalsCard extends LitElement {
     try {
       await this.hass.callService("taskmate", service, {
         completion_id: completionId,
+        ...(extra || {}),
       });
     } catch (error) {
       console.error(`Failed to call ${service}:`, error);
@@ -1503,7 +1906,7 @@ class TaskMateApprovalsCardEditor extends LitElement {
       .preset-swatch { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--divider-color, #e0e0e0); transition: transform 0.1s; padding: 0; }
       .preset-swatch:hover { transform: scale(1.15); }
       .preset-swatch.active { border-color: var(--primary-text-color); box-shadow: 0 0 0 2px var(--primary-color); }
-      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-left: auto; }
+      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-inline-start: auto; }
       .colour-helper { color: var(--secondary-text-color); font-size: 0.82rem; line-height: 1.3; }
     `;
   }

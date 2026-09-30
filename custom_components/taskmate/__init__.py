@@ -63,6 +63,11 @@ from .const import (
     ATTR_REWARD_ID,
     ATTR_SOUND,
     BADGE_TIERS,
+    BOUNTY_CLAIM_HOURS_MAX,
+    BOUNTY_DESCRIPTION_MAX_LENGTH,
+    BOUNTY_POINTS_MAX,
+    BOUNTY_TITLE_MAX_LENGTH,
+    CHORE_SUGGESTED_POINTS_MAX,
     CONF_TASK_GROUP_CHORE_IDS,
     CONF_TASK_GROUP_ID,
     CONF_TASK_GROUP_NAME,
@@ -76,6 +81,7 @@ from .const import (
     SERVICE_ADD_PENALTY,
     SERVICE_ADD_POINTS,
     SERVICE_ADD_TASK_GROUP,
+    SERVICE_ADJUST_STREAK_FREEZES,
     SERVICE_ALLOCATE_POINTS_TO_POOL,
     SERVICE_APPLY_BONUS,
     SERVICE_APPLY_MANDATORY_PENALTY,
@@ -84,12 +90,18 @@ from .const import (
     SERVICE_APPROVE_CHORE,
     SERVICE_APPROVE_REWARD,
     SERVICE_CHOOSE_AVATAR,
+    SERVICE_CLAIM_BOUNTY,
     SERVICE_CLAIM_REWARD,
     SERVICE_COMPLETE_BONUS_SUBTASK,
+    SERVICE_COMPLETE_BOUNTY,
     SERVICE_COMPLETE_CHORE,
+    SERVICE_COMPLETE_NEXT_CHORE,
     SERVICE_DISMISS_MANDATORY_CHORE,
     SERVICE_GIFT_POINTS,
+    SERVICE_GIVE_BACK_BOUNTY,
+    SERVICE_LEAVE_TEAM_CHORE,
     SERVICE_PAUSE_TIMED_TASK,
+    SERVICE_POST_BOUNTY,
     SERVICE_POSTPONE_MANDATORY_CHORE,
     SERVICE_PREVIEW_SOUND,
     SERVICE_READ_ALOUD,
@@ -97,6 +109,7 @@ from .const import (
     SERVICE_REJECT_CHORE,
     SERVICE_REJECT_REWARD,
     SERVICE_REMOVE_BONUS,
+    SERVICE_REMOVE_BOUNTY,
     SERVICE_REMOVE_PENALTY,
     SERVICE_REMOVE_POINTS,
     SERVICE_REMOVE_TASK_GROUP,
@@ -108,17 +121,21 @@ from .const import (
     SERVICE_START_TIMED_TASK,
     SERVICE_STOP_TIMED_TASK,
     SERVICE_TEST_NOTIFICATION,
+    SERVICE_UNDO_CHORE,
     SERVICE_UNDO_CHORE_APPROVAL,
     SERVICE_UNDO_TRANSACTION,
     SERVICE_UPDATE_BONUS,
+    SERVICE_UPDATE_BOUNTY,
     SERVICE_UPDATE_PENALTY,
     SERVICE_UPDATE_TASK_GROUP,
     TASK_GROUP_POLICIES,
+    TEAM_POINTS_MODES,
+    TEAM_SIZE_MAX,
     TIME_CATEGORIES,
 )
 from .coordinator import TaskMateCoordinator
 from .frontend import async_register_cards, async_register_frontend
-from .models import Badge, BadgeCriterion
+from .models import REJECT_REASON_MAX, Badge, BadgeCriterion
 from .panel import async_register_panel
 from .websocket import async_register_websocket_commands
 
@@ -190,6 +207,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Entities of children deleted before #946 stayed in the registry. Never
+    # let the sweep block setup.
+    try:
+        coordinator.async_prune_orphan_child_entities()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Could not prune entities of deleted children")
+    # Likewise the buttons of chores/rewards deleted before #960.
+    try:
+        coordinator.async_prune_orphan_button_entities()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Could not prune buttons of deleted chores or rewards")
+
     # Register services (only once)
     if not hass.data[DOMAIN].get(SERVICES_REGISTERED):
         await _async_register_services(hass)
@@ -241,6 +270,7 @@ _DYNAMIC_SELECTOR_FIELDS: dict[str, str] = {
     "penalty_id": "get_penalties",
     "bonus_id": "get_bonuses",
     "group_id": "get_task_groups",
+    "wish_id": "get_wishes",
 }
 
 _BASE_SERVICE_DESCRIPTIONS: dict | None = None
@@ -347,6 +377,9 @@ _AUDIT_TARGET_KEYS = (
     "claim_id",
     "transaction_id",
     "type_id",
+    "wish_id",
+    "bounty_id",
+    "inspection_id",
 )
 
 
@@ -537,6 +570,8 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                 child_id,
                 as_parent=as_parent,
                 photo_url=call.data.get("photo_url", ""),
+                note=call.data.get("note", ""),
+                suggested_points=call.data.get("suggested_points", 0),
             )
         except ValueError as err:
             # Only genuinely bad input (unknown chore/child) raises now — expected
@@ -544,6 +579,114 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             # no-ops inside the coordinator. Surface real errors as a clean
             # validation error rather than an unhandled 500 + traceback.
             raise ServiceValidationError(str(err)) from err
+
+    async def handle_complete_next_chore(call: ServiceCall) -> None:
+        """Complete the child's next outstanding chore (#978), e.g. from a watch.
+
+        "Next" is the child card's order (see watch.next_chore_for_child); chores
+        that need a photo, a note, a timer or a team are skipped. The completion
+        goes through the normal path, so approval rules apply exactly as if the
+        child had tapped it. Nothing left to do is a quiet no-op, not an error —
+        a watch button pressed once too often shouldn't raise an alert.
+        """
+        from .watch import next_chore_for_child
+
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        child_id = call.data[ATTR_CHILD_ID]
+        # The same gate as a child completing a chore for themselves.
+        await _async_require_linked_child(hass, call, coordinator, child_id)
+        if coordinator.get_child(child_id) is None:
+            raise ServiceValidationError(f"Child {child_id} not found")
+        chore = next_chore_for_child(coordinator, child_id)
+        if chore is None:
+            _LOGGER.debug("complete_next_chore: nothing left to complete for %s", child_id)
+            return
+        await coordinator.async_complete_chore(chore.id, child_id)
+
+    async def handle_leave_team_chore(call: ServiceCall) -> None:
+        """Take a child back out of a teamwork chore they joined (#928)."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        child_id = call.data[ATTR_CHILD_ID]
+        # Same gate as completing: a child acts for themselves, parents for anyone.
+        await _async_require_linked_child(hass, call, coordinator, child_id)
+        await coordinator.async_leave_team_chore(call.data[ATTR_CHORE_ID], child_id)
+
+    # ── Bounty board (#931) ───────────────────────────────────────────────
+    _BOUNTY_FIELDS = (
+        "title",
+        "points",
+        "description",
+        "icon",
+        "expires_at",
+        "eligible_child_ids",
+        "claim_hours",
+        "require_photo",
+        "notify_children",
+    )
+
+    async def handle_post_bounty(call: ServiceCall) -> None:
+        """A parent posts a one-off job to the bounty board."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        extra = {k: call.data[k] for k in _BOUNTY_FIELDS if k in call.data and k not in ("title", "points")}
+        await coordinator.async_post_bounty(call.data["title"], call.data["points"], **extra)
+
+    async def handle_update_bounty(call: ServiceCall) -> None:
+        """A parent edits a bounty (only points and expiry once it's claimed)."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        changes = {k: call.data[k] for k in _BOUNTY_FIELDS if k in call.data}
+        await coordinator.async_update_bounty(call.data["bounty_id"], **changes)
+
+    async def handle_remove_bounty(call: ServiceCall) -> None:
+        """A parent takes a bounty off the board."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        await coordinator.async_remove_bounty(call.data["bounty_id"])
+
+    async def handle_claim_bounty(call: ServiceCall) -> None:
+        """A child claims a bounty — same linked-child gate as completing a chore."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        child_id = call.data[ATTR_CHILD_ID]
+        await _async_require_linked_child(hass, call, coordinator, child_id)
+        await coordinator.async_claim_bounty(call.data["bounty_id"], child_id)
+
+    async def handle_give_back_bounty(call: ServiceCall) -> None:
+        """The claimer hands a bounty back to the board."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        child_id = call.data[ATTR_CHILD_ID]
+        await _async_require_linked_child(hass, call, coordinator, child_id)
+        await coordinator.async_give_back_bounty(call.data["bounty_id"], child_id)
+
+    async def handle_complete_bounty(call: ServiceCall) -> None:
+        """The claimer marks their bounty done — it goes to the approval queue."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        child_id = call.data[ATTR_CHILD_ID]
+        await _async_require_linked_child(hass, call, coordinator, child_id)
+        await coordinator.async_complete_bounty(
+            call.data["bounty_id"], child_id, photo_url=call.data.get("photo_url", "")
+        )
 
     async def handle_complete_bonus_subtask(call: ServiceCall) -> None:
         """Handle the complete_bonus_subtask service call."""
@@ -591,7 +734,9 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             _LOGGER.error("No TaskMate coordinator available")
             return
         completion_id = call.data["completion_id"]
-        await coordinator.async_approve_chore(completion_id)
+        await coordinator.async_approve_chore(
+            completion_id, points=call.data.get("points"), rating=call.data.get("rating")
+        )
 
     async def handle_approve_all_chores(call: ServiceCall) -> None:
         """Handle the approve_all_chores service call."""
@@ -599,7 +744,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         if not coordinator:
             _LOGGER.error("No TaskMate coordinator available")
             return
-        await coordinator.async_approve_chores_bulk(call.data.get("completion_ids"))
+        await coordinator.async_approve_chores_bulk(call.data.get("completion_ids"), rating=call.data.get("rating"))
 
     async def handle_reject_chore(call: ServiceCall) -> None:
         """Handle the reject_chore service call."""
@@ -608,7 +753,26 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             _LOGGER.error("No TaskMate coordinator available")
             return
         completion_id = call.data["completion_id"]
-        await coordinator.async_reject_chore(completion_id)
+        await coordinator.async_reject_chore(completion_id, reason=call.data.get("reason", ""))
+
+    async def handle_undo_chore(call: ServiceCall) -> None:
+        """A child takes back their own chore inside the undo window (#918).
+
+        The child is read from the stored completion, never from the call, and
+        the linked-child rule is applied to that child — so one child can't
+        undo a sibling's chore. The window and parent-review checks live in the
+        coordinator. Parents keep reject_chore / undo_chore_approval.
+        """
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        completion_id = call.data["completion_id"]
+        completion = next((c for c in coordinator.storage.get_completions() if c.id == completion_id), None)
+        if completion is None:
+            raise ValueError("This chore has already been undone. Refresh the card.")
+        await _async_require_linked_child(hass, call, coordinator, completion.child_id)
+        await coordinator.async_undo_chore(completion_id)
 
     async def handle_apply_mandatory_penalty(call: ServiceCall) -> None:
         """Handle apply_mandatory_penalty (deduct penalty for a missed mandatory chore)."""
@@ -669,6 +833,14 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             call.data["to_child_id"],
             call.data["points"],
         )
+
+    async def handle_adjust_streak_freezes(call: ServiceCall) -> None:
+        """Grant (positive amount) or remove (negative) streak-freeze tokens (#925)."""
+        coordinator = _get_coordinator(hass)
+        if not coordinator:
+            _LOGGER.error("No TaskMate coordinator available")
+            return
+        await coordinator.async_adjust_streak_freezes(call.data[ATTR_CHILD_ID], call.data["amount"])
 
     async def handle_record_allowance_payout(call: ServiceCall) -> None:
         """Record a parent-confirmed allowance payout (deduct points, log cash)."""
@@ -748,7 +920,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             _LOGGER.error("No TaskMate coordinator available")
             return
         claim_id = call.data["claim_id"]
-        await coordinator.async_reject_reward(claim_id)
+        await coordinator.async_reject_reward(claim_id, reason=call.data.get("reason", ""))
 
     async def handle_claim_reward(call: ServiceCall) -> None:
         """Handle the claim_reward service call."""
@@ -1011,6 +1183,9 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             schedule_mode=schedule_mode,
             deadline_at=deadline_at,
             speed_bonus_points=call.data.get(ATTR_CHORE_SPEED_BONUS_POINTS, 0),
+            team_size=call.data.get("team_size", 0),
+            team_points_mode=call.data.get("team_points_mode", "each"),
+            team_bonus=call.data.get("team_bonus", 0),
         )
 
     async def handle_add_badge(call: ServiceCall) -> None:
@@ -1138,8 +1313,19 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                 vol.Optional(ATTR_AS_PARENT, default=False): cv.boolean,
                 vol.Optional("photo_url"): cv.string,
                 vol.Optional("completed_date"): cv.date,
+                vol.Optional("note"): cv.string,
+                vol.Optional("suggested_points"): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=CHORE_SUGGESTED_POINTS_MAX)
+                ),
             }
         ),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_COMPLETE_NEXT_CHORE,
+        _audited(handle_complete_next_chore),
+        schema=vol.Schema({vol.Required(ATTR_CHILD_ID): cv.string}),
     )
 
     hass.services.async_register(
@@ -1151,6 +1337,79 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                 vol.Required(ATTR_CHORE_ID): cv.string,
                 vol.Required(ATTR_BONUS_SUBTASK_ID): cv.string,
                 vol.Required(ATTR_CHILD_ID): cv.string,
+            }
+        ),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LEAVE_TEAM_CHORE,
+        _audited(handle_leave_team_chore),
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_CHORE_ID): cv.string,
+                vol.Required(ATTR_CHILD_ID): cv.string,
+            }
+        ),
+    )
+
+    _bounty_editable = {
+        vol.Optional("description"): vol.All(cv.string, vol.Length(max=BOUNTY_DESCRIPTION_MAX_LENGTH)),
+        vol.Optional("icon"): cv.string,
+        # ISO date-time; "" clears it. A naive time is read as local time.
+        vol.Optional("expires_at"): vol.Any(None, cv.string),
+        vol.Optional("eligible_child_ids"): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional("claim_hours"): vol.All(vol.Coerce(int), vol.Range(min=1, max=BOUNTY_CLAIM_HOURS_MAX)),
+        vol.Optional("require_photo"): cv.boolean,
+        vol.Optional("notify_children"): cv.boolean,
+    }
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_POST_BOUNTY,
+        _parent(handle_post_bounty),
+        schema=vol.Schema(
+            {
+                vol.Required("title"): vol.All(cv.string, vol.Length(min=1, max=BOUNTY_TITLE_MAX_LENGTH)),
+                vol.Required("points"): vol.All(vol.Coerce(int), vol.Range(min=1, max=BOUNTY_POINTS_MAX)),
+                **_bounty_editable,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_UPDATE_BOUNTY,
+        _parent(handle_update_bounty),
+        schema=vol.Schema(
+            {
+                vol.Required("bounty_id"): cv.string,
+                vol.Optional("title"): vol.All(cv.string, vol.Length(min=1, max=BOUNTY_TITLE_MAX_LENGTH)),
+                vol.Optional("points"): vol.All(vol.Coerce(int), vol.Range(min=1, max=BOUNTY_POINTS_MAX)),
+                **_bounty_editable,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REMOVE_BOUNTY,
+        _parent(handle_remove_bounty),
+        schema=vol.Schema({vol.Required("bounty_id"): cv.string}),
+    )
+    _bounty_child_schema = vol.Schema({vol.Required("bounty_id"): cv.string, vol.Required(ATTR_CHILD_ID): cv.string})
+    hass.services.async_register(
+        DOMAIN, SERVICE_CLAIM_BOUNTY, _audited(handle_claim_bounty), schema=_bounty_child_schema
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_GIVE_BACK_BOUNTY, _audited(handle_give_back_bounty), schema=_bounty_child_schema
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_COMPLETE_BOUNTY,
+        _audited(handle_complete_bounty),
+        schema=vol.Schema(
+            {
+                vol.Required("bounty_id"): cv.string,
+                vol.Required(ATTR_CHILD_ID): cv.string,
+                vol.Optional("photo_url"): cv.string,
             }
         ),
     )
@@ -1198,6 +1457,9 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Required("completion_id"): cv.string,
+                vol.Optional("points"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+                # 1-3 star quality rating (#927); ignored while the feature is off.
+                vol.Optional("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
             }
         ),
     )
@@ -1209,6 +1471,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Optional("completion_ids"): [cv.string],
+                vol.Optional("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
             }
         ),
     )
@@ -1220,8 +1483,17 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Required("completion_id"): cv.string,
+                vol.Optional("reason", default=""): vol.All(cv.string, vol.Length(max=REJECT_REASON_MAX)),
             }
         ),
+    )
+
+    # Child-facing: gated on the stored child's linked user, not on parent.
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_UNDO_CHORE,
+        _audited(handle_undo_chore),
+        schema=vol.Schema({vol.Required("completion_id"): cv.string}),
     )
 
     _miss_schema = vol.Schema({vol.Required("miss_id"): cv.string})
@@ -1286,6 +1558,18 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                 vol.Required("from_child_id"): cv.string,
                 vol.Required("to_child_id"): cv.string,
                 vol.Required("points"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            }
+        ),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ADJUST_STREAK_FREEZES,
+        _parent(handle_adjust_streak_freezes),
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_CHILD_ID): cv.string,
+                vol.Required("amount"): vol.All(vol.Coerce(int), vol.Range(min=-10, max=10), vol.NotIn([0])),
             }
         ),
     )
@@ -1365,7 +1649,12 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_REJECT_REWARD,
         _parent(handle_reject_reward),
-        schema=vol.Schema({vol.Required("claim_id"): cv.string}),
+        schema=vol.Schema(
+            {
+                vol.Required("claim_id"): cv.string,
+                vol.Optional("reason", default=""): vol.All(cv.string, vol.Length(max=REJECT_REASON_MAX)),
+            }
+        ),
     )
 
     hass.services.async_register(
@@ -1557,6 +1846,12 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                 vol.Optional(ATTR_CHORE_REQUIRES_APPROVAL, default=True): cv.boolean,
                 vol.Optional(ATTR_CHORE_EXPIRES_IN_MINUTES, default=0): vol.All(cv.positive_int, vol.Range(max=10080)),
                 vol.Optional(ATTR_CHORE_SPEED_BONUS_POINTS, default=0): cv.positive_int,
+                # Teamwork (#928). The service creates "everyone" chores, so the
+                # only cross-field rule left to check is the size range, which
+                # async_add_chore enforces.
+                vol.Optional("team_size", default=0): vol.All(vol.Coerce(int), vol.Range(min=0, max=TEAM_SIZE_MAX)),
+                vol.Optional("team_points_mode", default="each"): vol.In(TEAM_POINTS_MODES),
+                vol.Optional("team_bonus", default=0): cv.positive_int,
             }
         ),
     )
@@ -1687,16 +1982,38 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema({}),
     )
 
+    # Wishlist (#932): registered from its own module, through these same gates.
+    from .wishlist_services import async_register_wishlist_services
+
+    async_register_wishlist_services(
+        hass,
+        child_action=_audited,
+        parent_action=_parent,
+        get_coordinator=lambda: _get_coordinator(hass),
+        require_linked_child=lambda *args: _async_require_linked_child(*args),
+    )
+
+    # Surprise inspections (#981): parent actions, same gate and audit trail.
+    from .inspection_services import async_register_inspection_services
+
+    async_register_inspection_services(
+        hass,
+        parent_action=_parent,
+        get_coordinator=lambda: _get_coordinator(hass),
+    )
+
 
 def _async_unregister_services(hass: HomeAssistant) -> None:
     """Unregister TaskMate services."""
     services = [
         SERVICE_COMPLETE_CHORE,
+        SERVICE_COMPLETE_NEXT_CHORE,
         SERVICE_COMPLETE_BONUS_SUBTASK,
         SERVICE_APPROVE_CHORE,
         SERVICE_APPROVE_ALL_CHORES,
         SERVICE_REJECT_CHORE,
         SERVICE_UNDO_TRANSACTION,
+        SERVICE_UNDO_CHORE,
         SERVICE_UNDO_CHORE_APPROVAL,
         SERVICE_TEST_NOTIFICATION,
         SERVICE_GIFT_POINTS,
@@ -1725,6 +2042,13 @@ def _async_unregister_services(hass: HomeAssistant) -> None:
         SERVICE_ADD_TASK_GROUP,
         SERVICE_UPDATE_TASK_GROUP,
         SERVICE_REMOVE_TASK_GROUP,
+        SERVICE_LEAVE_TEAM_CHORE,
+        SERVICE_POST_BOUNTY,
+        SERVICE_UPDATE_BOUNTY,
+        SERVICE_REMOVE_BOUNTY,
+        SERVICE_CLAIM_BOUNTY,
+        SERVICE_GIVE_BACK_BOUNTY,
+        SERVICE_COMPLETE_BOUNTY,
         SERVICE_START_TIMED_TASK,
         SERVICE_PAUSE_TIMED_TASK,
         SERVICE_STOP_TIMED_TASK,
@@ -1735,5 +2059,10 @@ def _async_unregister_services(hass: HomeAssistant) -> None:
         "revoke_badge",
         "rebuild_badges",
     ]
+    from .inspection_services import INSPECTION_SERVICES
+    from .wishlist_services import WISHLIST_SERVICES
+
+    services.extend(WISHLIST_SERVICES)
+    services.extend(INSPECTION_SERVICES)
     for service in services:
         hass.services.async_remove(DOMAIN, service)

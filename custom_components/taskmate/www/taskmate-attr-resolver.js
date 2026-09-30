@@ -35,6 +35,11 @@
     // missing that prefix and so matched nothing at all, silently dropping
     // chore_completions and mandatory_misses from every merge (#798).
     "sensor.taskmate_pending_approvals",
+    // The bounty board (#931): `bounties` for the bounty card.
+    "sensor.taskmate_bounties",
+    // Chore auctions (#982): `auctions`, a digest with no bid amounts. The
+    // auction card re-fetches its own view over the WebSocket when it moves.
+    "sensor.taskmate_auctions",
   ];
 
   // Attributes a companion must NOT contribute to the merge, because another
@@ -164,8 +169,19 @@
    */
   const TASKMATE_BUTTON_PREFIX = "button.taskmate_";
 
+  // HA's RTL flag for the language, as taskmate-design.js direction() reads it.
+  function isRTL(hass) {
+    const meta = hass.translationMetadata && hass.translationMetadata.translations;
+    const entry = meta && hass.language && meta[hass.language];
+    return entry ? !!entry.isRTL : undefined;
+  }
+
   function hasRelevantChange(oldHass, newHass, primaryEntityId) {
     if (!oldHass || !oldHass.states || !newHass || !newHass.states) return true;
+    // A language change (#994) keeps the same states object, but every card
+    // renders translated strings and stamps dir from the language.
+    if (oldHass.language !== newHass.language) return true;
+    if (isRTL(oldHass) !== isRTL(newHass)) return true;
     if (oldHass.states === newHass.states) return false;
 
     if (primaryEntityId) {

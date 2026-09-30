@@ -15,6 +15,16 @@ const html = LitElement.prototype.html;
 const css = LitElement.prototype.css;
 
 const _safeColor = (c, d) => (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : d);
+// Keeps number runs like "3 / 1" reading left to right in RTL text (#995);
+// identity until the design layer has loaded (it is also what stamps dir).
+const _ltrNums = (s) => (window.__taskmate_design && window.__taskmate_design.ltrNums ? window.__taskmate_design.ltrNums(s) : s);
+// "a / b" for a template: the same text nodes as a literal `${a} / ${b}` in
+// LTR (so it renders pixel-for-pixel as before), the isolated string in RTL.
+const _ltrRatio = (a, b) => {
+  const s = `${a} / ${b}`;
+  const r = _ltrNums(s);
+  return r === s ? html`${a} / ${b}` : r;
+};
 
 class TaskMateOverviewCard extends LitElement {
   static get properties() {
@@ -227,7 +237,7 @@ class TaskMateOverviewCard extends LitElement {
         color: var(--secondary-text-color);
         white-space: nowrap;
         min-width: 36px;
-        text-align: right;
+        text-align: end;
       }
 
       .progress-label.complete { color: var(--ov-green); }
@@ -335,11 +345,11 @@ class TaskMateOverviewCard extends LitElement {
       @media (max-width: 480px) { .ov-kids { grid-template-columns: repeat(2, 1fr); } }
       .ov-kid { text-align: center; padding: 11px; border-radius: 16px; background: var(--tmd-surface-2); position: relative; }
       .ov-kid.tm-clickable { cursor: pointer; }
-      .ov-kid-flags { position: absolute; top: 6px; right: 7px; display: flex; gap: 4px; }
+      .ov-kid-flags { position: absolute; top: 6px; inset-inline-end: 7px; display: flex; gap: 4px; }
       .ov-kid-flag { font-size: 9.5px; font-weight: 800; padding: 1px 5px; border-radius: 999px; line-height: 1.5; }
       .ov-kid-flag.pend { background: color-mix(in srgb, var(--tmd-warn) 22%, transparent); color: var(--tmd-warn); }
       .ov-kid-flag.wait { background: color-mix(in srgb, var(--tmd-bad) 20%, transparent); color: var(--tmd-bad); }
-      .ov-behalf { margin-top: 10px; text-align: left; background: var(--tmd-surface-2); border-radius: var(--tmd-radius-sm); padding: 9px 11px; }
+      .ov-behalf { margin-top: 10px; text-align: start; background: var(--tmd-surface-2); border-radius: var(--tmd-radius-sm); padding: 9px 11px; }
       .ov-behalf-hdr { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--tmd-dim); margin-bottom: 6px; }
       .ov-behalf-done { font-size: 12px; font-style: italic; color: var(--tmd-dim); padding: 3px 0; }
       .ov-behalf-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
@@ -581,7 +591,9 @@ class TaskMateOverviewCard extends LitElement {
       const at = Array.isArray(c.assigned_to) ? c.assigned_to.map(String) : [];
       const assigned = at.length === 0 || at.includes(String(child.id));
       if (!assigned) return false;
-      if (c.schedule_mode !== 'recurring') {
+      // Calendar move/removal (#977) settles today outright.
+      if (c.occ_today === false) return false;
+      if (c.schedule_mode !== 'recurring' && c.occ_today !== true) {
         const dueDays = Array.isArray(c.due_days) ? c.due_days : [];
         if (dueDays.length > 0 && !dueDays.includes(todayDow)) return false;
       }
@@ -589,6 +601,12 @@ class TaskMateOverviewCard extends LitElement {
         const perChild = availability[c.id];
         if (perChild && perChild[child.id] === false) return false;
       }
+      // Weekly target (#883): the week's quota is filled, so the chore isn't
+      // outstanding today. Filtering here rather than at the two call sites
+      // keeps it out of the progress ring as well — otherwise the ring could
+      // never reach 100% once a weekly chore was finished for the week.
+      const weeklyTarget = Number(c.weekly_target) || 0;
+      if (weeklyTarget > 0 && Number((child.weekly_chore_progress || {})[c.id] || 0) >= weeklyTarget) return false;
       return true;
     });
   }
@@ -688,7 +706,7 @@ class TaskMateOverviewCard extends LitElement {
         <div class="divide"></div>
         <div class="ov-today cp">
           <span class="lbl">${this._t("overview.designed.todays_progress")}</span>
-          <span class="val num">${this._t("overview.designed.progress_detail", { done, total, pct })}</span>
+          <span class="val num">${_ltrNums(this._t("overview.designed.progress_detail", { done, total, pct }))}</span>
         </div>`;
     }
     const lbl = design === "console"
@@ -697,7 +715,7 @@ class TaskMateOverviewCard extends LitElement {
     return html`
       <div class="ov-today ${cls}">
         <span class="lbl">${lbl}</span>
-        <span class="val">${done} / ${total}</span>
+        <span class="val">${_ltrRatio(done, total)}</span>
       </div>`;
   }
 
@@ -715,8 +733,11 @@ class TaskMateOverviewCard extends LitElement {
       const assigned = at.length === 0 || at.includes(String(child.id));
       if (!assigned) return false;
 
+      // Calendar move/removal (#977) settles today outright.
+      if (c.occ_today === false) return false;
+
       // Mode A: due days check
-      if (c.schedule_mode !== 'recurring') {
+      if (c.schedule_mode !== 'recurring' && c.occ_today !== true) {
         const dueDays = Array.isArray(c.due_days) ? c.due_days : [];
         if (dueDays.length > 0 && !dueDays.includes(todayDow)) return false;
       }
@@ -870,7 +891,7 @@ class TaskMateOverviewCardEditor extends LitElement {
       .preset-swatch { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--divider-color, #e0e0e0); transition: transform 0.1s; padding: 0; }
       .preset-swatch:hover { transform: scale(1.15); }
       .preset-swatch.active { border-color: var(--primary-text-color); box-shadow: 0 0 0 2px var(--primary-color); }
-      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-left: auto; }
+      .colour-reset { font-size: 0.78rem; color: var(--secondary-text-color); background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-inline-start: auto; }
       .colour-helper { color: var(--secondary-text-color); font-size: 0.82rem; line-height: 1.3; }
     `;
   }

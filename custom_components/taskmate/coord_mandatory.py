@@ -42,8 +42,12 @@ class MandatoryMixin:
         key = f"{chore.id}:{child_id}:{day.isoformat()}"
         return self.mandatory_postpone.get(key) or (chore.time_category or "anytime")
 
-    def _mandatory_owers(self, chore) -> list[str]:
-        """Child IDs responsible for this chore right now."""
+    def _mandatory_owers(self, chore, day: date | None = None) -> list[str]:
+        """Child IDs responsible for this chore on ``day`` (default today)."""
+        # Won at auction (#982): the winner owes that occurrence, nobody else.
+        winner = self.auction_winner(chore, day)
+        if winner:
+            return [winner]
         mode = getattr(chore, "assignment_mode", "everyone")
         assigned = list(getattr(chore, "assigned_to", []) or [])
         if mode in _SHARED_MODES:
@@ -112,12 +116,17 @@ class MandatoryMixin:
                 continue
             if not self._is_chore_scheduled_for_date(chore, day):
                 continue
-            for child_id in self._mandatory_owers(chore):
+            for child_id in self._mandatory_owers(chore, day):
                 if self._effective_period_for(chore, child_id, day) != period_id:
                     continue
                 if child_id in (getattr(chore, "disabled_for", []) or []):
                     continue
                 if self._child_completed_today(chore.id, child_id, day):
+                    continue
+                # Weekly target (#883): the week's quota is already filled, so
+                # nothing is outstanding — even though the chore is still
+                # "scheduled" every day.
+                if self.weekly_target_met(chore, child_id):
                     continue
                 if (chore.id, child_id, day.isoformat()) in existing:
                     continue
@@ -248,6 +257,8 @@ class MandatoryMixin:
         will be resolved by the parent / next-day prune). Each notification is
         still gated by its own master switch + routes inside ``fire()``; stages
         advance regardless so a disabled type is not retro-fired when re-enabled.
+        While the child is away (#926) the child reminders are held by
+        ``fire()`` for the single arrival nudge, and the parent alert waits.
         Returns the number of misses whose stage advanced.
         """
         now = now or dt_util.now()
@@ -272,6 +283,10 @@ class MandatoryMixin:
                 target = 2
             if elapsed_min >= parent_minutes:
                 target = 3
+            if target == 3 and self.notifications.child_is_away(miss.child_id):
+                # Presence-aware (#926): no parent alert about a child who is
+                # out. Hold at stage 2; the ladder resumes once they're home.
+                target = 2
             if target <= miss.escalation_stage:
                 continue
 

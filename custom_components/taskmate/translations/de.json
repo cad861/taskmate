@@ -15,6 +15,9 @@
     },
     "abort": {
       "already_configured": "TaskMate ist bereits konfiguriert"
+    },
+    "create_entry": {
+      "default": "TaskMate ist bereit. [Öffnen Sie das TaskMate-Panel](/taskmate-admin), um Ihre Kinder mit dem Einrichtungsassistenten hinzuzufügen, der altersgerechte Aufgaben vorschlägt."
     }
   },
   "selector": {
@@ -139,6 +142,14 @@
         "child_id": {
           "name": "Kinder-ID",
           "description": "Die ID des Kindes, das die Aufgabe erledigt"
+        },
+        "note": {
+          "name": "Notiz",
+          "description": "Was das Kind getan hat, in seinen eigenen Worten. Bei offenen Aufgaben erforderlich und den Eltern bei der Genehmigung angezeigt."
+        },
+        "suggested_points": {
+          "name": "Vorgeschlagene Punkte",
+          "description": "Was das Kind für die Arbeit für angemessen hält. Nur ein Hinweis für die genehmigenden Eltern — es werden dadurch keine Punkte vergeben."
         }
       }
     },
@@ -167,6 +178,14 @@
         "completion_id": {
           "name": "Abschluss-ID",
           "description": "Die ID des zu genehmigenden Aufgabenabschlusses"
+        },
+        "points": {
+          "name": "Punkte",
+          "description": "Diese Punktzahl anstelle des Aufgabenwerts vergeben. Leer lassen, um die Punkte der Aufgabe zu verwenden."
+        },
+        "rating": {
+          "name": "Qualitätsbewertung",
+          "description": "Optionale Bewertung mit 1-3 Sternen, wie gut die Aufgabe erledigt wurde. Bei aktivierten Qualitätsbewertungen werden die Punkte mit dem Multiplikator dieses Sterns skaliert; leer lassen, um 100 % zu vergeben."
         }
       }
     },
@@ -177,6 +196,10 @@
         "completion_ids": {
           "name": "Erledigungs-IDs",
           "description": "Bestimmte Erledigungs-IDs zum Genehmigen; leer lassen, um alle ausstehenden zu genehmigen"
+        },
+        "rating": {
+          "name": "Qualitätsbewertung",
+          "description": "Optionale Bewertung mit 1-3 Sternen für jede mit diesem Aufruf genehmigte Aufgabe (Qualitätsbewertungen müssen aktiviert sein)."
         }
       }
     },
@@ -187,6 +210,20 @@
         "completion_id": {
           "name": "Abschluss-ID",
           "description": "Die ID des abzulehnenden Aufgabenabschlusses"
+        },
+        "reason": {
+          "name": "Grund",
+          "description": "Optionaler Grund, der dem Kind angezeigt wird"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Aufgabe rückgängig machen",
+      "description": "Lässt ein Kind seine eigene Aufgabe zurücknehmen — eine offene Einreichung, bis ein Elternteil sie prüft, oder eine automatisch genehmigte innerhalb des Rückgängig-Zeitfensters. Aus, solange das Zeitfenster in den TaskMate-Einstellungen nicht über 0 liegt; alles, was ein Elternteil geprüft hat, kann nur ein Elternteil rückgängig machen.",
+      "fields": {
+        "completion_id": {
+          "name": "Erledigungs-ID",
+          "description": "Die ID der erledigten Aufgabe des Kindes, die zurückgenommen werden soll"
         }
       }
     },
@@ -295,6 +332,10 @@
         "claim_id": {
           "name": "Anspruchs-ID",
           "description": "Die ID des abzulehnenden Prämienanspruchs"
+        },
+        "reason": {
+          "name": "Grund",
+          "description": "Optionaler Grund, der dem Kind angezeigt wird"
         }
       }
     },
@@ -513,6 +554,18 @@
         "requires_approval": {
           "name": "Erfordert eine Genehmigung",
           "description": "Wenn dies zutrifft, muss ein Elternteil den Abschluss genehmigen, bevor Punkte vergeben werden"
+        },
+        "team_size": {
+          "name": "Teamgröße",
+          "description": "Macht daraus eine Teamaufgabe, die erst zählt, wenn so viele verschiedene Kinder mitmachen. Sobald das Team voll ist, wird sie für alle eingereicht. 0 = normale Aufgabe."
+        },
+        "team_points_mode": {
+          "name": "Team-Punkte",
+          "description": "Wie eine Teamaufgabe auszahlt: „each“ gibt jedem Kind die vollen Punkte, „split“ teilt sie gleichmäßig auf (abgerundet)."
+        },
+        "team_bonus": {
+          "name": "Teambonus",
+          "description": "Zusätzliche Punkte für jedes beteiligte Kind, wenn eine Teamaufgabe erledigt ist."
         }
       }
     },
@@ -601,6 +654,174 @@
         "child_id": {
           "name": "Kinder-ID",
           "description": "Die ID des Kindes, das den Timer startet"
+        }
+      }
+    },
+    "leave_team_chore": {
+      "name": "Teamaufgabe verlassen",
+      "description": "Nimmt ein Kind wieder aus einer Teamaufgabe heraus, der es heute beigetreten ist, bevor das Team vollständig ist",
+      "fields": {
+        "chore_id": {
+          "name": "Aufgaben-ID",
+          "description": "Die ID der Teamaufgabe"
+        },
+        "child_id": {
+          "name": "Kinder-ID",
+          "description": "Die ID des Kindes, das das Team verlässt"
+        }
+      }
+    },
+    "complete_next_chore": {
+      "name": "Nächste Aufgabe erledigen",
+      "description": "Erledigt die nächste offene Aufgabe des Kindes in der Reihenfolge, die die Kinderkarte anzeigt. Aufgaben, die ein Foto, eine Notiz, einen Timer oder ein Team brauchen, werden übersprungen. Gedacht für Uhr-Tasten und Verknüpfungen; die normalen Genehmigungsregeln gelten.",
+      "fields": {
+        "child_id": {
+          "name": "Kinder-ID",
+          "description": "Die ID des Kindes, dessen nächste Aufgabe erledigt werden soll"
+        }
+      }
+    },
+    "post_bounty": {
+      "name": "Sonderjob ausschreiben",
+      "description": "Einen einmaligen Sonderjob für eine feste Punktzahl an die Sonderjob-Tafel hängen. Jedes berechtigte Kind kann ihn übernehmen; die Erledigung läuft durch die normale Freigabe.",
+      "fields": {
+        "title": {
+          "name": "Titel",
+          "description": "Worum es geht, z. B. \"Auto waschen\""
+        },
+        "points": {
+          "name": "Punkte",
+          "description": "Feste Punkte, die gezahlt werden, wenn ein Elternteil den erledigten Job freigibt"
+        },
+        "description": {
+          "name": "Beschreibung",
+          "description": "Optionale Details für die Kinder"
+        },
+        "icon": {
+          "name": "Symbol",
+          "description": "MDI-Symbol auf der Tafel"
+        },
+        "expires_at": {
+          "name": "Läuft ab am",
+          "description": "Optionales Datum mit Uhrzeit, zu dem der Sonderjob verschwindet, wenn ihn niemand übernommen hat. Leer lassen für kein Ablaufdatum."
+        },
+        "eligible_child_ids": {
+          "name": "Berechtigte Kinder",
+          "description": "IDs der Kinder, die ihn übernehmen dürfen. Leer = alle Kinder."
+        },
+        "claim_hours": {
+          "name": "Reservierung (Stunden)",
+          "description": "Wie lange eine Übernahme gilt, bevor der Sonderjob zurück an die Tafel geht"
+        },
+        "require_photo": {
+          "name": "Foto erforderlich",
+          "description": "Das Kind muss beim Erledigen ein Foto anhängen"
+        },
+        "notify_children": {
+          "name": "Kinder benachrichtigen",
+          "description": "Die Benachrichtigung \"Neuer Sonderjob\" an die berechtigten Kinder senden"
+        }
+      }
+    },
+    "update_bounty": {
+      "name": "Sonderjob bearbeiten",
+      "description": "Einen Sonderjob bearbeiten. Nach der Übernahme lassen sich nur noch Punkte und Ablaufzeit ändern.",
+      "fields": {
+        "bounty_id": {
+          "name": "Sonderjob-ID",
+          "description": "Die ID des zu bearbeitenden Sonderjobs"
+        },
+        "title": {
+          "name": "Titel",
+          "description": "Worum es geht, z. B. \"Auto waschen\""
+        },
+        "points": {
+          "name": "Punkte",
+          "description": "Feste Punkte, die gezahlt werden, wenn ein Elternteil den erledigten Job freigibt"
+        },
+        "description": {
+          "name": "Beschreibung",
+          "description": "Optionale Details für die Kinder"
+        },
+        "icon": {
+          "name": "Symbol",
+          "description": "MDI-Symbol auf der Tafel"
+        },
+        "expires_at": {
+          "name": "Läuft ab am",
+          "description": "Optionales Datum mit Uhrzeit, zu dem der Sonderjob verschwindet, wenn ihn niemand übernommen hat. Leer lassen für kein Ablaufdatum."
+        },
+        "eligible_child_ids": {
+          "name": "Berechtigte Kinder",
+          "description": "IDs der Kinder, die ihn übernehmen dürfen. Leer = alle Kinder."
+        },
+        "claim_hours": {
+          "name": "Reservierung (Stunden)",
+          "description": "Wie lange eine Übernahme gilt, bevor der Sonderjob zurück an die Tafel geht"
+        },
+        "require_photo": {
+          "name": "Foto erforderlich",
+          "description": "Das Kind muss beim Erledigen ein Foto anhängen"
+        },
+        "notify_children": {
+          "name": "Kinder benachrichtigen",
+          "description": "Die Benachrichtigung \"Neuer Sonderjob\" an die berechtigten Kinder senden"
+        }
+      }
+    },
+    "remove_bounty": {
+      "name": "Sonderjob entfernen",
+      "description": "Einen Sonderjob von der Tafel nehmen. Nicht möglich, solange ein erledigter Job auf Freigabe wartet.",
+      "fields": {
+        "bounty_id": {
+          "name": "Sonderjob-ID",
+          "description": "Die ID des zu entfernenden Sonderjobs"
+        }
+      }
+    },
+    "claim_bounty": {
+      "name": "Sonderjob übernehmen",
+      "description": "Einen Sonderjob für ein Kind übernehmen und für die Reservierungszeit sperren. Ein Kind kann jeweils nur einen halten.",
+      "fields": {
+        "bounty_id": {
+          "name": "Sonderjob-ID",
+          "description": "Die ID des zu übernehmenden Sonderjobs"
+        },
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, das ihn übernimmt"
+        }
+      }
+    },
+    "give_back_bounty": {
+      "name": "Sonderjob zurückgeben",
+      "description": "Einen übernommenen Sonderjob zurück an die Tafel geben, damit ein anderes Kind ihn nehmen kann",
+      "fields": {
+        "bounty_id": {
+          "name": "Sonderjob-ID",
+          "description": "Die ID des übernommenen Sonderjobs"
+        },
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, das ihn übernommen hat"
+        }
+      }
+    },
+    "complete_bounty": {
+      "name": "Sonderjob erledigen",
+      "description": "Einen übernommenen Sonderjob als erledigt melden. Er geht wie eine Aufgabe in die Freigabe.",
+      "fields": {
+        "bounty_id": {
+          "name": "Sonderjob-ID",
+          "description": "Die ID des übernommenen Sonderjobs"
+        },
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, das ihn übernommen hat"
+        },
+        "photo_url": {
+          "name": "Foto-URL",
+          "description": "Foto des erledigten Jobs (erforderlich, wenn der Sonderjob eines verlangt)"
         }
       }
     },
@@ -806,6 +1027,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Serienschutz anpassen",
+      "description": "Gibt einem Kind Serienschutz (positive Anzahl) oder nimmt welchen weg (negative). Eine Gutschrift überschreitet nie die Grenze streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, dessen Serienschutz sich ändert"
+        },
+        "amount": {
+          "name": "Anzahl",
+          "description": "Hinzuzufügender (positiv) oder zu entfernender (negativ) Serienschutz"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Pflichtaufgabe verschieben",
       "description": "Gewährt einer verpassten Pflichtaufgabe ohne Strafe einen weiteren Zeitraum (oder morgen) und entfernt den Prüfeintrag.",
@@ -853,6 +1088,238 @@
           "description": "Punkte, die in Bargeld umgerechnet und abgezogen werden"
         }
       }
+    },
+    "add_wish": {
+      "name": "Wunsch hinzufügen",
+      "description": "Ein Kind fügt etwas hinzu, auf das es sparen möchte. Es wartet auf die Freigabe durch ein Elternteil.",
+      "fields": {
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, das sich etwas wünscht"
+        },
+        "name": {
+          "name": "Name",
+          "description": "Was sich das Kind wünscht"
+        },
+        "target": {
+          "name": "Ziel",
+          "description": "Vorgeschlagene Punktzahl, die es kostet. Das Elternteil kann sie bei der Freigabe ändern."
+        },
+        "link": {
+          "name": "Link",
+          "description": "Optionale Webadresse (http oder https) zum Artikel"
+        },
+        "photo_url": {
+          "name": "Bild",
+          "description": "Optionales Bild, das gerade über den TaskMate-Foto-Endpunkt hochgeladen wurde"
+        }
+      }
+    },
+    "withdraw_wish": {
+      "name": "Wunsch zurückziehen",
+      "description": "Ein Kind zieht einen Wunsch zurück, der noch auf Freigabe wartet, oder entfernt einen abgelehnten.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, dem der Wunsch gehört"
+        }
+      }
+    },
+    "move_points_to_wish": {
+      "name": "Punkte auf Wunsch übertragen",
+      "description": "Überträgt Punkte vom verfügbaren Guthaben eines Kindes auf einen seiner freigegebenen Wünsche.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, dem der Wunsch gehört"
+        },
+        "points": {
+          "name": "Punkte",
+          "description": "Wie viele Punkte übertragen werden (höchstens das Guthaben und was dem Wunsch noch fehlt)"
+        }
+      }
+    },
+    "take_points_from_wish": {
+      "name": "Punkte aus Wunsch nehmen",
+      "description": "Gibt einem Kind einen Teil seiner eigenen gesparten Punkte aus einem Wunsch zurück. Zugesagte Punkte bleiben immer drin.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, dem der Wunsch gehört"
+        },
+        "points": {
+          "name": "Punkte",
+          "description": "Wie viele gesparte Punkte zurückgenommen werden (höchstens das Gesparte des Kindes)"
+        }
+      }
+    },
+    "request_wish_redeem": {
+      "name": "Wunsch einlösen",
+      "description": "Ein voll finanzierter Wunsch wird zu einer Belohnungsanfrage, die auf die Freigabe der Eltern wartet.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "child_id": {
+          "name": "Kind-ID",
+          "description": "Die ID des Kindes, dem der Wunsch gehört"
+        }
+      }
+    },
+    "approve_wish": {
+      "name": "Wunsch freigeben",
+      "description": "Macht aus einem wartenden Wunsch ein Sparziel, optional mit einem anderen Zielwert.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "target": {
+          "name": "Ziel",
+          "description": "Punkte, die der Wunsch kostet. Leer lassen, um den Vorschlag des Kindes zu übernehmen."
+        }
+      }
+    },
+    "decline_wish": {
+      "name": "Wunsch ablehnen",
+      "description": "Lehnt einen Wunsch ab. Gesparte Punkte gehen an das Kind zurück, Zusagen verfallen.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "reason": {
+          "name": "Grund",
+          "description": "Optionaler Grund, der dem Kind angezeigt wird"
+        }
+      }
+    },
+    "pledge_to_wish": {
+      "name": "Für Wunsch zusagen",
+      "description": "Erfasst Punkte, die ein Verwandter zum Wunsch eines Kindes beisteuert. Sie berühren nie ein Guthaben.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "name": {
+          "name": "Von",
+          "description": "Von wem die Zusage kommt, z. B. Oma"
+        },
+        "points": {
+          "name": "Punkte",
+          "description": "Wie viele Punkte zugesagt werden (höchstens was dem Wunsch noch fehlt)"
+        },
+        "message": {
+          "name": "Nachricht",
+          "description": "Optionale Nachricht an das Kind"
+        }
+      }
+    },
+    "remove_wish_pledge": {
+      "name": "Zusage entfernen",
+      "description": "Macht eine Zusage rückgängig. Möglich, bis der Wunsch eingelöst ist.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        },
+        "pledge_id": {
+          "name": "Zusage-ID",
+          "description": "Die ID der Zusage, die entfernt werden soll"
+        }
+      }
+    },
+    "remove_wish": {
+      "name": "Wunsch entfernen",
+      "description": "Löscht einen Wunsch. Gesparte Punkte gehen an das Kind zurück, Zusagen verfallen.",
+      "fields": {
+        "wish_id": {
+          "name": "Wunsch-ID",
+          "description": "Die ID des Wunsches"
+        }
+      }
+    },
+    "start_inspection": {
+      "name": "Kontrolle starten",
+      "description": "Markiert eine in den letzten 24 Stunden bestätigte Aufgabe für eine Überraschungskontrolle. Bestehen oder durchfallen lassen, bevor das Zeitfenster endet; eine offene Kontrolle endet still.",
+      "fields": {
+        "completion_id": {
+          "name": "Erledigungs-ID",
+          "description": "Die ID der bestätigten Aufgaben-Erledigung, die kontrolliert wird"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Punkte, wenn sie besteht. Standard ist der Wert aus den Einstellungen."
+        },
+        "window": {
+          "name": "Zeitfenster",
+          "description": "Wie lange du zum Prüfen hast: 1h, 2h, 4h oder bed (bis zur Schlafenszeit). Standard ist der Wert aus den Einstellungen."
+        },
+        "tell_child": {
+          "name": "Kind informieren",
+          "description": "Zeigt jetzt „Kontrolle kommt“ auf der Karte des Kindes. Für eine geheime Kontrolle ausschalten."
+        }
+      }
+    },
+    "pass_inspection": {
+      "name": "Kontrolle bestanden",
+      "description": "Die kontrollierte Aufgabe hat bestanden. Zahlt den Bonus als normalen Punkteeintrag und feiert auf der Karte des Kindes.",
+      "fields": {
+        "inspection_id": {
+          "name": "Kontroll-ID",
+          "description": "Die ID der offenen Kontrolle"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Auszuzahlende Punkte. Standard ist der beim Start festgelegte Bonus."
+        },
+        "note": {
+          "name": "Notiz",
+          "description": "Optionale Notiz für das Kind"
+        }
+      }
+    },
+    "fail_inspection": {
+      "name": "Kontrolle nicht bestanden",
+      "description": "Die kontrollierte Aufgabe hat nicht bestanden. Es werden keine Punkte abgezogen. Sie kann zum Nachbessern zurückgeschickt werden; das bringt keine zusätzlichen Punkte.",
+      "fields": {
+        "inspection_id": {
+          "name": "Kontroll-ID",
+          "description": "Die ID der offenen Kontrolle"
+        },
+        "redo": {
+          "name": "Zum Nachbessern zurückschicken",
+          "description": "Setzt die Aufgabe für heute wieder als nicht erledigt auf die Liste des Kindes. Standard ist der Wert aus den Einstellungen."
+        },
+        "note": {
+          "name": "Notiz",
+          "description": "Optionale Notiz für das Kind (was nachgebessert werden muss)"
+        }
+      }
+    },
+    "cancel_inspection": {
+      "name": "Kontrolle abbrechen",
+      "description": "Bricht eine offene Kontrolle ab, als hätte sie nie begonnen.",
+      "fields": {
+        "inspection_id": {
+          "name": "Kontroll-ID",
+          "description": "Die ID der offenen Kontrolle"
+        }
+      }
     }
   },
   "entity": {
@@ -862,6 +1329,13 @@
       },
       "child_badges": {
         "unit_of_measurement": "Abzeichen"
+      },
+      "child_watch": {
+        "state": {
+          "left": "Noch #",
+          "all_done": "Alles erledigt",
+          "no_chores": "Keine Aufgaben"
+        }
       }
     },
     "number": {
@@ -879,6 +1353,35 @@
       "card_design": {
         "name": "Kartendesign"
       }
+    }
+  },
+  "exceptions": {
+    "calendar_unknown_event": {
+      "message": "Dieser Termin ist keine TaskMate-Aufgabe im Kalender dieses Kindes."
+    },
+    "calendar_series_not_supported": {
+      "message": "Eine wiederkehrende Aufgabe kann im Kalender nur tageweise verschoben oder entfernt werden. Um die ganze Serie zu ändern, bearbeite die Aufgabe in TaskMate."
+    },
+    "calendar_repeating_create": {
+      "message": "Wiederkehrende Termine können nicht im Kalender angelegt werden. Lege stattdessen in TaskMate eine wiederkehrende Aufgabe an."
+    },
+    "calendar_rename_series": {
+      "message": "Benenne eine wiederkehrende Aufgabe in TaskMate um. Im Kalender kannst du nur einen einzelnen Tag verschieben oder entfernen."
+    },
+    "calendar_time_follows_chore": {
+      "message": "Eine wiederkehrende Aufgabe behält ihre Tageszeit. Im Kalender lässt sich nur das Datum eines einzelnen Termins ändern."
+    },
+    "calendar_past_date": {
+      "message": "Aufgaben können nicht an einem vergangenen Tag angelegt, dorthin verschoben oder von dort verschoben werden."
+    },
+    "calendar_already_scheduled": {
+      "message": "{chore} steht am {date} bereits an."
+    },
+    "calendar_empty_title": {
+      "message": "Gib der Aufgabe einen Titel."
+    },
+    "calendar_own_event": {
+      "message": "Dieser Termin wurde von TaskMate selbst veröffentlicht und wird deshalb nicht als neue Aufgabe angelegt."
     }
   }
 }

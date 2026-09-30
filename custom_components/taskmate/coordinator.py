@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -17,29 +19,62 @@ from homeassistant.util import dt as dt_util
 from . import photos
 from .const import DOMAIN
 from .coord_assignments import AssignmentsMixin
+from .coord_auctions import AuctionsMixin
 from .coord_avatars import AvatarsMixin
 from .coord_badges import BadgeCoordinator
+from .coord_birthdays import BirthdaysMixin
+from .coord_bounties import BountiesMixin
 from .coord_calendar import CalendarMixin
 from .coord_challenges import ChallengesMixin
 from .coord_chores import ChoresMixin
 from .coord_guests import GuestsMixin
+from .coord_inspections import InspectionsMixin
 from .coord_mandatory import MandatoryMixin
 from .coord_notifications import NotificationCoordinator
 from .coord_points import PointsMixin
 from .coord_quests import QuestsMixin
+from .coord_recaps import RecapsMixin
+from .coord_rejections import RejectionsMixin
 from .coord_reports import ReportsMixin
 from .coord_rewards import RewardsMixin
 from .coord_roulette import RouletteMixin
 from .coord_scheduled import ScheduledChangesMixin
+from .coord_setup import SetupWizardMixin
 from .coord_sounds import SoundsMixin
+from .coord_tags import TagsMixin
+from .coord_teamwork import TeamworkMixin
 from .coord_templates import TemplatesMixin
 from .coord_timed import TimedMixin
 from .coord_tts import ReadAloudMixin
 from .coord_unlocks import UnlocksMixin
-from .models import Child
+from .coord_wishlist import WishlistMixin
+from .models import Child, Chore
 from .storage import TaskMateStorage
 
 _LOGGER = logging.getLogger(__name__)
+
+# Shape of generate_id() — how a child id is recognised in a unique id (#946).
+_CHILD_ID_RE = re.compile(r"[0-9a-f]{16}")
+
+# A complete/claim button's unique id minus its ``<entry_id>_`` prefix, with
+# both ids in generate_id() shape (#960). Anything else is never swept.
+_BUTTON_UID_RE = re.compile(r"([0-9a-f]{16})_([0-9a-f]{16})_(complete|claim)")
+
+
+def chore_has_button(chore: Chore, child_id: str) -> bool:
+    """Whether ``child_id`` gets a complete button for ``chore``."""
+    if getattr(chore, "assignment_mode", "everyone") == "unassigned":
+        return False
+    return not chore.assigned_to or child_id in chore.assigned_to
+
+
+def button_keys(children: list, chores: list, rewards: list) -> set[str]:
+    """``<child>_<item>_<kind>`` keys of every button that should exist."""
+    keys: set[str] = set()
+    for child in children:
+        keys.update(f"{child.id}_{chore.id}_complete" for chore in chores if chore_has_button(chore, child.id))
+        keys.update(f"{child.id}_{reward.id}_claim" for reward in rewards)
+    return keys
 
 
 class TaskMateCoordinator(
@@ -61,6 +96,16 @@ class TaskMateCoordinator(
     GuestsMixin,
     UnlocksMixin,
     SoundsMixin,
+    BirthdaysMixin,
+    TagsMixin,
+    TeamworkMixin,
+    WishlistMixin,
+    BountiesMixin,
+    AuctionsMixin,
+    RecapsMixin,
+    RejectionsMixin,
+    SetupWizardMixin,
+    InspectionsMixin,
     DataUpdateCoordinator,
 ):
     """Coordinator to manage TaskMate data."""
@@ -79,7 +124,9 @@ class TaskMateCoordinator(
         self.entry_id = entry_id
         self._unsub_midnight: Callable[[], None] | None = None
         self._unsub_prune: Callable[[], None] | None = None
+        self._unsub_daily_progress: Callable[[], None] | None = None
         self._unsub_availability: Callable[[], None] | None = None
+        self._unsub_tag_scanned: Callable[[], None] | None = None
         self._tracked_availability_entities: set[str] = set()
         self._tracked_visibility_entities: set[str] = set()
         # Bumped whenever a tracked external entity (child availability, chore
@@ -97,6 +144,8 @@ class TaskMateCoordinator(
         self._data_snapshot_cache: tuple[int, dict[str, Any]] | None = None
         # Scheduled reverts for timed unlock rewards (#678).
         self._unlock_timers: list = []
+        # Wakes for the next chore-auction closing time or reminder (#982).
+        self._unsub_auction_timer: Callable[[], None] | None = None
 
     def difficulty_multiplier(self, tier: str) -> float:
         """Return the points multiplier for a difficulty tier.
@@ -113,6 +162,24 @@ class TaskMateCoordinator(
             return float(self.storage.get_setting(f"difficulty_multiplier_{resolved}", str(default)))
         except (ValueError, TypeError):
             return default
+
+    def quality_rating_enabled(self) -> bool:
+        """Whether parents may rate approvals 1-3 stars (#927). Off by default."""
+        v = self.storage.get_setting("quality_rating_enabled", False)
+        return v is True or str(v).lower() == "true"
+
+    def quality_rating_multipliers(self) -> dict[int, float]:
+        """The points multiplier for each star rating, from settings (#927)."""
+        from .const import DEFAULT_QUALITY_RATING_MULTIPLIERS
+
+        out: dict[int, float] = {}
+        for rating, default in DEFAULT_QUALITY_RATING_MULTIPLIERS.items():
+            try:
+                value = float(self.storage.get_setting(f"quality_rating_multiplier_{rating}", default))
+            except (ValueError, TypeError):
+                value = default
+            out[rating] = max(0.0, value)
+        return out
 
     def effective_chore_points(self, chore) -> int:
         """Base chore points scaled by its difficulty multiplier (never negative)."""
@@ -342,10 +409,25 @@ class TaskMateCoordinator(
         await self.async_apply_due_scheduled_changes(refresh=False)
         # A restart mid-unlock must never strand the TV on (#678).
         await self.async_resume_unlocks()
+        # Birthday mode (#924): HA may have been off at midnight on the day.
+        await self.async_check_birthdays(refresh=False)
+        # Bounty board (#931): claims that ran out and bounties that expired
+        # while HA was off.
+        await self.async_sweep_bounties(refresh=False)
+        # Chore auctions (#982): settle any whose bidding closed while HA was
+        # off, then arm the timer for the next closing time. Auctions left
+        # behind by a chore deleted before they followed it go first (#999).
+        await self.async_remove_orphaned_auctions()
+        await self.async_sweep_auctions(refresh=False)
+        self._arm_auction_timer()
         await self.async_refresh()
         # Schedule midnight streak check at 00:00:05
         self._unsub_midnight = async_track_time_change(
             self.hass, self._async_midnight_streak_check, hour=0, minute=0, second=5
+        )
+        # Record each child's done/total for the day just before it ends (#966)
+        self._unsub_daily_progress = async_track_time_change(
+            self.hass, self._async_daily_progress_tick, hour=23, minute=59, second=0
         )
         # Schedule daily history pruning at 00:01:00
         self._unsub_prune = async_track_time_change(self.hass, self._async_scheduled_prune, hour=0, minute=1, second=0)
@@ -354,6 +436,9 @@ class TaskMateCoordinator(
         # relevant flips trigger a recompute.
         self._refresh_tracked_availability_entities()
         self._unsub_availability = self.hass.bus.async_listen("state_changed", self._availability_state_changed)
+        # NFC / QR tag completion (#923): a scanned tag linked to a chore
+        # completes it for the scanning child.
+        self._unsub_tag_scanned = self.hass.bus.async_listen("tag_scanned", self._tag_scanned)
         # Surprise-bonus daily roll at 16:00 (opt-in; no-op unless enabled)
         self._unsub_surprise = async_track_time_change(
             self.hass, self._async_surprise_bonus_check, hour=16, minute=0, second=0
@@ -366,6 +451,12 @@ class TaskMateCoordinator(
         # Mandatory-chore period-end detection (#532)
         self.arm_mandatory_schedules()
         await self.async_catchup_mandatory_misses()
+        # Recaps (#929): build any recap whose period ended while HA was off,
+        # then arm the midnight build and the daily announcement.
+        await self.async_start_recaps()
+        # Surprise inspections (#981): close / remind what came due while HA
+        # was off, catch up on a missed daily pick, then arm the timers.
+        await self.async_start_inspections()
 
     @callback
     def _async_weekly_digest_check(self, now: datetime) -> None:
@@ -709,14 +800,31 @@ class TaskMateCoordinator(
         """Shutdown the coordinator and clean up listeners."""
         self.cancel_unlock_timers()
         self.notifications.cancel_schedules()
-        for attr in ("_unsub_midnight", "_unsub_prune", "_unsub_availability", "_unsub_surprise", "_unsub_weekly"):
-            if unsub := getattr(self, attr):
+        self.notifications.cancel_presence_tracking()
+        for attr in (
+            "_unsub_midnight",
+            "_unsub_prune",
+            "_unsub_daily_progress",
+            "_unsub_availability",
+            "_unsub_tag_scanned",
+            "_unsub_surprise",
+            "_unsub_weekly",
+            "_unsub_auction_timer",
+        ):
+            if unsub := getattr(self, attr, None):
                 unsub()
                 setattr(self, attr, None)
         self.disarm_mandatory_schedules()
+        self.disarm_recap_schedules()
+        self.disarm_inspection_schedules()
         # Flush any pending debounced save so an entry unload/reload can't drop
         # the last mutation (PERF-3).
         await self.storage.async_save_now()
+
+    @callback
+    def _async_daily_progress_tick(self, now: datetime) -> None:
+        """Scheduled callback at 23:59 to snapshot the day's chore progress."""
+        self.hass.async_create_task(self.async_record_daily_progress(now))
 
     @callback
     def _async_midnight_streak_check(self, now: datetime) -> None:
@@ -735,6 +843,8 @@ class TaskMateCoordinator(
             self.async_prune_roulette_state,
             self.async_archive_expired_guests,
             self._async_check_streaks,
+            # Birthday mode (#924): badge + celebration, once per child per day.
+            self.async_check_birthdays,
             self._async_expire_one_shot_chores,
             self._async_expire_dated_chores,
             self._async_expire_deadline_chores,
@@ -750,6 +860,10 @@ class TaskMateCoordinator(
             self.async_detect_anytime_mandatory_misses,
             self.async_prune_orphan_misses,
             self._async_sweep_orphan_photos,
+            # Finished bounties leave with the completion history (#931).
+            self.async_prune_bounties,
+            # Finished auctions likewise (#982).
+            self.async_prune_auctions,
         ]
         # Check for perfect week bonus every Monday at midnight
         if now.weekday() == 0:
@@ -761,6 +875,9 @@ class TaskMateCoordinator(
                 _LOGGER.exception("Midnight maintenance step %s failed", step.__name__)
         # Prune all-chores-done daily flags older than today
         self.storage.prune_all_done_flags(dt_util.now().date().isoformat())
+        # Teamwork joins are per occurrence (#928): yesterday's half-formed
+        # teams are dead, so drop them rather than carry them in the store.
+        self.storage.prune_team_joins(dt_util.as_local(dt_util.now()).date().isoformat())
         await self.storage.async_save()
 
     async def _async_sweep_orphan_photos(self) -> None:
@@ -796,7 +913,16 @@ class TaskMateCoordinator(
         # we are already inside the refresh, and the snapshot below picks the
         # change up in this same tick.
         await self._async_expire_deadline_chores(refresh=False)
+        # Bounty claims last hours, not days (#931): lapse and expire them on
+        # this tick, and warn a claimer whose time is nearly up.
+        await self.async_sweep_bounties(refresh=False)
+        # Auction closings (#982) have their own timer; this is the backstop.
+        await self.async_sweep_auctions(refresh=False)
         self._refresh_tracked_availability_entities()
+        # Presence-aware reminders (#926): follow child presence-entity edits.
+        # A no-op unless the child -> entity map actually changed.
+        if notifications := getattr(self, "notifications", None):
+            notifications.sync_presence_tracking()
         version = self.storage.data_version
         cached = getattr(self, "_data_snapshot_cache", None)
         if cached is not None and cached[0] == version:
@@ -822,6 +948,7 @@ class TaskMateCoordinator(
             "bonuses": self.storage.get_bonuses(),
             "pool_allocations": self.storage.get_pool_allocations(),
             "timed_sessions": self.storage.get_timed_sessions(),
+            "bounties": self.storage.get_bounties(),
         }
 
     # Child operations
@@ -835,8 +962,16 @@ class TaskMateCoordinator(
         pause_streak_when_unavailable: bool = False,
         linked_user_id: str = "",
         picture_entity: str = "",
+        birthday: str = "",
+        presence_entity: str = "",
+        age_group: str = "",
+        refresh: bool = True,
     ) -> Child:
-        """Add a new child."""
+        """Add a new child.
+
+        ``refresh=False`` lets a batch (the setup wizard, #980) add several
+        children and refresh once at the end.
+        """
         child = Child(
             name=name,
             avatar=avatar,
@@ -846,17 +981,25 @@ class TaskMateCoordinator(
             pause_streak_when_unavailable=pause_streak_when_unavailable,
             linked_user_id=linked_user_id,
             picture_entity=picture_entity,
+            birthday=birthday,
+            presence_entity=presence_entity,
+            age_group=age_group,
         )
         self.storage.add_child(child)
         await self.storage.async_save()
-        await self.async_refresh()
+        # A birthday entered on the day still gets its badge and celebration.
+        await self.async_check_birthdays(refresh=False)
+        if refresh:
+            await self.async_refresh()
         return child
 
-    async def async_update_child(self, child: Child) -> None:
+    async def async_update_child(self, child: Child, refresh: bool = True) -> None:
         """Update a child."""
         self.storage.update_child(child)
         await self.storage.async_save()
-        await self.async_refresh()
+        await self.async_check_birthdays(refresh=False)
+        if refresh:
+            await self.async_refresh()
 
     async def async_remove_child(self, child_id: str) -> None:
         """Remove a child and all associated data."""
@@ -867,12 +1010,27 @@ class TaskMateCoordinator(
         self.storage.remove_last_completed_for_child(child_id)
         self.storage.remove_pool_allocations_for_child(child_id)
         self.storage.remove_career_score_history_for_child(child_id)
+        self.storage.remove_daily_progress_for_child(child_id)
         self.storage.remove_quest_progress_for_child(child_id)
         self.storage.remove_challenge_progress_for_child(child_id)
         # Drop pending swap requests either side of this child (#785) — a
         # handover to or from a deleted child can never complete, and the
         # approval queue would render them as "?".
         self.storage.remove_swap_requests_for_child(child_id)
+        # And out of any teamwork chore they had joined (#928), or the team
+        # would count a member who can never be paid.
+        self.storage.remove_team_joins_for_child(child_id)
+        # Their wishes (#932) go too — and the pictures stored for them.
+        await self._async_remove_wishes_for_child(child_id)
+        # Free any bounty they had claimed and take them off eligibility (#931).
+        self.remove_child_from_bounties(child_id)
+        # And their bids and auction eligibility (#982).
+        self.remove_child_from_auctions(child_id)
+        # Their missed-mandatory reviews, timed sessions and notification
+        # routes (#946) — nothing else would ever clear them.
+        self.storage.remove_mandatory_misses_for_child(child_id)
+        self.storage.remove_timed_sessions_for_child(child_id)
+        routes_changed = self.storage.remove_notification_recipient(f"child:{child_id}")
         # Remove child from chore assigned_to lists, and clear any approved swap
         # override that pointed at them so the chore isn't left assigned to a
         # child who no longer exists.
@@ -899,7 +1057,90 @@ class TaskMateCoordinator(
                 chore.assignment_current_child_id = daily.get(chore.id, "")
                 self.storage.update_chore(chore)
         await self.storage.async_save()
+        self._remove_child_entities(child_id)
+        if routes_changed:
+            # A bedtime/birthday route arms a per-child timer.
+            await self.notifications.async_setup_schedules()
         await self.async_refresh()
+
+    def _child_entity_entries(self, child_ids: set[str] | None = None, *, orphans: bool = False) -> list:
+        """Registry entries of per-child entities (#946).
+
+        Per-child unique ids are ``<entry_id>_<child_id>_...``. With
+        ``orphans`` set, returns entries whose child id (a generated 16-hex id)
+        no longer belongs to any child; otherwise those for ``child_ids``.
+        """
+        registry = er.async_get(self.hass)
+        entry_id = self.storage.entry_id
+        prefix = f"{entry_id}_"
+        known = {c.id for c in self.storage.get_children()}
+        found = []
+        for entry in er.async_entries_for_config_entry(registry, entry_id):
+            uid = entry.unique_id or ""
+            if not uid.startswith(prefix):
+                continue
+            rest = uid[len(prefix) :]
+            if orphans:
+                cid = rest.split("_", 1)[0]
+                if "_" in rest and _CHILD_ID_RE.fullmatch(cid) and cid not in known:
+                    found.append(entry)
+            elif any(rest.startswith(f"{cid}_") for cid in child_ids or ()):
+                found.append(entry)
+        return found
+
+    def _remove_child_entities(self, child_id: str) -> None:
+        """Drop a deleted child's entities from the entity registry (#946)."""
+        registry = er.async_get(self.hass)
+        for entry in self._child_entity_entries({child_id}):
+            registry.async_remove(entry.entity_id)
+
+    def async_prune_orphan_child_entities(self) -> int:
+        """Remove registry entries left by children deleted before #946."""
+        registry = er.async_get(self.hass)
+        stale = self._child_entity_entries(orphans=True)
+        for entry in stale:
+            registry.async_remove(entry.entity_id)
+        if stale:
+            _LOGGER.info("Removed %d entities left behind by deleted children", len(stale))
+        return len(stale)
+
+    def remove_button_entities(self, keys: set[str]) -> None:
+        """Drop buttons whose chore/reward or assignment went (#960).
+
+        ``keys`` are ``<child>_<item>_<kind>`` as the button platform tracks
+        them; only exact ``<entry_id>_<key>`` unique ids are removed.
+        """
+        if not keys:
+            return
+        registry = er.async_get(self.hass)
+        wanted = {f"{self.storage.entry_id}_{key}" for key in keys}
+        for entry in er.async_entries_for_config_entry(registry, self.storage.entry_id):
+            if entry.domain == "button" and entry.unique_id in wanted:
+                registry.async_remove(entry.entity_id)
+
+    def async_prune_orphan_button_entities(self) -> int:
+        """Remove buttons left by chores/rewards deleted before #960.
+
+        Also catches a child's button for a chore they were since unassigned
+        from. Only unique ids that parse as a generated-id button are judged.
+        """
+        registry = er.async_get(self.hass)
+        entry_id = self.storage.entry_id
+        prefix = f"{entry_id}_"
+        live = button_keys(self.storage.get_children(), self.storage.get_chores(), self.storage.get_rewards())
+        stale = [
+            entry
+            for entry in er.async_entries_for_config_entry(registry, entry_id)
+            if entry.domain == "button"
+            and (entry.unique_id or "").startswith(prefix)
+            and _BUTTON_UID_RE.fullmatch(entry.unique_id[len(prefix) :])
+            and entry.unique_id[len(prefix) :] not in live
+        ]
+        for entry in stale:
+            registry.async_remove(entry.entity_id)
+        if stale:
+            _LOGGER.info("Removed %d buttons left behind by deleted chores or rewards", len(stale))
+        return len(stale)
 
     def get_child(self, child_id: str) -> Child | None:
         """Get a child by ID."""

@@ -27,8 +27,14 @@ const BADGE_METRICS = [
   { v: "perfect_weeks", lk: "badge.metric_perfect_weeks" },
   { v: "first_chore",   lk: "badge.metric_first_chore" },
   { v: "first_reward",  lk: "badge.metric_first_reward" },
+  { v: "birthday",      lk: "badge.metric_birthday" },
 ];
-const BADGE_BOOL_METRICS = ["first_chore", "first_reward"];
+const BADGE_BOOL_METRICS = ["first_chore", "first_reward", "birthday"];
+// Quick picks for a bounty's icon (#931); the icon picker below them takes any.
+const BOUNTY_ICONS = ["mdi:car-wash", "mdi:leaf", "mdi:recycle", "mdi:home-outline",
+  "mdi:silverware-clean", "mdi:broom", "mdi:book-open-variant", "mdi:star-outline"];
+// Recap frequencies (#929), in display order. Mirrors RECAP_FREQUENCIES in coord_recaps.py.
+const RECAP_FREQUENCIES = ["weekly", "monthly", "every_3_months", "every_6_months", "every_9_months", "yearly"];
 const BADGE_OPERATORS = ["≥", "=", "≤", ">", "<", "≠"];
 const BADGE_OP_VALUES = { "≥": ">=", "=": "==", "≤": "<=", ">": ">", "<": "<", "≠": "!=" };
 const BADGE_TIERS = [
@@ -104,6 +110,9 @@ const SCHEDULED_FIELDS = [
   ] },
 ];
 
+// Mirrors MAX_CHORE_TAGS in const.py — the WS schema rejects more (#923).
+const MAX_CHORE_TAGS = 10;
+
 // Adverse HA weather conditions a chore can be blocked by. The pleasant ones
 // (sunny, clear-night, partlycloudy) are deliberately omitted — nobody rains
 // off "mow the lawn" because it's sunny.
@@ -151,6 +160,19 @@ const TASK_GROUP_POLICIES = [
 ];
 
 
+// Setup wizard (#980). Age groups mirror AGE_GROUP_INFO in setup_catalogue.py
+// (youngest age, oldest age) — tests/test_setup_wizard.py keeps them in step.
+const WZ_AGE_GROUPS = [["3_5", 3, 5], ["6_8", 6, 8], ["9_12", 9, 12], ["13_plus", 13, 999]];
+const WZ_STEPS = ["welcome", "children", "chores", "rewards", "review", "done"];
+const WZ_KID_ICONS = ["mdi:star", "mdi:heart", "mdi:paw", "mdi:white-balance-sunny", "mdi:weather-night", "mdi:trophy",
+  "mdi:leaf", "mdi:creation", "mdi:fire", "mdi:medal", "mdi:book-open-variant", "mdi:car-sports"];
+const WZ_KID_COLORS = ["#ff6b9d", "#3498db", "#1abc9c", "#9b59b6", "#e67e22", "#f1c40f", "#e74c3c", "#2ecc71"];
+const WZ_POINT_NAMES = [["points", "mdi:star"], ["stars", "mdi:star"], ["coins", "mdi:circle-multiple"], ["gems", "mdi:diamond-stone"]];
+const WZ_DRAFT_KEY = "taskmate-setup-draft";
+const WZ_SKIP_KEY = "taskmate-setup-skipped";
+const WZ_DASH_PATH = "family-chores";
+
+
 class TaskMatePanel extends HTMLElement {
   constructor() {
     super();
@@ -162,7 +184,8 @@ class TaskMatePanel extends HTMLElement {
     this._vacationDraft = null;     // local edit state for the vacation editor
     this._bulkMode = false;         // chores multi-select mode
     this._bulkSel = new Set();      // selected chore ids for bulk actions
-    this._activeTab = "children";
+    // Today (#966) is the home page.
+    this._activeTab = "today";
     this._mobileNavOpen = false;     // mobile section-picker dropdown state
     this._dialog = null;
     this._dialogInitialHash = null;  // for confirm-on-leave
@@ -194,6 +217,15 @@ class TaskMatePanel extends HTMLElement {
     this._onVisibilityChange = this._onVisibilityChange.bind(this);
     this._lastConnected = null;
     this._showIds = localStorage.getItem("taskmate-show-ids") === "true";
+    // Admin panel layout (#966). The child filter, collapsed nav groups and
+    // the icon-only sidebar are remembered per browser.
+    this._scope = localStorage.getItem("taskmate-scope") || "";
+    this._navClosed = new Set(this._readStoredList("taskmate-nav-closed"));
+    this._navRail = localStorage.getItem("taskmate-nav-rail") === "true";
+    this._newMenuOpen = false;
+    this._palette = null;            // { q, hi } while the command search is open
+    this._boardView = "today";       // Today page chore board: "today" | "week"
+    this._onDocKeyDown = this._onDocKeyDown.bind(this);
     this._ensureHaComponents();
   }
 
@@ -216,6 +248,11 @@ class TaskMatePanel extends HTMLElement {
     const isDark = this._isHaDark();
     this.classList.toggle("dark", isDark);
     this.classList.toggle("light", !isDark);
+    // Follow HA's text direction (#979). The CSS is logical; the few physical
+    // rules left have [dir="rtl"] overrides that key off this attribute.
+    const design = window.__taskmate_design;
+    const dir = design && design.direction ? design.direction(value) : "ltr";
+    if (this.getAttribute("dir") !== dir) this.setAttribute("dir", dir);
     const connNow = !!(value && value.connection && value.connection.connected !== false);
     this._lastConnected = connNow;
 
@@ -253,6 +290,7 @@ class TaskMatePanel extends HTMLElement {
     this.addEventListener("dragover", this._onDragOver);
     this.addEventListener("drop", this._onDrop);
     document.addEventListener("visibilitychange", this._onVisibilityChange);
+    document.addEventListener("keydown", this._onDocKeyDown);
     if (!this.classList.contains("dark") && !this.classList.contains("light")) {
       const isDark = this._isHaDark();
       this.classList.toggle("dark", isDark);
@@ -275,6 +313,7 @@ class TaskMatePanel extends HTMLElement {
     this.removeEventListener("dragover", this._onDragOver);
     this.removeEventListener("drop", this._onDrop);
     document.removeEventListener("visibilitychange", this._onVisibilityChange);
+    document.removeEventListener("keydown", this._onDocKeyDown);
     this._closeRowMenu();
   }
 
@@ -327,7 +366,8 @@ class TaskMatePanel extends HTMLElement {
     return [
       "Weekend bonus", "Streak milestone bonus", "Perfect week bonus",
       "Allocated to pool:", "Pool refund", "Points decay",
-      "Savings interest", "Badge",
+      "Savings interest", "Badge", "Streak freeze",
+      "Wish savings", "Wish refund", "Wish pledge", "Wish redeemed",
     ];
   }
 
@@ -346,8 +386,12 @@ class TaskMatePanel extends HTMLElement {
       ['Pool refund (reward sold out):', 'activity.reason_pool_refund_sold_out'],
       ['Pool refund (reward cost reduced):', 'activity.reason_pool_refund_cost_reduced'],
       ['Pool refund (reward deleted):', 'activity.reason_pool_refund_deleted'],
+      ['Pool refund (reward funding changed):', 'activity.reason_pool_refund_funding_changed'],
+      ['Pool refund (reward assignment changed):', 'activity.reason_pool_refund_assignment_changed'],
       ['Penalty:', 'activity.reason_penalty'],
       ['Bonus:', 'activity.reason_bonus'],
+      // Surprise inspections (#981): the pass bonus.
+      ['Inspection passed:', 'activity.reason_inspection_passed'],
     ];
     for (const [prefix, key] of prefixMap) {
       if (reason.startsWith(prefix)) {
@@ -370,6 +414,42 @@ class TaskMatePanel extends HTMLElement {
     const streakMatch = reason.match(/^Streak milestone bonus \((\d+) day streak!\)$/);
     if (streakMatch) {
       return this._t('activity.reason_streak_milestone', { days: streakMatch[1] });
+    }
+    // Streak freeze tokens (#925). Zero-point rows: the reason is the news.
+    const freezeUsed = reason.match(/^Streak freeze used \((\d{4}-\d{2}-\d{2})\)$/);
+    if (freezeUsed) {
+      return this._t('activity.reason_streak_freeze_used', { date: freezeUsed[1] });
+    }
+    const freezeEarned = reason.match(/^Streak freeze earned \((\d+) day streak!\)$/);
+    if (freezeEarned) {
+      return this._t('activity.reason_streak_freeze_earned', { days: freezeEarned[1] });
+    }
+    const freezeAdjusted = reason.match(/^Streak freezes adjusted \(([+-]\d+)\)$/);
+    if (freezeAdjusted) {
+      return this._t('activity.reason_streak_freeze_adjusted', { delta: freezeAdjusted[1] });
+    }
+    if (reason === 'Streak freeze reversed') {
+      return this._t('activity.reason_streak_freeze_reversed');
+    }
+    // Wishlist (#932). Pledges carry who and how much, so they need a match
+    // rather than a prefix.
+    const wishPrefixes = [
+      ['Wish savings taken back:', 'activity.reason_wish_taken_back'],
+      ['Wish savings:', 'activity.reason_wish_savings'],
+      ['Wish refund (declined):', 'activity.reason_wish_refund_declined'],
+      ['Wish refund (removed):', 'activity.reason_wish_refund_removed'],
+      ['Wish redeemed:', 'activity.reason_wish_redeemed'],
+    ];
+    for (const [prefix, key] of wishPrefixes) {
+      if (reason.startsWith(prefix)) return this._t(key, { name: reason.slice(prefix.length).trim() });
+    }
+    const pledgeAdded = reason.match(/^Wish pledge from (.+) \(\+(\d+)\): (.*)$/);
+    if (pledgeAdded) {
+      return this._t('activity.reason_wish_pledge', { who: pledgeAdded[1], points: pledgeAdded[2], name: pledgeAdded[3] });
+    }
+    const pledgeGone = reason.match(/^Wish pledge (removed|voided) \((.+), (\d+)\): (.*)$/);
+    if (pledgeGone) {
+      return this._t(`activity.reason_wish_pledge_${pledgeGone[1]}`, { who: pledgeGone[2], points: pledgeGone[3], name: pledgeGone[4] });
     }
     return reason;
   }
@@ -405,6 +485,7 @@ class TaskMatePanel extends HTMLElement {
     }
     this._loading = false;
     this._render();
+    this._wizardMaybeAutoOpen();
   }
 
   async _callWS(payload) {
@@ -412,7 +493,7 @@ class TaskMatePanel extends HTMLElement {
       const res = await this._hass.callWS(payload);
       return { ok: true, res };
     } catch (err) {
-      return { ok: false, err: (err && err.message) || String(err) };
+      return { ok: false, err: (err && err.message) || String(err), code: err && err.code };
     }
   }
 
@@ -467,8 +548,42 @@ class TaskMatePanel extends HTMLElement {
       return;
     }
     const t = e.target.closest("[data-act]");
-    if (!t) return;
+    // The "New" menu closes on any click outside its toggle; a menu item's
+    // own action still runs below.
+    let closedNewMenu = false;
+    if (this._newMenuOpen && !(t && t.dataset.act === "new-menu")) { this._newMenuOpen = false; closedNewMenu = true; }
+    // Picking a command-search result closes the search, then runs the
+    // result's ordinary action.
+    if (this._palette && t && t.closest(".tm-pal-item")) this._palette = null;
+    if (!t) { if (closedNewMenu) this._render(); return; }
     const act = t.dataset.act;
+    // Setup wizard (#980) actions all start "wz-".
+    if (act.startsWith("wz-")) { this._wizardAct(t, e); return; }
+
+    if (act === "new-menu")      { this._newMenuOpen = !this._newMenuOpen; this._render(); return; }
+    if (act === "palette-open")  { this._openPalette(); return; }
+    if (act === "palette-scrim") { if (e.target === t) this._closePalette(); return; }
+    if (act === "scope") {
+      this._scope = t.dataset.child || "";
+      if (this._scope) localStorage.setItem("taskmate-scope", this._scope);
+      else localStorage.removeItem("taskmate-scope");
+      this._render();
+      return;
+    }
+    if (act === "nav-group") {
+      const key = t.dataset.grp;
+      if (this._navClosed.has(key)) this._navClosed.delete(key); else this._navClosed.add(key);
+      localStorage.setItem("taskmate-nav-closed", JSON.stringify([...this._navClosed]));
+      this._render();
+      return;
+    }
+    if (act === "nav-rail") {
+      this._navRail = !this._navRail;
+      localStorage.setItem("taskmate-nav-rail", String(this._navRail));
+      this._render();
+      return;
+    }
+    if (act === "board-view") { this._boardView = t.dataset.view === "week" ? "week" : "today"; this._render(); return; }
 
     if (act === "tab")          {
       this._activeTab = t.dataset.tab; this._filter = ""; this._mobileNavOpen = false; this._render();
@@ -574,6 +689,8 @@ class TaskMatePanel extends HTMLElement {
     if (act === "toggle-depends")    { this._toggleArrayField("depends_on", t.dataset.id); return; }
     if (act === "toggle-calendar")   { this._toggleArrayField("publish_calendar_entities", t.dataset.id); return; }
     if (act === "toggle-weather-condition") { this._toggleArrayField("weather_block_conditions", t.dataset.id); return; }
+    if (act === "toggle-tag")        { this._toggleArrayField("tag_ids", t.dataset.id); return; }
+    if (act === "add-tag")           { this._addTypedTag(); return; }
     if (act === "insights-view") {
       this._insightView = t.dataset.id;
       this._render();
@@ -597,6 +714,12 @@ class TaskMatePanel extends HTMLElement {
       this._frictionDays = Number(t.dataset.id);
       this._friction = null;
       this._loadFriction(this._frictionDays);
+      return;
+    }
+    if (act === "quality-window") {
+      this._qualityDays = Number(t.dataset.id);
+      this._quality = null;
+      this._loadQuality(this._qualityDays);
       return;
     }
     if (act === "insights-window") {
@@ -637,6 +760,34 @@ class TaskMatePanel extends HTMLElement {
     if (act === "delete-challenge") { this._confirmDelete("challenge", t.dataset.id); return; }
     if (act === "save-challenge")   { this._doSaveChallenge(); return; }
     if (act === "toggle-challenge-assigned") { this._toggleArrayField("assigned_to", t.dataset.id); return; }
+
+    // Bounty board (#931)
+    if (act === "bounty-subtab")    { this._bountySubTab = t.dataset.id; this._render(); return; }
+    if (act === "add-bounty")       { this._openBountyDialog(null); return; }
+    if (act === "edit-bounty")      { this._openBountyDialog(t.dataset.id); return; }
+    if (act === "delete-bounty")    { this._doRemoveBounty(t.dataset.id); return; }
+    if (act === "release-bounty")   { this._doReleaseBounty(t.dataset.id); return; }
+    if (act === "save-bounty")      { this._doSaveBounty(); return; }
+    if (act === "bounty-points")    { this._bountyDialogSet("points", Number(t.dataset.id)); return; }
+    if (act === "bounty-icon")      { this._bountyDialogSet("icon", t.dataset.id); return; }
+    if (act === "bounty-exp")       { this._bountyDialogSet("exp_mode", t.dataset.id); return; }
+    if (act === "bounty-el-all")    { this._bountyDialogSet("eligible_child_ids", []); return; }
+    if (act === "toggle-bounty-el") { this._syncIconPickers(); this._toggleArrayField("eligible_child_ids", t.dataset.id); return; }
+
+    // Chore auctions (#982)
+    if (act === "auction-subtab")     { this._auctionSubTab = t.dataset.id; this._render(); return; }
+    if (act === "add-auction")        { this._openAuctionDialog(); return; }
+    if (act === "auction-chore-next") { this._openAuctionDialog({ choreId: t.dataset.id }); return; }
+    if (act === "auction-reopen")     { this._openAuctionDialog({ fromId: t.dataset.id }); return; }
+    if (act === "auction-close-now")  { this._doCloseAuction(t.dataset.id); return; }
+    if (act === "auction-cancel")     { this._doCancelAuction(t.dataset.id); return; }
+    if (act === "auction-delete")     { this._doDeleteAuction(t.dataset.id); return; }
+    if (act === "auction-occ")        { this._auctionDialogSet("occurrence", t.dataset.id); return; }
+    if (act === "auction-max-step")   { this._auctionDialogSet("max_step", Number(t.dataset.id)); return; }
+    if (act === "auction-max-set")    { this._auctionDialogSet("max_points", Number(t.dataset.id)); return; }
+    if (act === "auction-close-at")   { this._auctionDialogSet("close_mode", t.dataset.id); return; }
+    if (act === "toggle-auction-el")  { this._toggleArrayField("eligible_child_ids", t.dataset.id); return; }
+    if (act === "save-auction")       { this._doSaveAuction(); return; }
 
     // Avatar unlockables
     if (act === "manage-avatars")     { this._openAvatarCatalogDialog(); return; }
@@ -725,6 +876,11 @@ class TaskMatePanel extends HTMLElement {
     if (act === "notif-toggle-day")       { this._notifToggleDay(t.dataset.customId, Number(t.dataset.day), t.checked); return; }
     if (act === "notif-toggle-recipient") { this._notifToggleRecipient(t.dataset.customId, t.dataset.recipientId); return; }
 
+    // Recaps (#929)
+    if (act === "recap-tog")     { this._recapToggle(t.dataset.who, t.dataset.freq); return; }
+    if (act === "recap-mode")    { this._recapSetMode(t.dataset.who, t.dataset.mode); return; }
+    if (act === "recap-preview") { this._doRecapPreview(); return; }
+
     // Settings
     if (act === "save-settings") { this._doSaveSettings(); return; }
     if (act === "config-export") { this._doExportConfig(); return; }
@@ -773,11 +929,48 @@ class TaskMatePanel extends HTMLElement {
     }
 
     // Activity / approvals
+    // Wishlists (#932)
+    if (act === "wish-filter")       { this._wishChild = t.dataset.id || ""; this._render(); return; }
+    if (act === "wish-approve")      { this._doApproveWish(t.dataset.id); return; }
+    if (act === "wish-decline")      { this._openDialog({ kind: "wish-decline", data: { wish_id: t.dataset.id, reason: "" } }); return; }
+    if (act === "save-wish-decline") { this._doDeclineWish(); return; }
+    if (act === "wish-pledge")       { this._openWishPledge(t.dataset.id); return; }
+    if (act === "wish-pledge-who")   { if (this._dialog) { this._dialog.data.name = t.dataset.name || ""; this._render(); } return; }
+    if (act === "wish-pledge-amt")   { if (this._dialog) { this._dialog.data.points = Number(t.dataset.points) || 0; this._render(); } return; }
+    if (act === "save-wish-pledge")  { this._doPledgeWish(); return; }
+    if (act === "wish-unpledge")     { this._doWishService("remove_wish_pledge", { wish_id: t.dataset.id, pledge_id: t.dataset.pledge }, "panel.wish_toast_pledge_removed", "panel.wish_confirm_unpledge"); return; }
+    if (act === "wish-fulfil")       { this._doApprove("reward", t.dataset.id); return; }
+    if (act === "wish-delete")       { this._doWishService("remove_wish", { wish_id: t.dataset.id }, "panel.wish_toast_removed", "panel.wish_confirm_delete"); return; }
+
     if (act === "approve-all-chores") { this._doApproveAll(); return; }
     if (act === "approve-chore")  { this._doApprove("chore", t.dataset.id); return; }
-    if (act === "reject-chore")   { this._doReject("chore", t.dataset.id); return; }
+    if (act === "rate-chore") {
+      // Quality rating (#927): pick a star, tap it again to clear. Approve
+      // then pays the chosen rating; no pick pays 100%.
+      const ratings = this._ratings || (this._ratings = {});
+      const n = Number(t.dataset.rating);
+      if (ratings[t.dataset.id] === n) delete ratings[t.dataset.id];
+      else ratings[t.dataset.id] = n;
+      this._render();
+      return;
+    }
+    // Surprise inspections (#981): flag / pass / fail / cancel + their dialogs.
+    if (act && act.startsWith("insp-") && this._onInspectionAction(act, t)) return;
+    // Reject asks why first (#976); an empty reason is a plain reject.
+    if (act === "reject-chore")   { this._openRejectDialog("chore", t.dataset.id); return; }
     if (act === "approve-reward") { this._doApprove("reward", t.dataset.id); return; }
-    if (act === "reject-reward")  { this._doReject("reward", t.dataset.id); return; }
+    if (act === "reject-reward")  { this._openRejectDialog("reward", t.dataset.id); return; }
+    if (act === "reject-chip" && this._dialog?.kind === "reject") {
+      const d = this._dialog.data;
+      d.reason = d.reason === t.dataset.reason ? "" : t.dataset.reason;
+      this._render();
+      return;
+    }
+    if (act === "save-reject" && this._dialog?.kind === "reject") {
+      const d = this._dialog.data;
+      this._doReject(d.kind, d.id, d.reason);
+      return;
+    }
 
     // Filter clear
     if (act === "clear-filter") { this._filter = ""; this._render(); return; }
@@ -799,6 +992,13 @@ class TaskMatePanel extends HTMLElement {
   _onInput(e) {
     const t = e.target;
     if (!t.dataset) return;
+    if (t.dataset.wzIn) { this._wizardInput(t); return; }
+    if (t.dataset.palette === "q" && this._palette) {
+      this._palette.q = t.value || "";
+      this._palette.hi = 0;
+      this._paintPaletteList();
+      return;
+    }
     if (t.classList?.contains("tm-ep-input")) {
       this._openEntityDropdown(t);
       return;
@@ -811,6 +1011,11 @@ class TaskMatePanel extends HTMLElement {
       // Restore focus to the filter input
       const f = this.querySelector("[data-filter='true']");
       if (f) { f.focus(); f.setSelectionRange(this._filter.length, this._filter.length); }
+      return;
+    }
+    // Wishlist approval target (#932): keep what was typed across re-renders.
+    if (t.dataset.wishTarget) {
+      (this._wishTargets || (this._wishTargets = {}))[t.dataset.wishTarget] = t.value;
       return;
     }
     // Inline rename input
@@ -890,6 +1095,12 @@ class TaskMatePanel extends HTMLElement {
       } else {
         this._dialog.data[field] = value;
       }
+      // Inspection pass (#997): relabel the button as the bonus is typed,
+      // without a re-render that would steal the input's focus.
+      if (this._dialog.kind === "insp-pass" && field === "bonus") {
+        const btn = this.querySelector('[data-act="insp-pass-save"]');
+        if (btn) btn.textContent = this._inspPassLabel(value);
+      }
       return;
     }
   }
@@ -907,6 +1118,15 @@ class TaskMatePanel extends HTMLElement {
       const file = t.files && t.files[0];
       t.value = "";  // allow re-selecting the same file later
       if (file) this._doImportConfig(file);
+      return;
+    }
+    if (t.dataset.local === "auction-reveal") {
+      this._auctionReveal = t.checked;
+      this._render();
+      return;
+    }
+    if (t.dataset.role === "auction-chore") {
+      this._auctionPickChore(t.value);
       return;
     }
     if (t.dataset.local === "show-ids") {
@@ -975,6 +1195,10 @@ class TaskMatePanel extends HTMLElement {
       this._notifSetEscalation(t.dataset.escField, t.value);
       return;
     }
+    if (t.dataset.act === "notif-set-presence-arrival") {
+      this._notifSetPresenceArrival(t.value);
+      return;
+    }
     if (t.dataset.act === "notif-update-custom") {
       this._notifUpdateCustomField(t.dataset.customId, t.dataset.field, t.value);
       return;
@@ -1024,17 +1248,31 @@ class TaskMatePanel extends HTMLElement {
     if (!this._dialog) return;
     if (!t.dataset || !t.dataset.field) return;
     const v = e.detail && "value" in e.detail ? e.detail.value : t.value;
-    this._dialog.data[t.dataset.field] = v == null ? "" : v;
+    this._setDialogField(t.dataset.field, v == null ? "" : v);
+  }
+
+  // Dialog field write that understands row paths like "catalog[2].icon" (#972).
+  _setDialogField(field, value) {
+    const m = field.match(/^(\w+)\[(\d+)\]\.(\w+)$/);
+    if (!m) { this._dialog.data[field] = value; return; }
+    const row = (this._dialog.data[m[1]] || [])[Number(m[2])];
+    if (row) row[m[3]] = value;
   }
 
   _syncIconPickers() {
     if (!this._dialog) return;
     this.querySelectorAll("ha-icon-picker[data-field]").forEach(el => {
-      if (el.value != null) this._dialog.data[el.dataset.field] = el.value;
+      if (el.value != null) this._setDialogField(el.dataset.field, el.value);
     });
   }
 
   _onKeyDown(e) {
+    // The wizard's tick rows are role="checkbox" divs (#980).
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('[role="checkbox"][data-act^="wz-"]')) {
+      e.preventDefault();
+      e.target.click();
+      return;
+    }
     if (e.key === "Escape") {
       if (this._rowMenuEl) { this._closeRowMenu(); return; }
       if (this._inlineRename) { this._inlineRename = null; this._render(); return; }
@@ -1143,6 +1381,11 @@ class TaskMatePanel extends HTMLElement {
     }[kind];
     const { ok, err } = await this._callWS({ type: wsType, [idField]: id });
     if (!ok) { this._showToast("err", this._t("panel.toast_delete_failed", {error: err})); return; }
+    // Deleted from inside its own editor (#968): the editor has nothing left to edit.
+    if (this._dialog && this._dialog.data && this._dialog.data.id === id) {
+      this._dialog = null;
+      this._dialogInitialHash = null;
+    }
     await this._fetchState();
     this._showToast("ok", this._t("panel.toast_deleted"));
   }
@@ -1180,10 +1423,39 @@ class TaskMatePanel extends HTMLElement {
   async _doApprove(kind, id) {
     const wsType = kind === "chore" ? "taskmate/approve_chore" : "taskmate/approve_reward";
     const idField = kind === "chore" ? "completion_id" : "claim_id";
-    const { ok, err } = await this._callWS({ type: wsType, [idField]: id });
+    const msg = { type: wsType, [idField]: id };
+    const rating = kind === "chore" && this._ratingOn() ? (this._ratings || {})[id] : 0;
+    if (rating) msg.rating = rating;
+    const { ok, err } = await this._callWS(msg);
     if (!ok) { this._showToast("err", this._t("panel.toast_approve_failed", {error: err})); return; }
+    if (this._ratings) delete this._ratings[id];
     await this._fetchState();
     this._showToast("ok", this._t("panel.toast_approved"));
+  }
+
+  // Quality rating (#927) — on only when the setting is.
+  _ratingOn() {
+    const v = this._state?.settings?.quality_rating_enabled;
+    return v === true || v === "true";
+  }
+
+  // Three-star picker for one pending completion. Each star's tooltip says
+  // what it pays, so the multiplier is visible where the choice is made.
+  _ratingPicker(completionId) {
+    const s = this._state?.settings || {};
+    const defaults = { 1: 0.75, 2: 1.0, 3: 1.25 };
+    const sel = (this._ratings || {})[completionId] || 0;
+    return `
+      <div class="tm-stars" role="group" aria-label="${this._esc(this._t("panel.rating_label"))}">
+        ${[1, 2, 3].map(n => {
+          const mult = Number(s["quality_rating_multiplier_" + n] ?? defaults[n]);
+          const percent = Math.round((Number.isFinite(mult) ? mult : defaults[n]) * 100);
+          const label = this._t("panel.rating_star_title", { count: n, percent });
+          return `<button type="button" class="tm-star ${n <= sel ? "tm-star-on" : ""}" data-act="rate-chore"
+                    data-id="${this._esc(completionId)}" data-rating="${n}" aria-pressed="${n === sel}"
+                    title="${this._esc(label)}" aria-label="${this._esc(label)}">${n <= sel ? "★" : "☆"}</button>`;
+        }).join("")}
+      </div>`;
   }
 
   async _doApproveAll() {
@@ -1216,13 +1488,457 @@ class TaskMatePanel extends HTMLElement {
     this._showToast("ok", this._t("panel.activity_approve_all_done", { count: pending.length }));
   }
 
-  async _doReject(kind, id) {
+  // Reject reasons (#976): name the item, offer quick-pick chips + free text.
+  _openRejectDialog(kind, id) {
+    const { choreById, rewardById } = this._activityMaps();
+    let name;
+    if (kind === "chore") {
+      const c = (this._state.pending_completions || []).find(x => x.id === id);
+      const chore = c && choreById[c.chore_id];
+      const bounty = c && c.bounty_id && (this._state.bounties || []).find(b => b.id === c.bounty_id);
+      name = (chore && chore.name) || (bounty && bounty.title) || this._t("panel.activity_deleted_chore");
+    } else {
+      const c = (this._state.pending_reward_claims || []).find(x => x.id === id);
+      const reward = c && rewardById[c.reward_id];
+      name = (reward && reward.name) || this._t("panel.activity_deleted_reward");
+    }
+    this._openDialog({ kind: "reject", data: { kind, id, name, reason: "" } });
+  }
+
+  _renderRejectDialog() {
+    const d = this._dialog.data;
+    const chips = ["reject.chip_not_finished", "reject.chip_redo", "reject.chip_not_today"].map(k => this._t(k));
+    const body = `
+      <div class="tm-field">
+        <span class="tm-field-label">${this._t("reject.reason_label")}</span>
+        <div class="tm-chip-row" style="margin-bottom:8px">
+          ${chips.map(c => `<button type="button" class="tm-chip-btn ${d.reason === c ? "tm-chip-on" : ""}" aria-pressed="${d.reason === c}"
+            data-act="reject-chip" data-reason="${this._esc(c)}">${this._esc(c)}</button>`).join("")}
+        </div>
+        <input class="tm-input" type="text" data-field="reason" maxlength="200"
+          value="${this._esc(d.reason || "")}" placeholder="${this._esc(this._t("reject.reason_placeholder"))}">
+        <span class="tm-field-hint">${this._esc(this._t("reject.reason_hint"))}</span>
+      </div>`;
+    return this._dialogShell(
+      this._t("reject.title", { name: d.name }),
+      body,
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-danger" data-act="save-reject">${this._t("reject.confirm")}</button>`
+    );
+  }
+
+  async _doReject(kind, id, reasonText = "") {
     const wsType = kind === "chore" ? "taskmate/reject_chore" : "taskmate/reject_reward";
     const idField = kind === "chore" ? "completion_id" : "claim_id";
-    const { ok, err } = await this._callWS({ type: wsType, [idField]: id });
+    const reason = String(reasonText || "").trim().slice(0, 200);
+    const { ok, err } = await this._callWS({ type: wsType, [idField]: id, ...(reason ? { reason } : {}) });
     if (!ok) { this._showToast("err", this._t("panel.toast_reject_failed", {error: err})); return; }
+    if (this._dialog?.kind === "reject") this._closeDialog(true);
     await this._fetchState();
     this._showToast("ok", this._t("panel.toast_rejected"));
+  }
+
+  // ---- Surprise inspections (#981) --------------------------------------
+  // get_state carries the kept inspection log and which approved completions
+  // can still be flagged. Open ones sit in "Needs you"; the magnifier on an
+  // approved row in Recent activity starts one.
+
+  _inspections() {
+    return (this._state && this._state.inspections) || [];
+  }
+
+  _openInspections() {
+    return this._inspections().filter(i => i.status === "open" && this._childInScope(i.child_id));
+  }
+
+  _inspectionForCompletion(completionId) {
+    return this._inspections().find(i => i.completion_id === completionId) || null;
+  }
+
+  // "1h 58m" / "12m" until an ISO time (never negative).
+  _inspLeft(iso) {
+    const ms = new Date(iso).getTime() - Date.now();
+    if (!Number.isFinite(ms)) return "—";
+    const mins = Math.max(0, Math.round(ms / 60000));
+    const h = Math.floor(mins / 60);
+    return h ? `${h}h ${String(mins % 60).padStart(2, "0")}m` : `${mins}m`;
+  }
+
+  _inspClock(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  _inspBedtime() {
+    return (this._state && this._state.settings && this._state.settings.inspection_bedtime) || "20:00";
+  }
+
+  _inspWindowLabel(w, bed = null) {
+    if (w === "bed") return this._t("panel.insp_window_bed", { time: bed ? bed.time : this._inspBedtime() });
+    return this._t(`panel.insp_window_${w}`);
+  }
+
+  // When "Until bedtime" started at `now` really closes (#997). Mirrors the
+  // server's inspection_until: bedtime today in HA's time zone, or the
+  // fallback when that's under min_minutes away. Both numbers come from the
+  // server (inspection_bed_rule) so the two can't drift.
+  _inspBedUntil(now = Date.now()) {
+    const rule = (this._state && this._state.inspection_bed_rule) || {};
+    const minMinutes = Number.isFinite(rule.min_minutes) ? rule.min_minutes : 30;
+    const fallbackHours = Number.isFinite(rule.fallback_hours) ? rule.fallback_hours : 1;
+    const tz = (this._hass && this._hass.config && this._hass.config.time_zone) || undefined;
+    let fmt;
+    try {
+      fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit",
+        day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    } catch (_e) {
+      fmt = new Intl.DateTimeFormat("en-US", { hourCycle: "h23", year: "numeric", month: "2-digit",
+        day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+    const wall = (ms) => {
+      const p = {};
+      for (const { type, value } of fmt.formatToParts(new Date(ms))) p[type] = Number(value);
+      return p;
+    };
+    const p = wall(now);
+    const nowSec = Math.floor(now / 1000) * 1000;
+    // The zone's offset right now, as wall-clock minus UTC.
+    const offset = Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second) - nowSec;
+    const [bh, bm] = this._inspBedtime().split(":").map(Number);
+    const bedtime = Date.UTC(p.year, p.month - 1, p.day, bh || 0, bm || 0) - offset;
+    const fallback = bedtime - now < minMinutes * 60000;
+    const at = fallback ? now + fallbackHours * 3600000 : bedtime;
+    const w = wall(at);
+    const time = `${String(w.hour % 24).padStart(2, "0")}:${String(w.minute).padStart(2, "0")}`;
+    return { at, time, fallback, minutes: minMinutes };
+  }
+
+  // The tag / magnifier shown beside an approved completion.
+  _inspSlot(completionId) {
+    const insp = this._inspectionForCompletion(completionId);
+    if (insp) {
+      const tags = {
+        open: ["tm-pill-warn", "panel.insp_tag_open", { time: this._inspLeft(insp.until) }],
+        passed: ["tm-pill-success", "panel.insp_tag_passed", { bonus: this._num(insp.bonus) }],
+        redo: ["tm-pill-warn", "panel.insp_tag_redo", {}],
+        failed: ["", "panel.insp_tag_failed", {}],
+        expired: ["", "panel.insp_tag_expired", {}],
+      };
+      const [cls, key, params] = tags[insp.status] || tags.expired;
+      return `<span class="tm-pill tm-insp-tag ${cls}"><ha-icon icon="mdi:magnify-scan"></ha-icon>${this._esc(this._t(key, params))}</span>`;
+    }
+    if ((this._state.inspectable_completions || []).includes(completionId)) {
+      return `<button type="button" class="tm-icon-btn tm-insp-flag" data-act="insp-flag" data-id="${this._esc(completionId)}"
+        title="${this._esc(this._t("panel.insp_flag_tooltip"))}" aria-label="${this._esc(this._t("panel.insp_flag_tooltip"))}"><ha-icon icon="mdi:magnify-scan"></ha-icon></button>`;
+    }
+    return "";
+  }
+
+  // Open inspections as "Needs you" rows (#981), next to approvals.
+  _inspectionQueueHtml() {
+    const { childById } = this._activityMaps();
+    return this._openInspections().map(i => {
+      const child = childById[i.child_id];
+      const name = (child && child.name) || "?";
+      const meta = [
+        this._t("panel.insp_needs_meta", { bonus: this._num(i.bonus), time: this._inspLeft(i.until) }),
+        i.tell_child ? this._t("panel.insp_told", { name }) : this._t("panel.insp_secret"),
+      ].join(" · ");
+      return `
+        <div class="tm-approval-item tm-insp-item">
+          <div class="tm-approval-icon tm-insp-icon"><ha-icon icon="mdi:magnify-scan"></ha-icon></div>
+          <div class="tm-approval-body">
+            <div class="tm-approval-line">${this._t("panel.insp_needs_line", { child: this._esc(name), chore: this._esc(i.chore_name || this._t("panel.activity_deleted_chore")) })}</div>
+            <div class="tm-meta">${this._esc(meta)}</div>
+          </div>
+          <div class="tm-approval-actions">
+            <button type="button" class="tm-btn tm-btn-sm" data-act="insp-fail" data-id="${this._esc(i.id)}">${this._t("panel.insp_fail")}</button>
+            <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="insp-pass" data-id="${this._esc(i.id)}">${this._t("panel.insp_pass")}</button>
+            <button type="button" class="tm-icon-btn" data-act="insp-cancel" data-id="${this._esc(i.id)}"
+              title="${this._esc(this._t("panel.insp_cancel"))}" aria-label="${this._esc(this._t("panel.insp_cancel"))}"><ha-icon icon="mdi:close"></ha-icon></button>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  // Inspection entries for the Recent activity timeline.
+  _inspectionEvents() {
+    const { childById } = this._activityMaps();
+    const out = [];
+    for (const i of this._inspections()) {
+      if (!this._childInScope(i.child_id)) continue;
+      const child = (childById[i.child_id] || {}).name || "?";
+      const chore = i.chore_name || this._t("panel.activity_deleted_chore");
+      const push = (ts, key, points = null, note = "") => out.push({
+        ts, kind: "inspection", child_id: i.child_id, child,
+        label: this._t(key, { chore }), points, note,
+      });
+      if (i.tell_child || i.status !== "open") push(i.started_at, "panel.insp_event_started");
+      // A pass with a bonus is its points transaction ("Inspection passed: …").
+      if (i.status === "passed" && !i.bonus_txn_id) push(i.decided_at, "panel.insp_event_passed", 0, i.note);
+      if (i.status === "failed") push(i.decided_at, "panel.insp_event_failed", null, i.note);
+      if (i.status === "redo") push(i.decided_at, "panel.insp_event_redo", null, i.note);
+      if (i.status === "expired") push(i.decided_at, "panel.insp_event_expired");
+    }
+    return out;
+  }
+
+  _inspDialogCtx(d) {
+    const pointsName = (this._state.settings && this._state.settings.points_name) || this._t("common.points");
+    const child = (this._state.children || []).find(c => c.id === d.child_id);
+    const when = d.approved_at ? this._inspClock(d.approved_at) : "";
+    return `
+      <div class="tm-insp-ctx">
+        <span class="tm-insp-ctx-ic"><ha-icon icon="mdi:magnify-scan"></ha-icon></span>
+        <div>
+          <div><strong>${this._esc(d.chore_name)}</strong> · <span style="color:${child ? this._childColor(child.id) : "inherit"};font-weight:600">${this._esc(d.child_name)}</span></div>
+          <div class="tm-meta">${this._esc(this._t("panel.insp_ctx", { time: when, points: this._num(d.points), points_name: pointsName }))}</div>
+        </div>
+      </div>`;
+  }
+
+  _inspStepper(value) {
+    return `
+      <div class="tm-insp-stepper">
+        <button type="button" class="tm-btn tm-btn-sm" data-act="insp-bonus" data-d="-5" aria-label="−5">−</button>
+        <input type="number" class="tm-input" min="0" max="10000" step="1" data-field="bonus" value="${this._esc(value)}" aria-label="${this._esc(this._t("panel.insp_bonus"))}">
+        <button type="button" class="tm-btn tm-btn-sm" data-act="insp-bonus" data-d="5" aria-label="+5">+</button>
+      </div>`;
+  }
+
+  _openInspectionStart(completionId) {
+    const c = (this._state.completions || []).find(x => x.id === completionId);
+    if (!c) return;
+    const { childById, choreById } = this._activityMaps();
+    const s = this._state.settings || {};
+    this._openDialog({ kind: "insp-start", data: {
+      completion_id: c.id, child_id: c.child_id,
+      child_name: (childById[c.child_id] || {}).name || "?",
+      chore_name: (choreById[c.chore_id] || {}).name || this._t("panel.activity_deleted_chore"),
+      approved_at: c.approved_at || c.completed_at, points: c.points_awarded || 0,
+      window: ["1h", "2h", "4h", "bed"].includes(s.inspection_window) ? s.inspection_window : "2h",
+      bonus: Number.isFinite(Number(s.inspection_bonus)) && s.inspection_bonus !== undefined ? Number(s.inspection_bonus) : 10,
+      tell: s.inspection_tell_child !== false,
+    } });
+  }
+
+  _openInspectionDecision(kind, inspectionId) {
+    const i = this._inspections().find(x => x.id === inspectionId);
+    if (!i) return;
+    const c = (this._state.completions || []).find(x => x.id === i.completion_id);
+    const child = (this._state.children || []).find(x => x.id === i.child_id);
+    const failMode = (this._state.settings || {}).inspection_fail_mode;
+    this._openDialog({ kind, data: {
+      inspection_id: i.id, child_id: i.child_id, child_name: (child && child.name) || "?",
+      chore_name: i.chore_name || this._t("panel.activity_deleted_chore"),
+      approved_at: c ? (c.approved_at || c.completed_at) : "", points: i.points || 0,
+      bonus: i.bonus, note: "", can_redo: !!i.can_redo,
+      mode: failMode === "redo" && i.can_redo ? "redo" : "note",
+    } });
+  }
+
+  _renderInspectionStartDialog() {
+    const d = this._dialog.data;
+    const bed = this._inspBedUntil();
+    const bedSoon = d.window === "bed" && bed.fallback
+      ? `<p class="tm-field-hint tm-insp-hint"><ha-icon icon="mdi:information-outline"></ha-icon>${this._esc(this._t("panel.insp_window_bed_soon", { bedtime: this._inspBedtime(), minutes: bed.minutes, time: bed.time }))}</p>`
+      : "";
+    const body = `
+      ${this._inspDialogCtx(d)}
+      <div class="tm-field">
+        <span class="tm-field-label">${this._t("panel.insp_window_label")}</span>
+        <div class="tm-chip-row">
+          ${["1h", "2h", "4h", "bed"].map(w => `<button type="button" class="tm-chip-btn ${d.window === w ? "tm-chip-on" : ""}" aria-pressed="${d.window === w}"
+            data-act="insp-window" data-window="${w}">${this._esc(this._inspWindowLabel(w, bed))}</button>`).join("")}
+        </div>
+        ${bedSoon}
+      </div>
+      <div class="tm-field">
+        <span class="tm-field-label">${this._t("panel.insp_bonus_label")}</span>
+        ${this._inspStepper(d.bonus)}
+      </div>
+      ${this._switch(this._t("panel.insp_tell_label", { name: d.child_name }), "tell", d.tell, this._esc(this._t("panel.insp_tell_hint", { name: d.child_name })))}`;
+    return this._dialogShell(
+      this._t("panel.insp_start_title"),
+      body,
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised tm-insp-go" data-act="insp-start-save"><ha-icon icon="mdi:magnify-scan"></ha-icon>${this._t("panel.insp_start_btn")}</button>`
+    );
+  }
+
+  _renderInspectionPassDialog() {
+    const d = this._dialog.data;
+    const body = `
+      ${this._inspDialogCtx(d)}
+      <div class="tm-field">
+        <span class="tm-field-label">${this._t("panel.insp_bonus")}</span>
+        ${this._inspStepper(d.bonus)}
+      </div>
+      <div class="tm-field">
+        <span class="tm-field-label">${this._esc(this._t("panel.insp_note_pass_label", { name: d.child_name }))}</span>
+        <textarea class="tm-input" data-field="note" maxlength="200" rows="2"
+          placeholder="${this._esc(this._t("panel.insp_note_pass_placeholder"))}">${this._esc(d.note || "")}</textarea>
+      </div>`;
+    return this._dialogShell(
+      this._t("panel.insp_pass_title"),
+      body,
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="insp-pass-save">${this._inspPassLabel(d.bonus)}</button>`
+    );
+  }
+
+  // The pass button names the bonus that will be paid — the same rounding
+  // and clamp insp-pass-save sends, so it can't show a stale amount (#997).
+  _inspPassLabel(bonus) {
+    return this._t("panel.insp_pass_btn", { bonus: this._num(Math.max(0, Math.min(10000, Math.round(Number(bonus) || 0)))) });
+  }
+
+  _renderInspectionFailDialog() {
+    const d = this._dialog.data;
+    const pointsName = (this._state.settings && this._state.settings.points_name) || this._t("common.points");
+    const opt = (mode, titleKey, hintKey, disabled = false) => `
+      <button type="button" class="tm-insp-opt ${d.mode === mode ? "tm-insp-opt-on" : ""}" role="radio" aria-checked="${d.mode === mode}"
+        data-act="insp-fail-mode" data-mode="${mode}" ${disabled ? "disabled" : ""}>
+        <span class="tm-insp-radio"></span>
+        <span><strong>${this._t(titleKey)}</strong>
+          <small>${this._esc(disabled ? this._t("panel.insp_fail_redo_unavailable") : this._t(hintKey, { name: d.child_name, points: this._num(d.points), points_name: pointsName }))}</small></span>
+      </button>`;
+    const body = `
+      ${this._inspDialogCtx(d)}
+      <div class="tm-insp-opts" role="radiogroup">
+        ${opt("note", "panel.insp_fail_note_label", "panel.insp_fail_note_hint")}
+        ${opt("redo", "panel.insp_fail_redo_label", "panel.insp_fail_redo_hint", !d.can_redo)}
+      </div>
+      <div class="tm-field">
+        <span class="tm-field-label">${this._esc(this._t("panel.insp_fail_fix_label", { name: d.child_name }))}</span>
+        <textarea class="tm-input" data-field="note" maxlength="200" rows="2">${this._esc(d.note || "")}</textarea>
+      </div>
+      <p class="tm-field-hint tm-insp-hint"><ha-icon icon="mdi:information-outline"></ha-icon>${this._t("panel.insp_fail_no_penalty")}</p>`;
+    return this._dialogShell(
+      this._t("panel.insp_fail_title"),
+      body,
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="insp-fail-save">${this._t(d.mode === "redo" ? "panel.insp_fail_send_back" : "panel.insp_fail_save")}</button>`
+    );
+  }
+
+  async _inspectionCall(payload, toastKey, params = {}) {
+    const { ok, err } = await this._callWS(payload);
+    if (!ok) { this._showToast("err", this._t("panel.insp_toast_failed", { error: err })); return false; }
+    if (this._dialog && String(this._dialog.kind).startsWith("insp-")) this._closeDialog(true);
+    await this._fetchState();
+    this._showToast("ok", this._t(toastKey, params));
+    return true;
+  }
+
+  _onInspectionAction(act, t) {
+    const d = this._dialog && this._dialog.data;
+    if (act === "insp-flag") { this._openInspectionStart(t.dataset.id); return true; }
+    if (act === "insp-pass") { this._openInspectionDecision("insp-pass", t.dataset.id); return true; }
+    if (act === "insp-fail") { this._openInspectionDecision("insp-fail", t.dataset.id); return true; }
+    if (act === "insp-kid") {
+      const on = !t.classList.contains("tm-chip-on");
+      t.classList.toggle("tm-chip-on", on);
+      t.setAttribute("aria-pressed", String(on));
+      return true;
+    }
+    if (act === "insp-cancel") {
+      if (!confirm(this._t("panel.insp_cancel_confirm"))) return true;
+      this._inspectionCall({ type: "taskmate/inspection/cancel", inspection_id: t.dataset.id }, "panel.insp_toast_cancelled");
+      return true;
+    }
+    if (!d) return false;
+    if (act === "insp-window") { d.window = t.dataset.window; this._render(); return true; }
+    if (act === "insp-bonus") {
+      d.bonus = Math.max(0, Math.min(10000, (Number(d.bonus) || 0) + Number(t.dataset.d)));
+      this._render();
+      return true;
+    }
+    if (act === "insp-fail-mode") { d.mode = t.dataset.mode === "redo" && d.can_redo ? "redo" : "note"; this._render(); return true; }
+    const bonus = Math.max(0, Math.min(10000, Math.round(Number(d.bonus) || 0)));
+    if (act === "insp-start-save") {
+      this._inspectionCall(
+        { type: "taskmate/inspection/start", completion_id: d.completion_id, bonus, window: d.window, tell_child: !!d.tell },
+        d.tell ? "panel.insp_toast_started_told" : "panel.insp_toast_started", { name: d.child_name });
+      return true;
+    }
+    if (act === "insp-pass-save") {
+      const note = String(d.note || "").trim().slice(0, 200);
+      this._inspectionCall({ type: "taskmate/inspection/pass", inspection_id: d.inspection_id, bonus, note },
+        "panel.insp_toast_passed", { name: d.child_name, bonus: this._num(bonus) });
+      return true;
+    }
+    if (act === "insp-fail-save") {
+      const note = String(d.note || "").trim().slice(0, 200);
+      const redo = d.mode === "redo";
+      this._inspectionCall({ type: "taskmate/inspection/fail", inspection_id: d.inspection_id, redo, note },
+        redo ? "panel.insp_toast_sent_back" : "panel.insp_toast_noted", { name: d.child_name });
+      return true;
+    }
+    return false;
+  }
+
+  _renderInspectionsSection() {
+    const s = (this._state && this._state.settings) || {};
+    const children = (this._state && this._state.children) || [];
+    const picked = Array.isArray(s.inspection_pick_children) ? s.inspection_pick_children : [];
+    const win = ["1h", "2h", "4h", "bed"].includes(s.inspection_window) ? s.inspection_window : "2h";
+    const fail = ["note", "redo", "ask"].includes(s.inspection_fail_mode) ? s.inspection_fail_mode : "note";
+    return `
+        <div class="tm-section tm-insp-settings">
+          <div class="tm-section-head"><div><h3><ha-icon icon="mdi:magnify-scan"></ha-icon> ${this._t("panel.settings_insp_title")}</h3><p class="tm-meta">${this._t("panel.settings_insp_hint")}</p></div></div>
+          <div class="tm-section-body">
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_enabled_label")}<small>${this._t("panel.settings_insp_enabled_hint")}</small></div>
+              <ha-switch data-setting="inspections_enabled" ${s.inspections_enabled !== false ? "checked" : ""}></ha-switch>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_bonus_label")}<small>${this._t("panel.settings_insp_bonus_hint")}</small></div>
+              <input type="number" class="tm-input" min="0" max="10000" step="1" data-setting="inspection_bonus" value="${this._num(s.inspection_bonus, 10)}">
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_window_label")}<small>${this._t("panel.settings_insp_window_hint")}</small></div>
+              <select class="tm-select" data-setting="inspection_window">
+                ${["1h", "2h", "4h", "bed"].map(w => `<option value="${w}" ${w === win ? "selected" : ""}>${this._esc(this._inspWindowLabel(w))}</option>`).join("")}
+              </select>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_bedtime_label")}<small>${this._t("panel.settings_insp_bedtime_hint")}</small></div>
+              <input type="time" class="tm-input" data-setting="inspection_bedtime" value="${this._esc(this._inspBedtime())}" style="max-width:140px">
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_fail_label")}<small>${this._t("panel.settings_insp_fail_hint")}</small></div>
+              <select class="tm-select" data-setting="inspection_fail_mode">
+                ${["note", "redo", "ask"].map(v => `<option value="${v}" ${v === fail ? "selected" : ""}>${this._esc(this._t("panel.settings_insp_fail_" + v))}</option>`).join("")}
+              </select>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_tell_label")}<small>${this._t("panel.settings_insp_tell_hint")}</small></div>
+              <ha-switch data-setting="inspection_tell_child" ${s.inspection_tell_child !== false ? "checked" : ""}></ha-switch>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label"><span><ha-icon icon="mdi:dice-5-outline"></ha-icon> ${this._t("panel.settings_insp_pick_label")}</span><small>${this._t("panel.settings_insp_pick_hint")}</small></div>
+              <ha-switch data-setting="inspection_pick_enabled" ${s.inspection_pick_enabled ? "checked" : ""}></ha-switch>
+            </div>
+            <div class="tm-setting-row tm-insp-sub">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_pick_when_label")}<small>${this._t("panel.settings_insp_pick_when_hint")}</small></div>
+              <div class="tm-difficulty-mults">
+                <label>${this._t("panel.settings_insp_pick_time")}<input type="time" class="tm-input" data-setting="inspection_pick_time" value="${this._esc(s.inspection_pick_time || "17:00")}"></label>
+                <label>${this._t("panel.settings_insp_pick_chance")}<input type="number" class="tm-input" min="0" max="100" step="1" data-setting="inspection_pick_chance" value="${this._num(s.inspection_pick_chance, 30)}"></label>
+              </div>
+            </div>
+            ${children.length ? `
+            <div class="tm-setting-row tm-insp-sub">
+              <div class="tm-setting-label">${this._t("panel.settings_insp_pick_children_label")}<small>${this._t("panel.settings_insp_pick_children_hint")}</small></div>
+              <div class="tm-chip-row">
+                ${children.map(c => {
+                  const on = picked.includes(c.id);
+                  return `<button type="button" class="tm-chip-btn ${on ? "tm-chip-on" : ""}" aria-pressed="${on}" data-act="insp-kid" data-insp-kid="${this._esc(c.id)}">${this._childAvatar(c)} ${this._esc(c.name)}</button>`;
+                }).join("")}
+              </div>
+            </div>` : ""}
+          </div>
+        </div>`;
   }
 
   // ---- Children --------------------------------------------------------
@@ -1239,16 +1955,48 @@ class TaskMatePanel extends HTMLElement {
         pause_streak_when_unavailable: !!c.pause_streak_when_unavailable,
         linked_user_id: c.linked_user_id || "",
         picture_entity: c.picture_entity || "",
+        birthday: c.birthday || "",
+        age_group: c.age_group || "",
+        presence_entity: c.presence_entity || "",
+        // Kiosk PIN (#930): write-only. The panel only knows whether one is set.
+        kiosk_pin: "", kiosk_pin_clear: false,
+        has_kiosk_pin: (this._state.kiosk_pin_children || []).includes(c.id),
       } });
     } else {
       this._openDialog({ kind: "child", mode: "add", data: {
         name: "", avatar: "mdi:account-circle", availability_entity: "",
         availability_inverted: false, unavailability_entity: "",
         pause_streak_when_unavailable: false,
-        linked_user_id: "",
-        picture_entity: "",
+        linked_user_id: "", picture_entity: "", presence_entity: "",
+        birthday: "", age_group: "",
+        kiosk_pin: "", kiosk_pin_clear: false, has_kiosk_pin: false,
       } });
     }
+  }
+
+  /** HA's tag registry for the chore editor's NFC / QR picker (#923). */
+  async _ensureHaTags() {
+    if (this._haTags) return;
+    // tag/list fails when HA's tag integration isn't loaded — the picker then
+    // offers typed ids only.
+    const { ok, res } = await this._callWS({ type: "tag/list" });
+    this._haTags = (ok && Array.isArray(res) ? res : [])
+      .map(tag => ({ id: String(tag.id || tag.tag_id || ""), name: tag.name || "" }))
+      .filter(tag => tag.id);
+  }
+
+  _addTypedTag() {
+    if (!this._dialog || !this._dialog.data) return;
+    const input = this.querySelector("[data-role='tag-input']");
+    const value = input ? input.value.trim() : "";
+    if (!value) return;
+    const tags = this._dialog.data.tag_ids || [];
+    if (tags.includes(value)) { input.value = ""; return; }
+    if (tags.length >= MAX_CHORE_TAGS) {
+      this._showToast("err", this._t("panel.chore_tags_limit", {max: MAX_CHORE_TAGS}));
+      return;
+    }
+    this._toggleArrayField("tag_ids", value);
   }
 
   async _ensureHaUsers() {
@@ -1261,22 +2009,37 @@ class TaskMatePanel extends HTMLElement {
     this._syncIconPickers();
     const d = this._dialog.data;
     if (!d.name || !d.name.trim()) { this._showToast("err", this._t("panel.toast_name_required")); return; }
+    const kioskPin = String(d.kiosk_pin || "").trim();
+    if (kioskPin && !/^[0-9]{4}$/.test(kioskPin)) { this._showToast("err", this._t("panel.toast_kiosk_pin_invalid")); return; }
     const wasAdd = this._dialog.mode === "add";
     const payload = wasAdd
       ? { type: "taskmate/add_child", name: d.name.trim(), avatar: d.avatar || "mdi:account-circle",
           availability_entity: d.availability_entity || "", availability_inverted: !!d.availability_inverted,
           unavailability_entity: d.unavailability_entity || "",
           pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "",
+          birthday: (d.birthday || "").trim(), age_group: d.age_group || "",
+          presence_entity: d.presence_entity || "",
           picture_entity: d.picture_entity || "" }
       : { type: "taskmate/update_child", child_id: d.id, name: d.name.trim(), avatar: d.avatar || "mdi:account-circle",
           availability_entity: d.availability_entity || "", availability_inverted: !!d.availability_inverted,
           unavailability_entity: d.unavailability_entity || "",
           pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "",
+          birthday: (d.birthday || "").trim(), age_group: d.age_group || "",
+          presence_entity: d.presence_entity || "",
           picture_entity: d.picture_entity || "" };
-    const { ok, err } = await this._callWS(payload);
+    const { ok, err, res } = await this._callWS(payload);
     if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", {error: err})); return; }
+    // The PIN goes through its own command so it is hashed server-side and
+    // never stored on (or read back with) the child record.
+    const childId = (res && res.id) || d.id;
+    let pinErr = "";
+    if (childId && (kioskPin || (d.kiosk_pin_clear && d.has_kiosk_pin))) {
+      const pinRes = await this._callWS({ type: "taskmate/kiosk/set_pin", child_id: childId, pin: kioskPin });
+      if (!pinRes.ok) pinErr = pinRes.err;
+    }
     this._closeDialog(true);
     await this._fetchState();
+    if (pinErr) { this._showToast("err", this._t("panel.toast_kiosk_pin_failed", {error: pinErr})); return; }
     this._showToast("ok", wasAdd ? this._t("panel.toast_child_added") : this._t("panel.toast_child_updated"));
   }
 
@@ -1425,6 +2188,7 @@ class TaskMatePanel extends HTMLElement {
       timed_rate_points: 10, timed_rate_minutes: 5, timed_max_daily_minutes: 0,
       assigned_to: [], requires_approval: true,
       time_category: "anytime", completion_sound: "coin", daily_limit: 1,
+      weekly_target: 0,
       difficulty: "medium",
       claim_allowance_minutes: 0,
       schedule_mode: "specific_days",
@@ -1442,10 +2206,18 @@ class TaskMatePanel extends HTMLElement {
       due_time: "", early_bonus: 0, late_penalty: 0,
       mandatory: false, mandatory_penalty_points: 0,
       require_photo: false,
+      open_ended: false,
+      team_size: 0, team_points_mode: "each", team_bonus: 0,
       publish_calendar_entities: [],
       depends_on: [],
       bonus_subtasks: [],
+      tag_ids: [],
     };
+    // NFC / QR tags (#923): the picker lists HA's tag registry. Load it once in
+    // the background — the dialog opens straight away and repaints when it lands.
+    if (!this._haTags) {
+      this._ensureHaTags().then(() => { if (this._dialog && this._dialog.kind === "chore") this._render(); });
+    }
     if (id) {
       const c = (this._state.chores || []).find(x => x.id === id);
       if (!c) return;
@@ -1455,6 +2227,7 @@ class TaskMatePanel extends HTMLElement {
         due_days: [...(c.due_days || [])],
         publish_calendar_entities: [...(c.publish_calendar_entities || [])],
         depends_on: [...(c.depends_on || [])],
+        tag_ids: [...(c.tag_ids || [])],
         bonus_subtasks: (c.bonus_subtasks || []).map(b => ({...b})),
         visibility_operator: c.visibility_operator || "none",
         weather_block_conditions: [...(c.weather_block_conditions || [])],
@@ -1647,6 +2420,16 @@ class TaskMatePanel extends HTMLElement {
     const d = this._dialog.data;
     if (!d.name || !d.name.trim()) { this._showToast("err", this._t("panel.toast_name_required")); return; }
     const wasAdd = this._dialog.mode === "add";
+    // Teamwork (#928). A timed task can't be one, so switching to timed
+    // quietly turns it off rather than refusing the save. The other clashes
+    // are the backend's rules too, checked here so the parent gets a clear
+    // message instead of a raw error.
+    const teamSize = (d.task_type || "standard") === "timed" ? 0 : Math.max(0, Math.floor(Number(d.team_size) || 0));
+    if (teamSize === 1 || teamSize > 10) { this._showToast("err", this._t("panel.chore_team_size_invalid")); return; }
+    if (teamSize >= 2 && (!["everyone", "unassigned"].includes(d.assignment_mode || "everyone") || d.open_ended)) {
+      this._showToast("err", this._t("panel.chore_team_conflict"));
+      return;
+    }
     const base = {
       name: d.name.trim(),
       description: d.description || "",
@@ -1664,6 +2447,7 @@ class TaskMatePanel extends HTMLElement {
       completion_sound: d.completion_sound || "coin",
       difficulty: d.difficulty || "medium",
       daily_limit: Number(d.daily_limit) || 1,
+      weekly_target: Math.max(0, Number(d.weekly_target) || 0),
       schedule_mode: d.schedule_mode || "specific_days",
       due_days: d.due_days || [],
       recurrence: d.recurrence || "weekly",
@@ -1689,7 +2473,12 @@ class TaskMatePanel extends HTMLElement {
       mandatory: !!d.mandatory,
       mandatory_penalty_points: Math.max(0, Number(d.mandatory_penalty_points) || 0),
       require_photo: !!d.require_photo,
+      open_ended: !!d.open_ended,
+      team_size: teamSize,
+      team_points_mode: d.team_points_mode === "split" ? "split" : "each",
+      team_bonus: Math.max(0, Number(d.team_bonus) || 0),
       publish_calendar_entities: d.publish_calendar_entities || [],
+      tag_ids: d.tag_ids || [],
       bonus_subtasks: (d.bonus_subtasks || []).filter(b => b.name && b.name.trim()).map(b => ({
         name: b.name.trim(), points: Number(b.points) || 5,
         description: b.description || "", ...(b.id ? {id: b.id} : {}),
@@ -1734,7 +2523,8 @@ class TaskMatePanel extends HTMLElement {
       quantity_str: "", expires_at: "",
       restock_enabled: false, restock_amount: 0, restock_period: "weekly",
       unlock_entity: "", unlock_minutes: 30,
-      time_lock_enabled: false, available_days: [], available_from: "", available_until: "" };
+      time_lock_enabled: false, available_days: [], available_from: "", available_until: "",
+      streak_freeze: false };
     if (id) {
       const r = (this._state.rewards || []).find(x => x.id === id);
       if (!r) return;
@@ -1762,8 +2552,10 @@ class TaskMatePanel extends HTMLElement {
       description: d.description || "",
       icon: d.icon || "mdi:gift",
       assigned_to: d.assigned_to || [],
-      is_jackpot: !!d.is_jackpot,
+      // A streak freeze is one child's own token, never a shared jackpot (#925).
+      is_jackpot: !d.streak_freeze && !!d.is_jackpot,
       pool_enabled: !!d.pool_enabled,
+      streak_freeze: !!d.streak_freeze,
       quantity: qty,
       expires_at: (d.expires_at || "").trim() || null,
       restock_enabled: !!d.restock_enabled,
@@ -2145,6 +2937,181 @@ class TaskMatePanel extends HTMLElement {
     });
   }
 
+  // ---- Recaps (#929) -----------------------------------------------------
+  // Frequencies are multi-select chips held in a draft until "Save settings",
+  // like the time-period and vacation editors. Chip clicks repaint only the
+  // row they belong to, so unsaved edits elsewhere on the tab survive.
+
+  _recapDraftState() {
+    if (!this._recapDraft) {
+      const s = this._state?.settings || {};
+      const family = Array.isArray(s.recap_frequencies) ? s.recap_frequencies : [];
+      const kids = s.recap_child_frequencies && typeof s.recap_child_frequencies === "object" ? s.recap_child_frequencies : {};
+      this._recapDraft = {
+        family: [...family],
+        children: Object.fromEntries(Object.entries(kids).map(([id, v]) => [id, Array.isArray(v) ? [...v] : []])),
+      };
+    }
+    return this._recapDraft;
+  }
+
+  _recapChips(selected, who, readOnly) {
+    return RECAP_FREQUENCIES.map(f => {
+      const on = selected.includes(f);
+      return `<button type="button" class="tm-chip-btn ${on ? "tm-chip-on" : ""}" aria-pressed="${on}"
+        ${readOnly ? "disabled" : `data-act="recap-tog" data-who="${this._esc(who)}" data-freq="${f}"`}>${on ? "✓ " : ""}${this._esc(this._t("recap.freq." + f))}</button>`;
+    }).join("");
+  }
+
+  _recapNextList(selected) {
+    if (!selected.length) {
+      return `<span class="tm-recap-off"><ha-icon icon="mdi:information-outline"></ha-icon> ${this._t("panel.recaps_off")}</span>`;
+    }
+    const next = this._recapSchedule?.next || {};
+    const lang = this._hass?.locale?.language || this._hass?.language || undefined;
+    return RECAP_FREQUENCIES.filter(f => selected.includes(f)).map(f => {
+      let when = "…";
+      if (next[f]) {
+        const [y, m, d] = next[f].split("-").map(Number);
+        try {
+          when = new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(lang, { timeZone: "UTC", weekday: "short", day: "numeric", month: "short", year: "numeric" });
+        } catch (e) { when = next[f]; }
+      }
+      return `<span><b>${this._esc(this._t("recap.freq." + f))}:</b> ${this._esc(when)}</span>`;
+    }).join("");
+  }
+
+  _recapFamilyRow() {
+    const d = this._recapDraftState();
+    return `
+      <div class="tm-setting-label">${this._t("panel.recaps_frequency_label")}<small>${this._t("panel.recaps_frequency_hint")}</small></div>
+      <div class="tm-recap-cell">
+        <div class="tm-chip-row">${this._recapChips(d.family, "__family__", false)}</div>
+        <div class="tm-recap-next">${this._recapNextList(d.family)}</div>
+        ${d.family.includes("every_9_months") ? `<div class="tm-meta">${this._t("panel.recaps_nine_month_note")}</div>` : ""}
+      </div>`;
+  }
+
+  _recapChildRow(child) {
+    const d = this._recapDraftState();
+    const custom = Object.prototype.hasOwnProperty.call(d.children, child.id);
+    const selected = custom ? d.children[child.id] : d.family;
+    const id = this._esc(child.id);
+    return `
+      <td><strong>${this._esc(child.name)}</strong></td>
+      <td>
+        <div class="tm-recap-cell">
+          <div class="tm-recap-mode" role="group">
+            <button type="button" class="${custom ? "" : "on"}" aria-pressed="${!custom}" data-act="recap-mode" data-who="${id}" data-mode="default">${this._t("panel.recaps_mode_default")}</button>
+            <button type="button" class="${custom ? "on" : ""}" aria-pressed="${custom}" data-act="recap-mode" data-who="${id}" data-mode="custom">${this._t("panel.recaps_mode_custom")}</button>
+          </div>
+          <div class="tm-chip-row">${this._recapChips(selected, child.id, !custom)}</div>
+        </div>
+      </td>
+      <td><div class="tm-recap-next">${this._recapNextList(selected)}</div></td>`;
+  }
+
+  _renderRecapsSection() {
+    const s = this._state?.settings || {};
+    const children = this._state?.children || [];
+    if (!this._recapSchedule && !this._recapScheduleLoading) this._loadRecapSchedule();
+    const retention = s.recap_retention || "forever";
+    return `
+        <div class="tm-section tm-recaps">
+          <div class="tm-section-head"><div><h3>${this._t("panel.recaps_title")}</h3><p class="tm-meta">${this._t("panel.recaps_hint")}</p></div></div>
+          <div class="tm-section-body">
+            <div class="tm-setting-row" data-recap-row="__family__">${this._recapFamilyRow()}</div>
+            ${children.length ? `
+            <div class="tm-recap-kids">
+              <div class="tm-setting-label">${this._t("panel.recaps_per_child_label")}<small>${this._t("panel.recaps_per_child_hint")}</small></div>
+              <div class="tm-table-wrap"><table class="tm-table">
+                <thead><tr><th>${this._t("panel.recaps_col_child")}</th><th>${this._t("panel.recaps_col_frequency")}</th><th>${this._t("panel.recaps_col_next")}</th></tr></thead>
+                <tbody>
+                  ${children.map(c => `<tr data-recap-row="${this._esc(c.id)}">${this._recapChildRow(c)}</tr>`).join("")}
+                </tbody>
+              </table></div>
+            </div>` : ""}
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.recaps_notify_label")}<small>${this._t("panel.recaps_notify_hint")}</small></div>
+              <div class="tm-recap-switches">
+                <label><ha-switch data-setting="recap_notify_children" ${s.recap_notify_children !== false ? "checked" : ""}></ha-switch> ${this._t("panel.recaps_notify_children")}</label>
+                <label><ha-switch data-setting="recap_notify_parents" ${s.recap_notify_parents !== false ? "checked" : ""}></ha-switch> ${this._t("panel.recaps_notify_parents")}</label>
+              </div>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.recaps_send_time_label")}<small>${this._t("panel.recaps_send_time_hint")}</small></div>
+              <input type="time" class="tm-input" data-setting="recap_send_time" value="${this._esc(s.recap_send_time || "08:00")}" style="max-width:140px">
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.recaps_retention_label")}<small>${this._t("panel.recaps_retention_hint")}</small></div>
+              <select class="tm-select" data-setting="recap_retention">
+                ${["1y", "2y", "forever"].map(v => `<option value="${v}" ${v === retention ? "selected" : ""}>${this._esc(this._t("panel.recaps_retention_" + v))}</option>`).join("")}
+              </select>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.recaps_compare_label")}<small>${this._t("panel.recaps_compare_hint")}</small></div>
+              <ha-switch data-setting="recap_compare" ${s.recap_compare !== false ? "checked" : ""}></ha-switch>
+            </div>
+            ${children.length ? `
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.recaps_preview_label")}<small>${this._t("panel.recaps_preview_hint")}</small></div>
+              <div class="tm-recap-preview">
+                <select class="tm-select" data-recap-preview-child aria-label="${this._esc(this._t("panel.recaps_col_child"))}">
+                  ${children.map(c => `<option value="${this._esc(c.id)}">${this._esc(c.name)}</option>`).join("")}
+                </select>
+                <button type="button" class="tm-btn" data-act="recap-preview"><ha-icon icon="mdi:eye-outline"></ha-icon> ${this._t("panel.recaps_preview_btn")}</button>
+              </div>
+            </div>` : ""}
+          </div>
+        </div>`;
+  }
+
+  _recapRepaintRows() {
+    const family = this.querySelector('[data-recap-row="__family__"]');
+    if (family) family.innerHTML = this._recapFamilyRow();
+    for (const c of this._state?.children || []) {
+      const row = this.querySelector(`tr[data-recap-row="${CSS.escape(c.id)}"]`);
+      if (row) row.innerHTML = this._recapChildRow(c);
+    }
+  }
+
+  _recapToggle(who, freq) {
+    if (!RECAP_FREQUENCIES.includes(freq)) return;
+    const d = this._recapDraftState();
+    const list = who === "__family__" ? d.family : d.children[who];
+    if (!list) return;
+    const i = list.indexOf(freq);
+    if (i >= 0) list.splice(i, 1); else list.push(freq);
+    this._recapRepaintRows();
+  }
+
+  _recapSetMode(who, mode) {
+    const d = this._recapDraftState();
+    if (mode === "custom") {
+      if (!Object.prototype.hasOwnProperty.call(d.children, who)) d.children[who] = [...d.family];
+    } else {
+      delete d.children[who];
+    }
+    this._recapRepaintRows();
+  }
+
+  async _loadRecapSchedule() {
+    this._recapScheduleLoading = true;
+    const { ok, res } = await this._callWS({ type: "taskmate/recaps/schedule" });
+    this._recapScheduleLoading = false;
+    if (!ok) return;
+    this._recapSchedule = res;
+    this._recapRepaintRows();
+  }
+
+  async _doRecapPreview() {
+    const childId = this.querySelector("[data-recap-preview-child]")?.value;
+    if (!childId) return;
+    const { ok, err } = await this._callWS({ type: "taskmate/recaps/preview", child_id: childId });
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return; }
+    this._showToast("ok", this._t("panel.recaps_preview_done"));
+  }
+
   _renderVacationSection() {
     if (!this._vacationDraft) {
       const saved = (this._state?.settings?.vacation_periods) || [];
@@ -2292,8 +3259,23 @@ class TaskMatePanel extends HTMLElement {
     root.querySelectorAll("ha-icon-picker[data-setting]").forEach(el => {
       payload[el.dataset.setting] = el.value || "";
     });
-    // Non-admin parent role (#661): collect the ticked HA users.
-    const parentBoxes = root.querySelectorAll("input[type=checkbox][data-parent-user]");
+    // Child undo window (#918): whole seconds, 0 (off) to 3600.
+    if ("chore_undo_seconds" in payload) {
+      const secs = payload.chore_undo_seconds;
+      if (!Number.isInteger(secs) || secs < 0 || secs > 3600) {
+        this._showToast("err", this._t("panel.settings_chore_undo_invalid"));
+        return;
+      }
+    }
+    // Surprise inspections (#981): the children the random pick may choose.
+    const inspKids = root.querySelectorAll("[data-insp-kid]");
+    if (inspKids.length) {
+      payload.inspection_pick_children = Array.from(inspKids)
+        .filter(el => el.classList.contains("tm-chip-on"))
+        .map(el => el.dataset.inspKid);
+    }
+    // Non-admin parent role (#661): collect the switched-on HA users.
+    const parentBoxes = root.querySelectorAll("[data-parent-user]");
     if (parentBoxes.length) {
       payload.parent_user_ids = Array.from(parentBoxes)
         .filter(el => el.checked)
@@ -2321,8 +3303,16 @@ class TaskMatePanel extends HTMLElement {
       }
       payload.vacation_periods = vacs;
     }
+    if (this._recapDraft) {
+      // Recaps (#929): only children that still exist keep a Custom override.
+      const ids = new Set((this._state.children || []).map(c => c.id));
+      payload.recap_frequencies = [...this._recapDraft.family];
+      payload.recap_child_frequencies = Object.fromEntries(
+        Object.entries(this._recapDraft.children).filter(([id]) => ids.has(id)));
+    }
     const { ok, err, res } = await this._callWS(payload);
     if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", {error: err})); return; }
+    this._recapDraft = null;
     this._timePeriodsDraft = null;  // rebuild from saved state on next render
     this._vacationDraft = null;
     this._settingsEntityDraft = null;
@@ -2344,7 +3334,8 @@ class TaskMatePanel extends HTMLElement {
   }
 
   async _notifSetRoute(typeId, recipientId, enabled, time) {
-    await this._callWS({ type: "taskmate/notifications/set_route", type_id: typeId, recipient_id: recipientId, enabled, time });
+    const { ok, err } = await this._callWS({ type: "taskmate/notifications/set_route", type_id: typeId, recipient_id: recipientId, enabled, time });
+    if (!ok) this._showToast("err", this._t("panel.toast_save_failed", { error: err }));
     await this._fetchState();
   }
 
@@ -2388,6 +3379,13 @@ class TaskMatePanel extends HTMLElement {
     const n = Math.max(1, Math.min(1440, Math.round(Number(value) || cur[field])));
     cur[field] = n;
     await this._callWS({ type: "taskmate/notifications/set_escalation", reminder_minutes: cur.reminder_minutes, parent_minutes: cur.parent_minutes });
+    await this._fetchState();
+  }
+
+  async _notifSetPresenceArrival(value) {
+    const n = Math.max(0, Math.min(1440, Math.round(Number(value))));
+    const { ok, err } = await this._callWS({ type: "taskmate/notifications/set_presence_arrival", min_away_minutes: Number.isFinite(n) ? n : 30 });
+    if (!ok) this._showToast("err", this._t("panel.toast_save_failed", { error: err }));
     await this._fetchState();
   }
 
@@ -2518,7 +3516,7 @@ class TaskMatePanel extends HTMLElement {
 
     if (!this._shellReady) {
       if (!this._cachedStyles) {
-        this._cachedStyles = this._styles();
+        this._cachedStyles = this._styles() + this._wizardStyles();
       }
       const existingToast = this.querySelector(".tm-toast");
       this.innerHTML = `
@@ -2528,12 +3526,15 @@ class TaskMatePanel extends HTMLElement {
           <div class="tm-main">
             <div data-zone="topbar">${this._topbar()}</div>
             <div data-zone="mtabs">${this._mobileTabs()}</div>
+            <div data-zone="scope">${this._scopeBanner()}</div>
             <div data-zone="approval">${this._approvalBanner()}</div>
             <div class="tm-body">
               <div class="tm-body-inner" data-zone="body">${this._renderBody()}</div>
             </div>
+            <div data-zone="bnav">${this._bottomNav()}</div>
             <div data-zone="dialog">${this._dialog ? this._renderDialog() : ""}</div>
             <div data-zone="tpl">${this._renderSaveTemplateDialog()}</div>
+            <div data-zone="palette">${this._renderPalette()}</div>
           </div>
         </div>
       `;
@@ -2543,6 +3544,7 @@ class TaskMatePanel extends HTMLElement {
       this._applyDesign();
       this._bindHaPickers();
       this._mountBackdateCard();
+      if (this._palette) this._focusPalette();
       return;
     }
 
@@ -2550,10 +3552,13 @@ class TaskMatePanel extends HTMLElement {
       sidebar:  this._sidebar(),
       topbar:   this._topbar(),
       mtabs:    this._mobileTabs(),
+      scope:    this._scopeBanner(),
       approval: this._approvalBanner(),
       body:     this._renderBody(),
+      bnav:     this._bottomNav(),
       dialog:   this._dialog ? this._renderDialog() : "",
       tpl:      this._renderSaveTemplateDialog(),
+      palette:  this._renderPalette(),
     };
 
     const dialogZone = this.querySelector('[data-zone="dialog"]');
@@ -2574,14 +3579,20 @@ class TaskMatePanel extends HTMLElement {
     }
 
     let anyChanged = false;
+    let paletteChanged = false;
     for (const [name, html] of Object.entries(zones)) {
       if (this._zoneCache[name] === html) continue;
       this._zoneCache[name] = html;
       const el = this.querySelector(`[data-zone="${name}"]`);
       if (!el) { this._shellReady = false; this._render(); return; }
+      const hadDialog = !!el.querySelector(".tm-scrim");
       el.innerHTML = html;
+      this._markDialogEntry(el, hadDialog);
       anyChanged = true;
+      if (name === "palette") paletteChanged = true;
     }
+    // A rebuilt command search has a fresh input: give it the focus back.
+    if (paletteChanged && this._palette) this._focusPalette();
 
     if (anyChanged) {
       this._bindHaPickers();
@@ -2596,48 +3607,94 @@ class TaskMatePanel extends HTMLElement {
     this._mountBackdateCard();
   }
 
+  // A dialog plays its opening animation only when it first appears (#974).
+  // Zones are rebuilt wholesale whenever their HTML changes, so an animation
+  // on .tm-scrim / .tm-dialog replayed on every redraw — twice per picture
+  // upload. The class goes on the DOM, not into the HTML, so the zone cache
+  // is unaffected and later rebuilds come up without it.
+  _markDialogEntry(zone, hadDialog) {
+    if (hadDialog) return;
+    const scrim = zone.querySelector(".tm-scrim");
+    if (scrim) scrim.classList.add("tm-enter");
+  }
+
   // The admin panel intentionally stays CLASSIC regardless of the global card
   // design (the per-card design styles apply to Lovelace cards only). This
   // clears any stale attribute so no designed rules can attach.
   _applyDesign() {
     const shell = this.querySelector(".tm-shell");
-    if (shell) shell.removeAttribute("data-tm-design");
+    if (shell) {
+      shell.removeAttribute("data-tm-design");
+      // Icon-only sidebar (#966) lives on the shell, which is never rebuilt.
+      shell.classList.toggle("tm-shell-rail", !!this._navRail);
+    }
+  }
+
+  // Everything waiting on a parent: approvals, reward claims, swap requests
+  // and new wishes (#966 — the Today page's "Needs you" list).
+  _needsYouCount() {
+    if (!this._state) return 0;
+    const s = this._state;
+    return (s.pending_completions || []).filter(c => this._childInScope(c.child_id)).length
+      + (s.pending_reward_claims || []).filter(c => this._childInScope(c.child_id)).length
+      + (s.swap_requests || []).filter(r => this._childInScope(r.requester_id)).length
+      + (s.wishes || []).filter(w => w.status === "pending" && this._childInScope(w.child_id)).length
+      + this._openInspections().length;
   }
 
   _sidebarGroups() {
     const counts = this._state ? {
+      today:     this._needsYouCount(),
       children:  (this._state.children || []).length,
       activity:  (this._state.pending_completions || []).length + (this._state.pending_reward_claims || []).length + (this._state.swap_requests || []).length,
       chores:    (this._state.chores || []).length,
       rewards:   (this._state.rewards || []).length,
+      // Wishlists (#932): what is waiting on a parent — approvals and hand-overs.
+      wishlists: (this._state.wishes || []).filter(w => w.status === "pending" || w.status === "redeem_requested").length,
       penalties: (this._state.penalties || []).length,
       bonuses:   (this._state.bonuses || []).length,
       groups:    (this._state.task_groups || []).length,
       templates: (this._state.templates || []).length,
+      bounties:  (this._state.bounties || []).filter(b => ["open", "claimed", "pending"].includes(b.status)).length,
+      auctions:  (this._state.auctions || []).filter(a => a.status === "open").length,
     } : {};
+    // Grouped by what the parent is doing (#966). Group keys use `key`, not
+    // `id`: only nav items carry an id.
     return [
-      { head: this._t("panel.nav_today"), items: [
-        { id: "activity", label: this._t("panel.tab_activity"), icon: "mdi:pulse" },
-        { id: "insights", label: this._t("panel.tab_insights"), icon: "mdi:chart-box-outline" },
+      { key: "home", head: "", items: [
+        { id: "today", label: this._t("panel.tab_today"), icon: "mdi:home-outline" },
       ]},
-      { head: this._t("panel.nav_manage"), items: [
+      { key: "family", head: this._t("panel.nav_family"), items: [
         { id: "children",  label: this._t("panel.tab_children"),  icon: "mdi:account-multiple" },
-        { id: "chores",    label: this._t("panel.tab_chores"),    icon: "mdi:check-circle-outline" },
-        { id: "rewards",   label: this._t("panel.tab_rewards"),   icon: "mdi:gift-outline" },
-        { id: "penalties", label: this._t("panel.tab_penalties"), icon: "mdi:alert-circle-outline" },
-        { id: "bonuses",   label: this._t("panel.tab_bonuses"),   icon: "mdi:flash-outline" },
         { id: "groups",    label: this._t("panel.tab_groups"),    icon: "mdi:layers-outline" },
+      ]},
+      { key: "earn", head: this._t("panel.nav_earn"), items: [
+        { id: "chores",    label: this._t("panel.tab_chores"),    icon: "mdi:check-circle-outline" },
+        { id: "bounties",  label: this._t("panel.tab_bounties"),  icon: "mdi:flag-outline" },
+        { id: "auctions",  label: this._t("panel.tab_auctions"),  icon: "mdi:gavel" },
         { id: "quests",    label: this._t("panel.tab_quests"),    icon: "mdi:map-marker-path" },
         { id: "challenges", label: this._t("panel.tab_challenges"), icon: "mdi:trophy-outline" },
-        { id: "badges",    label: this._t("panel.tab_badges"),     icon: "mdi:medal-outline" },
         { id: "templates", label: this._t("panel.tab_templates"), icon: "mdi:clipboard-list-outline" },
       ]},
-      { head: this._t("panel.nav_system"), items: [
-        { id: "notifications", label: this._t("panel.tab_notifications"), icon: "mdi:bell-outline" },
+      { key: "spend", head: this._t("panel.nav_spend"), items: [
+        { id: "rewards",   label: this._t("panel.tab_rewards"),   icon: "mdi:gift-outline" },
+        { id: "wishlists", label: this._t("panel.tab_wishlists"), icon: "mdi:heart-outline" },
+      ]},
+      { key: "adjust", head: this._t("panel.nav_adjust"), items: [
+        { id: "bonuses",   label: this._t("panel.tab_bonuses"),   icon: "mdi:flash-outline" },
+        { id: "penalties", label: this._t("panel.tab_penalties"), icon: "mdi:alert-circle-outline" },
+        { id: "badges",    label: this._t("panel.tab_badges"),     icon: "mdi:medal-outline" },
+      ]},
+      { key: "review", head: this._t("panel.nav_review"), items: [
+        { id: "activity", label: this._t("panel.tab_activity"), icon: "mdi:pulse" },
+        { id: "insights", label: this._t("panel.tab_insights"), icon: "mdi:chart-box-outline" },
         // The audit view has always been implemented (and documented in the
         // wiki), but it was never listed here — and the nav is built solely
         // from this list, so there was no way to open it.
         { id: "audit", label: this._t("panel.tab_audit"), icon: "mdi:history" },
+      ]},
+      { key: "system", head: this._t("panel.nav_system"), items: [
+        { id: "notifications", label: this._t("panel.tab_notifications"), icon: "mdi:bell-outline" },
         { id: "settings", label: this._t("panel.tab_settings"), icon: "mdi:cog-outline" },
       ]},
     ].map(g => ({
@@ -2648,6 +3705,8 @@ class TaskMatePanel extends HTMLElement {
 
   _sidebar() {
     const groups = this._sidebarGroups();
+    const rail = !!this._navRail;
+    const railLabel = this._t(rail ? "panel.nav_expand" : "panel.nav_collapse");
     return `
       <aside class="tm-sidebar">
         <div class="tm-brand">
@@ -2659,17 +3718,29 @@ class TaskMatePanel extends HTMLElement {
           <a class="tm-brand-wiki" href="https://github.com/tempus2016/taskmate/wiki" target="_blank" rel="noopener noreferrer" title="${this._esc(this._t("panel.wiki_tooltip"))}" aria-label="${this._esc(this._t("panel.wiki_tooltip"))}">
             <ha-icon icon="mdi:book-open-variant"></ha-icon>
           </a>
+          <button type="button" class="tm-rail-btn" data-act="nav-rail" title="${this._esc(railLabel)}" aria-label="${this._esc(railLabel)}" aria-pressed="${rail ? "true" : "false"}">
+            <ha-icon class="tm-rtl-flip" icon="${rail ? "mdi:chevron-double-right" : "mdi:chevron-double-left"}"></ha-icon>
+          </button>
         </div>
         <nav class="tm-nav">
-          ${groups.map(g => `
+          ${groups.map(g => {
+            // A group holding the open section never folds away; the icon-only
+            // sidebar has no headings to unfold it with, so it shows them all.
+            const closed = !rail && !!g.head && this._navClosed && this._navClosed.has(g.key)
+              && !g.items.some(it => it.id === this._activeTab);
+            return `
             <div class="tm-nav-group">
-              <div class="tm-nav-head">${this._esc(g.head)}</div>
-              ${g.items.map(it => {
+              ${g.head ? `
+                <button type="button" class="tm-nav-head" data-act="nav-group" data-grp="${g.key}" aria-expanded="${closed ? "false" : "true"}">
+                  <ha-icon class="tm-nav-chev" icon="mdi:chevron-down"></ha-icon>
+                  <span>${this._esc(g.head)}</span>
+                </button>` : ""}
+              ${closed ? "" : g.items.map(it => {
                 const active = it.id === this._activeTab;
-                const urgent = it.id === "activity" && it.count > 0;
+                const urgent = (it.id === "activity" || it.id === "today") && it.count > 0;
                 const showCount = it.count != null && it.count > 0;
                 return `
-                  <button type="button" class="tm-nav-item ${active ? "tm-nav-active" : ""}" data-act="tab" data-tab="${it.id}">
+                  <button type="button" class="tm-nav-item ${active ? "tm-nav-active" : ""}" data-act="tab" data-tab="${it.id}" title="${this._esc(it.label)}">
                     <span class="tm-nav-icon"><ha-icon icon="${it.icon}"></ha-icon></span>
                     <span class="tm-nav-label">${this._esc(it.label)}</span>
                     ${showCount ? `<span class="tm-nav-badge ${urgent ? "tm-nav-badge-urgent" : ""}">${it.count}</span>` : ""}
@@ -2677,7 +3748,8 @@ class TaskMatePanel extends HTMLElement {
                 `;
               }).join("")}
             </div>
-          `).join("")}
+          `;
+          }).join("")}
         </nav>
       </aside>
     `;
@@ -2687,10 +3759,12 @@ class TaskMatePanel extends HTMLElement {
     const crumb = this._sidebarGroups()
       .flatMap(g => g.items)
       .find(i => i.id === this._activeTab);
-    const crumbLabel = crumb ? crumb.label : "";
+    const crumbLabel = crumb ? crumb.label : (this._activeTab === "setup" ? this._t("wizard.title") : "");
     const pendingCount = this._state
       ? (this._state.pending_completions || []).length + (this._state.pending_reward_claims || []).length + (this._state.swap_requests || []).length
       : 0;
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+    const searchLabel = this._t("panel.palette_placeholder");
     return `
       <div class="tm-topbar">
         <button type="button" class="tm-menu-btn" data-act="toggle-ha-menu" aria-label="Menu">
@@ -2701,13 +3775,150 @@ class TaskMatePanel extends HTMLElement {
           <span class="tm-crumbs-sep">/</span>
           <strong>${this._esc(crumbLabel)}</strong>
         </div>
-        ${pendingCount > 0 && this._activeTab !== "activity" ? `
+        ${this._state ? `
+          <button type="button" class="tm-search-btn" data-act="palette-open" aria-label="${this._esc(searchLabel)}" title="${this._esc(searchLabel)}">
+            <ha-icon icon="mdi:magnify"></ha-icon>
+            <span class="tm-search-btn-text">${this._esc(searchLabel)}</span>
+            <kbd>${mac ? "⌘K" : "Ctrl K"}</kbd>
+          </button>
+          ${this._scopeChips()}
+        ` : ""}
+        ${pendingCount > 0 && this._activeTab !== "activity" && this._activeTab !== "today" ? `
           <button type="button" class="tm-approval-pill" data-act="switch-to-activity" title="${this._t("panel.pending_tooltip", {count: pendingCount})}">
             <span class="tm-approval-dot"></span>
             ${this._t("panel.topbar_pending", {count: pendingCount})}
           </button>
         ` : ""}
+        ${this._state ? this._newMenu() : ""}
       </div>
+    `;
+  }
+
+  // ---- Child filter (#966) --------------------------------------------
+  // One child picked here narrows Today, Children, Chores, Rewards, Quests,
+  // Challenges, Bonuses, Penalties, Activity and Wishlists to that child.
+
+  _readStoredList(key) {
+    try {
+      const v = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(v) ? v : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // The picked child's id, or "" for everyone (also when that child is gone).
+  _scopeId() {
+    const id = this._scope;
+    if (!id || !this._state) return "";
+    return (this._state.children || []).some(c => c.id === id) ? id : "";
+  }
+
+  _childInScope(childId) {
+    const id = this._scopeId();
+    return !id || childId === id;
+  }
+
+  // Items with an assigned_to list: an empty list means everyone.
+  _inScope(item) {
+    const id = this._scopeId();
+    if (!id) return true;
+    const who = item && item.assigned_to;
+    return !Array.isArray(who) || who.length === 0 || who.includes(id);
+  }
+
+  _childColor(childId) {
+    const palette = ["#e91e63", "#2196f3", "#009688", "#ff9800", "#9c27b0", "#795548", "#3f51b5", "#8bc34a"];
+    const idx = (this._state && this._state.children || []).findIndex(c => c.id === childId);
+    return palette[(idx < 0 ? 0 : idx) % palette.length];
+  }
+
+  _childAvatar(child, cls = "") {
+    return `<span class="tm-av ${cls}" style="--kc:${this._childColor(child.id)}"><ha-icon icon="${this._esc(child.avatar || "mdi:account-circle")}"></ha-icon></span>`;
+  }
+
+  _scopeChips() {
+    const children = (this._state && this._state.children) || [];
+    if (children.length < 2) return "";
+    const current = this._scopeId();
+    return `
+      <div class="tm-scope" role="group" aria-label="${this._esc(this._t("panel.scope_label"))}">
+        <button type="button" class="tm-scope-btn tm-scope-all ${current ? "" : "tm-scope-on"}" data-act="scope" data-child="" aria-pressed="${current ? "false" : "true"}">${this._t("panel.scope_all")}</button>
+        ${children.map(c => `
+          <button type="button" class="tm-scope-btn ${current === c.id ? "tm-scope-on" : ""}" data-act="scope" data-child="${this._esc(c.id)}"
+                  aria-pressed="${current === c.id ? "true" : "false"}" title="${this._esc(this._t("panel.scope_only", { name: c.name }))}">
+            ${this._childAvatar(c)}<span class="tm-scope-name">${this._esc(c.name)}</span>
+          </button>`).join("")}
+      </div>
+    `;
+  }
+
+  _scopeBanner() {
+    const id = this._scopeId();
+    if (!id) return "";
+    const child = (this._state.children || []).find(c => c.id === id);
+    return `
+      <div class="tm-scope-banner">
+        <ha-icon icon="mdi:filter-variant"></ha-icon>
+        <span>${this._t("panel.scope_showing", { name: `<strong>${this._esc(child.name)}</strong>` })}</span>
+        <button type="button" class="tm-btn tm-btn-sm" data-act="scope" data-child="">${this._t("panel.scope_clear")}</button>
+      </div>
+    `;
+  }
+
+  // ---- "New" menu (#966) ----------------------------------------------
+  _newMenuItems() {
+    return [
+      { act: "add-chore",     icon: "mdi:check-circle-outline", label: this._t("panel.new_chore") },
+      { act: "add-bounty",    icon: "mdi:flag-outline",         label: this._t("panel.new_bounty") },
+      { act: "add-auction",   icon: "mdi:gavel",                label: this._t("panel.new_auction") },
+      { act: "add-reward",    icon: "mdi:gift-outline",         label: this._t("panel.new_reward") },
+      { act: "add-quest",     icon: "mdi:map-marker-path",      label: this._t("panel.new_quest") },
+      { act: "add-challenge", icon: "mdi:trophy-outline",       label: this._t("panel.new_challenge") },
+      { act: "add-child",     icon: "mdi:account-plus-outline", label: this._t("panel.new_child") },
+    ];
+  }
+
+  _newMenu() {
+    const open = !!this._newMenuOpen;
+    return `
+      <div class="tm-new-wrap">
+        <button type="button" class="tm-btn tm-btn-raised tm-new-btn" data-act="new-menu" aria-haspopup="menu" aria-expanded="${open ? "true" : "false"}" title="${this._esc(this._t("panel.new_btn"))}">
+          <ha-icon icon="mdi:plus"></ha-icon><span class="tm-new-text">${this._t("panel.new_btn")}</span>
+        </button>
+        ${open ? `
+          <div class="tm-new-menu" role="menu">
+            ${this._newMenuItems().map(it => `
+              <button type="button" class="tm-new-item" role="menuitem" data-act="${it.act}">
+                <ha-icon icon="${it.icon}"></ha-icon><span>${this._esc(it.label)}</span>
+              </button>`).join("")}
+          </div>` : ""}
+      </div>
+    `;
+  }
+
+  // ---- Phone bottom bar (#966) ----------------------------------------
+  _bottomNav() {
+    if (!this._state) return "";
+    const today = this._needsYouCount();
+    const items = [
+      { id: "today",    icon: "mdi:home-outline",          label: this._t("panel.tab_today") },
+      { id: "chores",   icon: "mdi:check-circle-outline",  label: this._t("panel.tab_chores") },
+      { id: "rewards",  icon: "mdi:gift-outline",          label: this._t("panel.tab_rewards") },
+      { id: "children", icon: "mdi:account-multiple",      label: this._t("panel.tab_children") },
+    ];
+    const inBar = items.some(it => it.id === this._activeTab);
+    return `
+      <nav class="tm-bnav" aria-label="${this._esc(this._t("panel.nav_sections"))}">
+        ${items.map(it => `
+          <button type="button" class="tm-bnav-item ${it.id === this._activeTab ? "tm-bnav-on" : ""}" data-act="tab" data-tab="${it.id}">
+            <ha-icon icon="${it.icon}"></ha-icon><span>${this._esc(it.label)}</span>
+            ${it.id === "today" && today > 0 ? `<span class="tm-bnav-dot">${today}</span>` : ""}
+          </button>`).join("")}
+        <button type="button" class="tm-bnav-item ${inBar ? "" : "tm-bnav-on"}" data-act="toggle-mobile-nav">
+          <ha-icon icon="mdi:dots-grid"></ha-icon><span>${this._t("panel.nav_more")}</span>
+        </button>
+      </nav>
     `;
   }
 
@@ -2715,8 +3926,8 @@ class TaskMatePanel extends HTMLElement {
     const groups = this._sidebarGroups();
     const open = !!this._mobileNavOpen;
     const current = groups.flatMap(g => g.items).find(it => it.id === this._activeTab)
-      || { id: this._activeTab, label: "", icon: "mdi:cog-outline" };
-    const curUrgent = current.id === "activity" && current.count > 0;
+      || { id: this._activeTab, label: this._activeTab === "setup" ? this._t("wizard.title") : "", icon: this._activeTab === "setup" ? "mdi:auto-fix" : "mdi:cog-outline" };
+    const curUrgent = (current.id === "activity" || current.id === "today") && current.count > 0;
     const curShowCount = current.count != null && current.count > 0;
     return `
       <div class="tm-mobilenav ${open ? "tm-mobilenav-open" : ""}">
@@ -2734,10 +3945,10 @@ class TaskMatePanel extends HTMLElement {
           <div class="tm-mnav-scrim" data-act="close-mobile-nav"></div>
           <nav class="tm-mnav-sheet">
             ${groups.map(g => `
-              <div class="tm-mnav-grp-head">${this._esc(g.head)}</div>
+              ${g.head ? `<div class="tm-mnav-grp-head">${this._esc(g.head)}</div>` : ""}
               ${g.items.map(it => {
                 const active = it.id === this._activeTab;
-                const urgent = it.id === "activity" && it.count > 0;
+                const urgent = (it.id === "activity" || it.id === "today") && it.count > 0;
                 const showCount = it.count != null && it.count > 0;
                 return `
                   <button type="button" class="tm-mnav-item ${active ? "tm-mnav-item-active" : ""}" data-act="tab" data-tab="${it.id}">
@@ -2755,7 +3966,7 @@ class TaskMatePanel extends HTMLElement {
 
   _approvalBanner() {
     if (!this._state) return "";
-    if (this._activeTab === "activity") return "";
+    if (this._activeTab === "activity" || this._activeTab === "today") return "";
     const completionsP = (this._state.pending_completions || []).length;
     const rewardsP     = (this._state.pending_reward_claims || []).length;
     const swapsP       = (this._state.swap_requests || []).length;
@@ -2787,21 +3998,26 @@ class TaskMatePanel extends HTMLElement {
     if (!this._state) return `<div class="tm-card">${this._t("panel.error_no_state")}</div>`;
 
     switch (this._activeTab) {
+      case "today":     return this._renderTodayTab();
       case "children":  return this._renderChildrenTab();
       case "activity":  return this._renderActivityTab();
       case "insights":  return this._renderInsightsTab();
       case "chores":    return this._renderChoresTab();
       case "rewards":   return this._renderRewardsTab();
+      case "wishlists": return this._renderWishlistsTab();
       case "penalties": return this._renderPenBonTab("penalty");
       case "bonuses":   return this._renderPenBonTab("bonus");
       case "groups":    return this._renderGroupsTab();
       case "quests":    return this._renderQuestsTab();
       case "challenges": return this._renderChallengesTab();
+      case "bounties":   return this._renderBountiesTab();
+      case "auctions":   return this._renderAuctionsTab();
       case "badges":    return this._renderBadgesTab();
       case "templates":     return this._renderTemplatesTab();
       case "notifications": return this._renderNotificationsTab();
       case "audit":         return this._renderAuditTab();
       case "settings":      return this._renderSettingsTab();
+      case "setup":         return this._wizardBody();
       default:          return `<div class="tm-card">${this._t("panel.tab_unknown")}</div>`;
     }
   }
@@ -2815,7 +4031,7 @@ class TaskMatePanel extends HTMLElement {
     const view = this._insightView || "fairness";
     const switcher = `
       <div class="tm-chip-row" style="margin-bottom:14px">
-        ${["fairness", "friction", "projection", "health"].map(v => `
+        ${["fairness", "friction", "projection", ...(this._ratingOn() || view === "quality" ? ["quality"] : []), "health"].map(v => `
           <button type="button" class="tm-chip-btn ${v === view ? "tm-chip-on" : ""}"
                   data-act="insights-view" data-id="${v}">
             ${this._t("panel.insights_view_" + v)}
@@ -2825,6 +4041,7 @@ class TaskMatePanel extends HTMLElement {
     if (view === "friction") return switcher + this._renderFrictionReport();
     if (view === "projection") return switcher + this._renderProjectionReport();
     if (view === "health") return switcher + this._renderHealthReport();
+    if (view === "quality") return switcher + this._renderQualityReport();
     return switcher + this._renderFairnessReport();
   }
 
@@ -3096,7 +4313,7 @@ class TaskMatePanel extends HTMLElement {
                 <div class="tm-fair-name">${this._esc(c.name)}</div>
                 <div class="tm-fair-bar">
                   <i class="tm-fair-${c.status}" style="width:${Math.round(c.share_completions / maxShare * 100)}%"></i>
-                  <span class="tm-fair-target" style="left:${Math.round(report.fair_share / maxShare * 100)}%"></span>
+                  <span class="tm-fair-target" style="inset-inline-start:${Math.round(report.fair_share / maxShare * 100)}%"></span>
                 </div>
                 <div class="tm-fair-figs">
                   <strong>${c.completions}</strong> ${this._t(c.completions === 1 ? "panel.insights_chore" : "panel.insights_chores")}
@@ -3111,6 +4328,85 @@ class TaskMatePanel extends HTMLElement {
         `}
       </div>
     `;
+  }
+
+  /**
+   * Quality ratings (#927): average star rating per child and per chore.
+   * Unrated approvals are left out of the averages, not counted as ★★.
+   */
+  _renderQualityReport() {
+    const days = this._qualityDays || 30;
+    const report = this._quality;
+    if (!report) {
+      this._loadQuality(days);
+      return `<div class="tm-card"><div class="tm-empty">${this._t("panel.insights_loading")}</div></div>`;
+    }
+    const stars = (avg) => {
+      if (avg === null || avg === undefined) return `<span class="tm-meta">—</span>`;
+      const full = Math.round(avg);
+      return `<span class="tm-q-stars" aria-hidden="true">${"★".repeat(full)}<span class="tm-q-off">${"☆".repeat(3 - full)}</span></span>
+              <span class="tm-numeric">${avg.toFixed(1)}</span>`;
+    };
+    const table = (title, rows) => `
+      <h3 class="tm-section-title" style="margin-top:16px">${this._esc(title)}</h3>
+      <div class="tm-table-wrap">
+        <table class="tm-table tm-quality">
+          <thead><tr>
+            <th></th>
+            <th>${this._t("panel.insights_quality_col_average")}</th>
+            <th>${this._t("panel.insights_quality_col_rated")}</th>
+            <th>★</th><th>★★</th><th>★★★</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr class="tm-row">
+                <td><strong>${this._esc(r.name)}</strong></td>
+                <td>${stars(r.average)}</td>
+                <td class="tm-numeric">${this._ltrNums(`${r.rated} / ${r.total}`)}</td>
+                <td class="tm-numeric">${r.counts["1"]}</td>
+                <td class="tm-numeric">${r.counts["2"]}</td>
+                <td class="tm-numeric">${r.counts["3"]}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    return `
+      <div class="tm-card">
+        <div class="tm-card-head">
+          <h2>${this._t("panel.insights_quality_title")}</h2>
+          <div class="tm-chip-row">
+            ${[7, 30, 90].map(d => `
+              <button type="button" class="tm-chip-btn ${d === days ? "tm-chip-on" : ""}"
+                      data-act="quality-window" data-id="${d}">
+                ${this._t("panel.insights_last_days", { days: d })}
+              </button>
+            `).join("")}
+          </div>
+        </div>
+        <span class="tm-field-hint">${this._t("panel.insights_quality_intro", { start: report.start, end: report.end })}</span>
+        ${report.enabled ? "" : `<div class="tm-verdict tm-verdict-warn">${this._t("panel.insights_quality_disabled")}</div>`}
+        ${!report.rated_completions ? `
+          <div class="tm-empty">${this._t("panel.insights_quality_none")}</div>
+        ` : `
+          <div class="tm-verdict tm-verdict-ok">${this._t("panel.insights_quality_overall", {
+            average: Number(report.average).toFixed(1), rated: report.rated_completions, total: report.total_completions,
+          })}</div>
+          ${table(this._t("panel.insights_quality_by_child"), report.children)}
+          ${table(this._t("panel.insights_quality_by_chore"), report.chores.filter(r => r.rated > 0))}
+        `}
+      </div>
+    `;
+  }
+
+  async _loadQuality(days) {
+    if (this._qualityLoading) return;
+    this._qualityLoading = true;
+    const { ok, res, err } = await this._callWS({ type: "taskmate/reports/quality", days });
+    this._qualityLoading = false;
+    if (!ok) { this._showToast("err", err); return; }
+    this._quality = res;
+    this._render();
   }
 
   async _loadFairness(days) {
@@ -3134,15 +4430,17 @@ class TaskMatePanel extends HTMLElement {
   }
 
   _filterByName(items) {
-    if (!this._filter) return items;
+    // The child filter (#966) narrows every list that has an assigned_to.
+    const scoped = items.filter(it => this._inScope(it));
+    if (!this._filter) return scoped;
     const q = this._filter.toLowerCase();
-    return items.filter(it => (it.name || "").toLowerCase().includes(q));
+    return scoped.filter(it => (it.name || "").toLowerCase().includes(q));
   }
 
   // -- Children tab ------------------------------------------------------
   _renderChildrenTab() {
     const all = this._state.children || [];
-    const children = this._filterByName(all);
+    const children = this._filterByName(all).filter(c => this._childInScope(c.id));
     const pointsName = this._state.settings.points_name || this._t("common.points");
     return `
       <div class="tm-toolbar">
@@ -3220,40 +4518,196 @@ class TaskMatePanel extends HTMLElement {
   }
 
   // -- Activity tab ------------------------------------------------------
-  _renderActivityTab() {
-    const pendingCompletions = this._state.pending_completions || [];
-    const pendingClaims      = this._state.pending_reward_claims || [];
-    const pendingSwaps       = this._state.swap_requests || [];
-    const transactions       = this._state.points_transactions || [];
-    const completions        = this._state.completions || [];
-    const claims             = this._state.reward_claims || [];
-
+  // Lookups the approval rows and activity feed share. Wishlist redemptions
+  // (#932) are claims with no reward behind them, and a bounty's completion
+  // (#931) names the bounty rather than a chore.
+  _activityMaps() {
     const childById = Object.fromEntries((this._state.children || []).map(c => [c.id, c]));
     const choreById = Object.fromEntries((this._state.chores || []).map(c => [c.id, c]));
     const rewardById = Object.fromEntries((this._state.rewards || []).map(r => [r.id, r]));
+    for (const w of (this._state.wishes || [])) {
+      if (!rewardById[w.id]) rewardById[w.id] = { id: w.id, name: w.name, cost: w.target };
+    }
+    for (const b of this._state.bounties || []) {
+      if (!choreById[b.id]) choreById[b.id] = { id: b.id, name: b.title, points: b.points, bounty: true };
+    }
+    return { childById, choreById, rewardById };
+  }
 
-    // Recent activity feed: merge approved completions + claims + transactions
+  // Recent activity, newest first: approved completions and claims plus
+  // points transactions. Filtered by the child filter (#966).
+  _activityEvents() {
+    const { childById, choreById, rewardById } = this._activityMaps();
+    const completions = this._state.completions || [];
+    const claims = this._state.reward_claims || [];
+    const transactions = this._state.points_transactions || [];
     const events = [];
-    completions.filter(c => c.approved).forEach(c => events.push({
-      ts: c.approved_at || c.completed_at, kind: "completion",
+    completions.filter(c => c.approved && this._childInScope(c.child_id)).forEach(c => events.push({
+      ts: c.approved_at || c.completed_at, kind: "completion", child_id: c.child_id, completion_id: c.id,
       child: c.child_id === "__parent__" ? "Parent" : ((childById[c.child_id] || {}).name || "?"),
       label: `${this._t("panel.activity_completed_chore", {name: (choreById[c.chore_id] || {}).name || this._t("panel.activity_deleted_chore")})}`,
       points: c.points_awarded,
     }));
-    claims.filter(c => c.approved).forEach(c => events.push({
-      ts: c.approved_at || c.claimed_at, kind: "claim",
+    claims.filter(c => c.approved && this._childInScope(c.child_id)).forEach(c => events.push({
+      ts: c.approved_at || c.claimed_at, kind: "claim", child_id: c.child_id,
       child: (childById[c.child_id] || {}).name || "?",
       label: `${this._t("panel.activity_claimed_reward", {name: (rewardById[c.reward_id] || {}).name || this._t("panel.activity_deleted_reward")})}`,
-      points: -((rewardById[c.reward_id] || {}).cost || 0),
+      points: -(c.approved_cost ?? (rewardById[c.reward_id] || {}).cost ?? 0),
     }));
-    transactions.forEach(t => events.push({
-      ts: t.created_at, kind: "manual",
+    // A pass bonus's transaction carries the parent's note along (#981).
+    const passNotes = Object.fromEntries(this._inspections().filter(i => i.bonus_txn_id).map(i => [i.bonus_txn_id, i.note || ""]));
+    transactions.filter(t => this._childInScope(t.child_id)).forEach(t => events.push({
+      ts: t.created_at, kind: String(t.reason || "").startsWith("Inspection passed:") ? "inspection" : "manual", child_id: t.child_id,
       child: (childById[t.child_id] || {}).name || "?",
       label: this._translateReason(t.reason) || (t.points >= 0 ? this._t("panel.activity_manual_addition") : this._t("panel.activity_manual_deduction")),
       points: t.points,
+      note: passNotes[t.id] || "",
     }));
+    events.push(...this._inspectionEvents());
     events.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
-    const recent = events.slice(0, 30);
+    return events;
+  }
+
+  _timelineHtml(events) {
+    return `
+      <div class="tm-timeline">
+        ${events.map(ev => `
+          <div class="tm-timeline-row">
+            <div class="tm-timeline-time">${this._esc(this._timeAgo(ev.ts))}</div>
+            <div class="tm-timeline-icon tm-timeline-${ev.kind}"><ha-icon icon="${ev.kind === 'completion' ? 'mdi:check-circle' : ev.kind === 'claim' ? 'mdi:gift' : ev.kind === 'inspection' ? 'mdi:magnify-scan' : ev.points >= 0 ? 'mdi:plus-circle' : 'mdi:minus-circle'}"></ha-icon></div>
+            <div class="tm-timeline-body">
+              <div><strong>${this._esc(ev.child)}</strong> · ${this._esc(ev.label)}${ev.kind === "completion" && ev.completion_id ? ` ${this._inspSlot(ev.completion_id)}` : ""}</div>
+              ${ev.note ? `<div class="tm-meta tm-insp-note">“${this._esc(ev.note)}”</div>` : ""}
+            </div>
+            <div class="tm-timeline-points ${ev.points >= 0 ? 'tm-pos' : 'tm-neg'} tm-numeric">${ev.points == null ? "" : `${ev.points >= 0 ? '+' : ''}${this._num(ev.points)}`}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  // Everything waiting on a parent, as approval rows. The Activity tab and
+  // the Today page (#966) share this; Today also lists new wishes.
+  _approvalQueue({ wishes = false } = {}) {
+    const pendingCompletions = (this._state.pending_completions || []).filter(c => this._childInScope(c.child_id));
+    const pendingClaims = (this._state.pending_reward_claims || []).filter(c => this._childInScope(c.child_id));
+    const pendingSwaps = (this._state.swap_requests || []).filter(r => this._childInScope(r.requester_id));
+    const pendingWishes = wishes ? (this._state.wishes || []).filter(w => w.status === "pending" && this._childInScope(w.child_id)) : [];
+    const { childById, choreById, rewardById } = this._activityMaps();
+    const pointsName = (this._state.settings && this._state.settings.points_name) || this._t("common.points");
+    // A redo an inspection sent back (#981) pays nothing extra: say so.
+    const redoIds = new Set(this._inspections().map(i => i.redo_completion_id).filter(Boolean));
+    const inspections = this._openInspections();
+    const html = `
+    ${this._inspectionQueueHtml()}
+    ${pendingCompletions.map(c => {
+      const chore = choreById[c.chore_id];
+      const child = childById[c.child_id];
+      let choreName = (chore && chore.name) || this._t("panel.activity_deleted_chore");
+      let chorePoints = chore ? chore.points : 0;
+      if (c.bonus_subtask_id && chore) {
+        const sub = (chore.bonus_subtasks || []).find(b => b.id === c.bonus_subtask_id);
+        if (sub) { choreName = `${chore.name} › ${sub.name}`; chorePoints = sub.points; }
+      } else if (chore && chore.task_type === "timed" && (c.timed_duration_seconds || 0) > 0) {
+        // Timed chores accrue points by elapsed-time rate, so the actual
+        // earned points can be lower than chore.points. Mirror sensor.py.
+        const rateSeconds = (chore.timed_rate_minutes || 0) * 60;
+        if (rateSeconds > 0) {
+          chorePoints = Math.floor(c.timed_duration_seconds / rateSeconds) * (chore.timed_rate_points || 0);
+        }
+      }
+      // What the child was promised when they submitted beats anything
+      // recalculated here: a chore edited while the work sat in the
+      // queue, or a speed/roulette bonus that no longer applies.
+      chorePoints = c.submitted_points ?? chorePoints;
+      const photoCap = [choreName, (child && child.name) || "", c.completed_at ? new Date(c.completed_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""].filter(Boolean).join(" · ");
+      return `
+        <div class="tm-approval-item">
+          <div class="tm-approval-icon"><ha-icon icon="${c.bonus_subtask_id ? 'mdi:star-plus' : c.bounty_id ? 'mdi:flag-outline' : 'mdi:checkbox-marked-circle-outline'}"></ha-icon></div>
+          ${this._safePhotoUrl(c.photo_url) ? `<a class="tm-approval-photo" href="${this._esc(this._safePhotoUrl(c.photo_url))}" target="_blank" rel="noopener" data-act="view-photo" data-photo="${this._esc(this._safePhotoUrl(c.photo_url))}" data-cap="${this._esc(photoCap)}" title="${this._t("panel.activity_view_photo")}"><img src="${this._esc(this._safePhotoUrl(c.photo_url))}" alt="" loading="lazy"></a>` : ""}
+          <div class="tm-approval-body">
+            <div class="tm-approval-line">${this._t("panel.activity_completed_text", {child: this._esc((child && child.name) || "?"), chore: this._esc(choreName)})}</div>
+            <div class="tm-meta">${this._timeAgo(c.completed_at)} · ${chorePoints} ${this._t("panel.activity_points")}${redoIds.has(c.id) ? ` · ${this._esc(this._t("panel.insp_redo_queue"))}` : ""}</div>
+          </div>
+          <div class="tm-approval-actions">
+            ${this._ratingOn() ? this._ratingPicker(c.id) : ""}
+            <button type="button" class="tm-btn tm-btn-sm" data-act="reject-chore" data-id="${this._esc(c.id)}">${this._t("panel.activity_reject")}</button>
+            <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-chore" data-id="${this._esc(c.id)}">${this._t("panel.activity_approve")}</button>
+          </div>
+        </div>
+      `;
+    }).join("")}
+    ${pendingClaims.map(c => {
+      const reward = rewardById[c.reward_id];
+      const child = childById[c.child_id];
+      return `
+        <div class="tm-approval-item">
+          <div class="tm-approval-icon"><ha-icon icon="mdi:gift-outline"></ha-icon></div>
+          <div class="tm-approval-body">
+            <div class="tm-approval-line">${this._t("panel.activity_claimed_text", {child: this._esc((child && child.name) || "?"), reward: this._esc((reward && reward.name) || this._t("panel.activity_deleted_reward"))})}</div>
+            <div class="tm-meta">${this._timeAgo(c.claimed_at)}${reward ? ` · ${this._num(reward.cost)} ${this._t("panel.activity_points")}` : ""}</div>
+          </div>
+          <div class="tm-approval-actions">
+            <button type="button" class="tm-btn tm-btn-sm" data-act="reject-reward" data-id="${this._esc(c.id)}">${this._t("panel.activity_reject")}</button>
+            <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-reward" data-id="${this._esc(c.id)}">${this._t("panel.activity_approve")}</button>
+          </div>
+        </div>
+      `;
+    }).join("")}
+    ${pendingSwaps.map(sw => {
+      const chore = choreById[sw.chore_id];
+      const req = childById[sw.requester_id];
+      const from = childById[sw.from_child_id];
+      return `
+        <div class="tm-approval-item">
+          <div class="tm-approval-icon"><ha-icon icon="mdi:swap-horizontal"></ha-icon></div>
+          <div class="tm-approval-body">
+            <div class="tm-approval-line">${this._t("panel.swap_request_text", {child: this._esc((req && req.name) || "?"), chore: this._esc((chore && chore.name) || "?")})}</div>
+            <div class="tm-meta">${from ? this._t("panel.swap_from", {name: this._esc(from.name)}) + " · " : ""}${this._timeAgo(sw.created_at)}</div>
+          </div>
+          <div class="tm-approval-actions">
+            <button type="button" class="tm-btn tm-btn-sm" data-act="reject-swap" data-id="${this._esc(sw.id)}">${this._t("panel.activity_reject")}</button>
+            <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-swap" data-id="${this._esc(sw.id)}">${this._t("panel.activity_approve")}</button>
+          </div>
+        </div>
+      `;
+    }).join("")}
+    ${pendingWishes.map(w => {
+      const child = childById[w.child_id];
+      return `
+        <div class="tm-approval-item">
+          <div class="tm-approval-icon"><ha-icon icon="mdi:heart-outline"></ha-icon></div>
+          <div class="tm-approval-body">
+            <div class="tm-approval-line">${this._t("panel.today_wish_text", {child: this._esc((child && child.name) || "?"), wish: this._esc(w.name)})}</div>
+            <div class="tm-meta">${this._t("panel.wish_suggested", { child: this._esc((child && child.name) || "?"), points: this._fmtNum(w.suggested_target || w.target), points_name: this._esc(pointsName) })} · ${this._esc(this._timeAgo(w.created_at))}</div>
+          </div>
+          <div class="tm-approval-actions">
+            <button type="button" class="tm-btn tm-btn-sm" data-act="wish-decline" data-id="${this._esc(w.id)}">${this._t("panel.wish_decline")}</button>
+            <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="wish-approve" data-id="${this._esc(w.id)}">${this._t("panel.wish_approve")}</button>
+          </div>
+        </div>
+      `;
+    }).join("")}
+    `;
+    return {
+      count: pendingCompletions.length + pendingClaims.length + pendingSwaps.length + pendingWishes.length + inspections.length,
+      chores: pendingCompletions.length,
+      html,
+    };
+  }
+
+  _approveAllButton(chores) {
+    if (!chores) return "";
+    return `<button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-all-chores" style="margin-inline-start:auto"${this._approvingAll ? " disabled" : ""}>${this._approvingAll
+      ? `<span class="tm-btn-spinner"></span>${this._t("panel.activity_approve_all_busy")}`
+      : this._t("panel.activity_approve_all")}</button>`;
+  }
+
+  _renderActivityTab() {
+    const transactions = (this._state.points_transactions || []).filter(t => this._childInScope(t.child_id));
+    const { childById } = this._activityMaps();
+    const queue = this._approvalQueue();
+    const recent = this._activityEvents().slice(0, 30);
 
     return `
       <div class="tm-toolbar">
@@ -3263,107 +4717,22 @@ class TaskMatePanel extends HTMLElement {
       <!-- Pending approvals -->
       <div class="tm-card">
         <h3 class="tm-section-title">${this._t("panel.activity_pending_approvals")}
-          ${(pendingCompletions.length + pendingClaims.length + pendingSwaps.length) > 0
-            ? `<span class="tm-pill tm-pill-warn">${pendingCompletions.length + pendingClaims.length + pendingSwaps.length}</span>`
+          ${queue.count > 0
+            ? `<span class="tm-pill tm-pill-warn">${queue.count}</span>`
             : `<span class="tm-pill tm-pill-success">${this._t("panel.activity_pending_all_clear")}</span>`}
-          ${pendingCompletions.length > 0
-            ? `<button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-all-chores" style="margin-left:auto"${this._approvingAll ? " disabled" : ""}>${this._approvingAll
-                ? `<span class="tm-btn-spinner"></span>${this._t("panel.activity_approve_all_busy")}`
-                : this._t("panel.activity_approve_all")}</button>`
-            : ""}
+          ${this._approveAllButton(queue.chores)}
         </h3>
-        ${pendingCompletions.length === 0 && pendingClaims.length === 0 && pendingSwaps.length === 0 ? `
+        ${queue.count === 0 ? `
           <p class="tm-meta">${this._t("panel.activity_no_items")}</p>
         ` : `
-          <div class="tm-approval-list">
-            ${pendingCompletions.map(c => {
-              const chore = choreById[c.chore_id];
-              const child = childById[c.child_id];
-              let choreName = (chore && chore.name) || this._t("panel.activity_deleted_chore");
-              let chorePoints = chore ? chore.points : 0;
-              if (c.bonus_subtask_id && chore) {
-                const sub = (chore.bonus_subtasks || []).find(b => b.id === c.bonus_subtask_id);
-                if (sub) { choreName = `${chore.name} › ${sub.name}`; chorePoints = sub.points; }
-              } else if (chore && chore.task_type === "timed" && (c.timed_duration_seconds || 0) > 0) {
-                // Timed chores accrue points by elapsed-time rate, so the actual
-                // earned points can be lower than chore.points. Mirror sensor.py.
-                const rateSeconds = (chore.timed_rate_minutes || 0) * 60;
-                if (rateSeconds > 0) {
-                  chorePoints = Math.floor(c.timed_duration_seconds / rateSeconds) * (chore.timed_rate_points || 0);
-                }
-              }
-              const photoCap = [choreName, (child && child.name) || "", c.completed_at ? new Date(c.completed_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""].filter(Boolean).join(" · ");
-              return `
-                <div class="tm-approval-item">
-                  <div class="tm-approval-icon"><ha-icon icon="${c.bonus_subtask_id ? 'mdi:star-plus' : 'mdi:checkbox-marked-circle-outline'}"></ha-icon></div>
-                  ${this._safePhotoUrl(c.photo_url) ? `<a class="tm-approval-photo" href="${this._esc(this._safePhotoUrl(c.photo_url))}" target="_blank" rel="noopener" data-act="view-photo" data-photo="${this._esc(this._safePhotoUrl(c.photo_url))}" data-cap="${this._esc(photoCap)}" title="${this._t("panel.activity_view_photo")}"><img src="${this._esc(this._safePhotoUrl(c.photo_url))}" alt="" loading="lazy"></a>` : ""}
-                  <div class="tm-approval-body">
-                    <div class="tm-approval-line">${this._t("panel.activity_completed_text", {child: this._esc((child && child.name) || "?"), chore: this._esc(choreName)})}</div>
-                    <div class="tm-meta">${this._timeAgo(c.completed_at)} · ${chorePoints} ${this._t("panel.activity_points")}</div>
-                  </div>
-                  <div class="tm-approval-actions">
-                    <button type="button" class="tm-btn tm-btn-sm" data-act="reject-chore" data-id="${this._esc(c.id)}">${this._t("panel.activity_reject")}</button>
-                    <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-chore" data-id="${this._esc(c.id)}">${this._t("panel.activity_approve")}</button>
-                  </div>
-                </div>
-              `;
-            }).join("")}
-            ${pendingClaims.map(c => {
-              const reward = rewardById[c.reward_id];
-              const child = childById[c.child_id];
-              return `
-                <div class="tm-approval-item">
-                  <div class="tm-approval-icon"><ha-icon icon="mdi:gift-outline"></ha-icon></div>
-                  <div class="tm-approval-body">
-                    <div class="tm-approval-line">${this._t("panel.activity_claimed_text", {child: this._esc((child && child.name) || "?"), reward: this._esc((reward && reward.name) || this._t("panel.activity_deleted_reward"))})}</div>
-                    <div class="tm-meta">${this._timeAgo(c.claimed_at)}${reward ? ` · ${this._num(reward.cost)} ${this._t("panel.activity_points")}` : ""}</div>
-                  </div>
-                  <div class="tm-approval-actions">
-                    <button type="button" class="tm-btn tm-btn-sm" data-act="reject-reward" data-id="${this._esc(c.id)}">${this._t("panel.activity_reject")}</button>
-                    <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-reward" data-id="${this._esc(c.id)}">${this._t("panel.activity_approve")}</button>
-                  </div>
-                </div>
-              `;
-            }).join("")}
-            ${pendingSwaps.map(sw => {
-              const chore = choreById[sw.chore_id];
-              const req = childById[sw.requester_id];
-              const from = childById[sw.from_child_id];
-              return `
-                <div class="tm-approval-item">
-                  <div class="tm-approval-icon"><ha-icon icon="mdi:swap-horizontal"></ha-icon></div>
-                  <div class="tm-approval-body">
-                    <div class="tm-approval-line">${this._t("panel.swap_request_text", {child: this._esc((req && req.name) || "?"), chore: this._esc((chore && chore.name) || "?")})}</div>
-                    <div class="tm-meta">${from ? this._t("panel.swap_from", {name: this._esc(from.name)}) + " · " : ""}${this._timeAgo(sw.created_at)}</div>
-                  </div>
-                  <div class="tm-approval-actions">
-                    <button type="button" class="tm-btn tm-btn-sm" data-act="reject-swap" data-id="${this._esc(sw.id)}">${this._t("panel.activity_reject")}</button>
-                    <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-swap" data-id="${this._esc(sw.id)}">${this._t("panel.activity_approve")}</button>
-                  </div>
-                </div>
-              `;
-            }).join("")}
-          </div>
+          <div class="tm-approval-list">${queue.html}</div>
         `}
       </div>
 
       <!-- Recent activity feed -->
       <div class="tm-card">
         <h3 class="tm-section-title">${this._t("panel.activity_recent")}</h3>
-        ${recent.length === 0 ? `<p class="tm-meta">${this._t("panel.activity_no_recent")}</p>` : `
-          <div class="tm-timeline">
-            ${recent.map(ev => `
-              <div class="tm-timeline-row">
-                <div class="tm-timeline-time">${this._esc(this._timeAgo(ev.ts))}</div>
-                <div class="tm-timeline-icon tm-timeline-${ev.kind}"><ha-icon icon="${ev.kind === 'completion' ? 'mdi:check-circle' : ev.kind === 'claim' ? 'mdi:gift' : ev.points >= 0 ? 'mdi:plus-circle' : 'mdi:minus-circle'}"></ha-icon></div>
-                <div class="tm-timeline-body">
-                  <div><strong>${this._esc(ev.child)}</strong> · ${this._esc(ev.label)}</div>
-                </div>
-                <div class="tm-timeline-points ${ev.points >= 0 ? 'tm-pos' : 'tm-neg'} tm-numeric">${ev.points >= 0 ? '+' : ''}${this._num(ev.points)}</div>
-              </div>
-            `).join("")}
-          </div>
-        `}
+        ${recent.length === 0 ? `<p class="tm-meta">${this._t("panel.activity_no_recent")}</p>` : this._timelineHtml(recent)}
       </div>
 
       <!-- Audit log -->
@@ -3385,7 +4754,7 @@ class TaskMatePanel extends HTMLElement {
                       <td>${this._esc((child && child.name) || "?")}</td>
                       <td><strong class="tm-numeric ${t.points >= 0 ? 'tm-pos' : 'tm-neg'}">${t.points >= 0 ? '+' : ''}${this._num(t.points)}</strong></td>
                       <td>${this._esc(this._translateReason(t.reason) || "—")}</td>
-                      <td>${undoable ? `<button type="button" class="tm-icon-btn" data-act="undo-tx" data-id="${this._esc(t.id)}" title="${this._esc(this._t("panel.activity_undo"))}"><ha-icon icon="mdi:undo-variant"></ha-icon></button>` : ""}</td>
+                      <td>${undoable ? `<button type="button" class="tm-icon-btn" data-act="undo-tx" data-id="${this._esc(t.id)}" title="${this._esc(this._t("panel.activity_undo"))}"><ha-icon class="tm-rtl-flip" icon="mdi:undo-variant"></ha-icon></button>` : ""}</td>
                     </tr>
                   `;
                 }).join("")}
@@ -3395,6 +4764,1653 @@ class TaskMatePanel extends HTMLElement {
         `}
       </div>
     `;
+  }
+
+  // -- Today tab (#966) --------------------------------------------------
+  // The home page: each child's day, everything waiting on a parent, the
+  // chore board and recent activity. The board comes from get_state's
+  // `today` block (coordinator.daily_progress_state).
+
+  _todayEntry(childId) {
+    const board = this._state.today && this._state.today.board;
+    return board ? (board.children || []).find(e => e.child_id === childId) : null;
+  }
+
+  _renderTodayTab() {
+    const kids = (this._state.children || []).filter(c => this._childInScope(c.id));
+    const pointsName = (this._state.settings && this._state.settings.points_name) || this._t("common.points");
+    const queue = this._approvalQueue({ wishes: true });
+    const hour = new Date().getHours();
+    const greet = this._t(hour < 12 ? "panel.today_greeting_morning" : hour < 18 ? "panel.today_greeting_afternoon" : "panel.today_greeting_evening");
+    const dateText = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+    const needs = queue.count > 0
+      ? `<span class="tm-today-needs">${this._t(queue.count === 1 ? "panel.today_needs_one" : "panel.today_needs_many", { count: queue.count })}</span>`
+      : this._t("panel.today_all_clear");
+
+    if ((this._state.children || []).length === 0) {
+      return `
+        <div class="tm-toolbar"><h2 class="tm-toolbar-title">${this._esc(greet)}</h2></div>
+        ${this._wizardTodayEmpty()}
+      `;
+    }
+
+    const recent = this._activityEvents().slice(0, 6);
+    return `
+      <div class="tm-today-head">
+        <h2 class="tm-toolbar-title">${this._esc(greet)}</h2>
+        <div class="tm-meta">${this._esc(dateText)} · ${needs}</div>
+      </div>
+      ${this._wizardNudge()}
+
+      <div class="tm-today-kids">
+        ${kids.map(c => this._renderTodayKid(c, pointsName)).join("")}
+      </div>
+
+      <div class="tm-today-cols">
+        <div class="tm-today-col">
+          <div class="tm-card">
+            <h3 class="tm-section-title"><ha-icon icon="mdi:inbox-outline"></ha-icon>${this._t("panel.today_needs_title")}
+              ${queue.count > 0 ? `<span class="tm-pill tm-pill-warn">${queue.count}</span>` : ""}
+              ${this._approveAllButton(queue.chores)}
+            </h3>
+            ${queue.count === 0
+              ? `<p class="tm-meta tm-today-clear"><ha-icon icon="mdi:check-circle-outline"></ha-icon>${this._t("panel.today_needs_empty")}</p>`
+              : `<div class="tm-approval-list">${queue.html}</div>`}
+          </div>
+
+          <div class="tm-card">
+            <h3 class="tm-section-title"><ha-icon icon="mdi:calendar-check-outline"></ha-icon>${this._t("panel.today_board_title")}
+              <span class="tm-seg" role="tablist">
+                <button type="button" role="tab" class="${this._boardView === "week" ? "" : "tm-seg-on"}" aria-selected="${this._boardView === "week" ? "false" : "true"}" data-act="board-view" data-view="today">${this._t("panel.today_board_today")}</button>
+                <button type="button" role="tab" class="${this._boardView === "week" ? "tm-seg-on" : ""}" aria-selected="${this._boardView === "week" ? "true" : "false"}" data-act="board-view" data-view="week">${this._t("panel.today_board_week")}</button>
+              </span>
+            </h3>
+            ${this._boardView === "week" ? this._renderTodayWeek(kids) : this._renderTodayBoard(kids)}
+          </div>
+        </div>
+
+        <div class="tm-today-col">
+          <div class="tm-card">
+            <h3 class="tm-section-title"><ha-icon icon="mdi:lightning-bolt-outline"></ha-icon>${this._t("panel.today_quick_title")}</h3>
+            <div class="tm-today-quick">
+              <button type="button" class="tm-btn" data-act="add-chore"><ha-icon icon="mdi:check-circle-outline"></ha-icon>${this._t("panel.new_chore")}</button>
+              <button type="button" class="tm-btn" data-act="add-bounty"><ha-icon icon="mdi:flag-outline"></ha-icon>${this._t("panel.new_bounty")}</button>
+              <button type="button" class="tm-btn" data-act="tab" data-tab="bonuses"><ha-icon icon="mdi:flash-outline"></ha-icon>${this._t("panel.today_quick_bonus")}</button>
+              <button type="button" class="tm-btn" data-act="tab" data-tab="penalties"><ha-icon icon="mdi:alert-circle-outline"></ha-icon>${this._t("panel.today_quick_penalty")}</button>
+            </div>
+          </div>
+
+          <div class="tm-card">
+            <h3 class="tm-section-title"><ha-icon icon="mdi:pulse"></ha-icon>${this._t("panel.activity_recent")}
+              <button type="button" class="tm-btn tm-btn-sm" data-act="tab" data-tab="activity" style="margin-inline-start:auto">${this._t("panel.today_view_all")}</button>
+            </h3>
+            ${recent.length === 0 ? `<p class="tm-meta">${this._t("panel.activity_no_recent")}</p>` : this._timelineHtml(recent)}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderTodayKid(child, pointsName) {
+    const entry = this._todayEntry(child.id);
+    const due = entry ? entry.due : 0;
+    const done = entry ? entry.done : 0;
+    const pct = due ? Math.round((done / due) * 100) : 0;
+    const streak = this._num(child.current_streak);
+    let dayPill = "";
+    if (entry) {
+      if (due === 0) dayPill = `<span class="tm-pill">${this._t("panel.today_nothing_due")}</span>`;
+      else if (done >= due) dayPill = `<span class="tm-pill tm-pill-success">${this._t("panel.today_all_done")}</span>`;
+      else dayPill = `<span class="tm-pill">${this._t("panel.today_left", { count: due - done })}</span>`;
+    }
+    const scopeLabel = this._t("panel.scope_only", { name: child.name });
+    return `
+      <div class="tm-card tm-kid" style="--kc:${this._childColor(child.id)}">
+        <button type="button" class="tm-kid-main" data-act="scope" data-child="${this._esc(child.id)}" title="${this._esc(scopeLabel)}" aria-label="${this._esc(scopeLabel)}">
+          <span class="tm-ring" style="--p:${pct}" role="img" aria-label="${this._esc(this._t("panel.today_ring_label", { done, due }))}"><span>${entry && due ? `${done}/${due}` : "–"}</span></span>
+          <span class="tm-kid-text">
+            <span class="tm-kid-name">${this._esc(child.name)}</span>
+            <span class="tm-kid-pts"><strong class="tm-numeric">${this._fmtNum(child.points)}</strong> ${this._esc(pointsName)}</span>
+          </span>
+        </button>
+        <button type="button" class="tm-icon-btn tm-kid-adj" data-act="adjust-points-custom" data-id="${this._esc(child.id)}" title="${this._esc(this._t("panel.today_adjust_points"))}" aria-label="${this._esc(this._t("panel.today_adjust_points"))}">
+          <ha-icon icon="mdi:plus-minus-variant"></ha-icon>
+        </button>
+        <div class="tm-kid-pills">
+          ${streak > 0 ? `<span class="tm-pill"><ha-icon icon="mdi:fire"></ha-icon>${this._ltrNums(this._t("panel.today_streak", { count: streak }))}</span>` : ""}
+          ${dayPill}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderTodayBoard(kids) {
+    const board = this._state.today && this._state.today.board;
+    if (!board) return `<p class="tm-meta">${this._t("panel.today_board_unavailable")}</p>`;
+    if (kids.length === 0) return "";
+    const choreById = Object.fromEntries((this._state.chores || []).map(c => [c.id, c]));
+    const periods = [
+      ...this._effectiveTimePeriods().map(p => ({ id: p.id, label: this._timePeriodLabel(p), icon: p.icon || "mdi:clock-outline" })),
+      { id: "anytime", label: this._t("panel.time_anytime"), icon: "mdi:clock-outline" },
+    ];
+    const known = new Set(periods.map(p => p.id));
+    const slotOf = chore => (chore && known.has(chore.time_category) ? chore.time_category : "anytime");
+    const cells = {};  // `${period}|${child}` -> items
+    for (const kid of kids) {
+      const entry = this._todayEntry(kid.id);
+      for (const item of (entry && entry.chores) || []) {
+        const chore = choreById[item.chore_id];
+        if (!chore) continue;
+        const key = `${slotOf(chore)}|${kid.id}`;
+        (cells[key] = cells[key] || []).push({ ...item, chore });
+      }
+    }
+    const rows = periods.filter(p => kids.some(k => (cells[`${p.id}|${k.id}`] || []).length));
+    if (rows.length === 0) return `<p class="tm-meta">${this._t("panel.today_board_empty")}</p>`;
+    const statusLabel = st => this._t(`panel.today_status_${st}`);
+    return `
+      <div class="tm-board-wrap">
+        <div class="tm-board" style="--cols:${kids.length}">
+          <div class="tm-board-h"></div>
+          ${kids.map(k => `<div class="tm-board-h">${this._childAvatar(k, "tm-av-sm")}<span>${this._esc(k.name)}</span></div>`).join("")}
+          ${rows.map(p => `
+            <div class="tm-board-slot"><ha-icon icon="${this._esc(p.icon)}"></ha-icon><span>${this._esc(p.label)}</span></div>
+            ${kids.map(k => {
+              const items = cells[`${p.id}|${k.id}`] || [];
+              return `<div class="tm-board-cell">${items.length ? items.map(it => `
+                <button type="button" class="tm-bchip tm-bchip-${it.status}" data-act="edit-chore" data-id="${this._esc(it.chore.id)}" title="${this._esc(`${it.chore.name} · ${statusLabel(it.status)}`)}">
+                  <i class="tm-bdot" aria-hidden="true"></i><span>${this._esc(it.chore.name)}${it.limit > 1 ? ` <small>${it.count}/${it.limit}</small>` : ""}</span>
+                  <span class="tm-sr">${this._esc(statusLabel(it.status))}</span>
+                </button>`).join("") : `<span class="tm-board-none">–</span>`}</div>`;
+            }).join("")}
+          `).join("")}
+        </div>
+      </div>
+      <div class="tm-board-legend">
+        ${["done", "pending", "todo", "missed"].map(st => `<span class="tm-bchip tm-bchip-${st}"><i class="tm-bdot" aria-hidden="true"></i>${this._esc(statusLabel(st))}</span>`).join("")}
+      </div>
+    `;
+  }
+
+  _renderTodayWeek(kids) {
+    const history = this._state.today && this._state.today.history;
+    if (!history) return `<p class="tm-meta">${this._t("panel.today_board_unavailable")}</p>`;
+    const first = kids.map(k => history[k.id]).find(Boolean) || [];
+    const dayName = iso => new Date(`${iso}T12:00:00`).toLocaleDateString([], { weekday: "short" });
+    const gaps = kids.some(k => (history[k.id] || []).some(d => d.due == null));
+    return `
+      <div class="tm-board-wrap">
+        <div class="tm-week" style="--days:${first.length || 7}">
+          <div></div>
+          ${first.map(d => `<div class="tm-week-h">${this._esc(dayName(d.date))}</div>`).join("")}
+          ${kids.map(k => `
+            <div class="tm-week-kid">${this._childAvatar(k, "tm-av-sm")}<span>${this._esc(k.name)}</span></div>
+            ${(history[k.id] || []).map(d => {
+              if (d.due == null) return `<div class="tm-week-cell tm-week-none" title="${this._esc(this._t("panel.today_week_none"))}">–</div>`;
+              const pct = d.due ? Math.round((d.done / d.due) * 100) : 100;
+              return `<div class="tm-week-cell" style="--kc:${this._childColor(k.id)};--p:${pct}" title="${this._esc(`${dayName(d.date)} · ${d.done}/${d.due}`)}">${d.due ? `${d.done}/${d.due}` : "–"}</div>`;
+            }).join("")}
+          `).join("")}
+        </div>
+      </div>
+      ${gaps ? `<p class="tm-meta tm-week-hint">${this._t("panel.today_week_hint")}</p>` : ""}
+    `;
+  }
+
+  // -- Command search (#966) ---------------------------------------------
+  // Ctrl/Cmd+K or "/" opens it. Every result is a button carrying an ordinary
+  // data-act, so picking one runs exactly what the matching button does.
+
+  _isTypingTarget(e) {
+    const el = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable || tag.startsWith("ha-textfield");
+  }
+
+  _onDocKeyDown(e) {
+    if (!this.isConnected || !this._state) return;
+    const key = (e.key || "").toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && key === "k") {
+      e.preventDefault();
+      if (this._palette) this._closePalette(); else if (!this._dialog) this._openPalette();
+      return;
+    }
+    if (!this._palette) {
+      // Esc closes an open editor even when focus isn't inside the panel —
+      // after tapping a board chip it sits on the page, which the panel's own
+      // keydown listener never hears (#968).
+      if (e.key === "Escape" && this._dialog && !(e.composedPath && e.composedPath().includes(this))) {
+        this._closeDialog();
+        return;
+      }
+      if (e.key === "/" && !this._dialog && !e.ctrlKey && !e.metaKey && !e.altKey && !this._isTypingTarget(e)) {
+        e.preventDefault();
+        this._openPalette();
+      }
+      return;
+    }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); this._closePalette(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = this._paletteResults().length;
+      if (!n) return;
+      this._palette.hi = (this._palette.hi + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      this._paintPaletteList();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const btn = this.querySelector(`.tm-pal-item[data-idx="${this._palette.hi}"]`);
+      if (btn) btn.click();
+    }
+  }
+
+  _openPalette() {
+    this._newMenuOpen = false;
+    this._mobileNavOpen = false;
+    this._palette = { q: "", hi: 0 };
+    this._render();
+  }
+
+  _closePalette() {
+    this._palette = null;
+    this._render();
+  }
+
+  _focusPalette() {
+    const input = this.querySelector(".tm-pal-input");
+    if (!input) return;
+    input.focus();
+    const end = input.value.length;
+    try { input.setSelectionRange(end, end); } catch (_) {}
+  }
+
+  _paletteCommands() {
+    const s = this._state;
+    const cmds = [];
+    const goTo = this._t("panel.palette_group_go");
+    for (const it of this._sidebarGroups().flatMap(g => g.items)) {
+      cmds.push({ group: goTo, icon: it.icon, label: it.label, data: { act: "tab", tab: it.id } });
+    }
+    const actions = this._t("panel.palette_group_actions");
+    for (const it of this._newMenuItems()) cmds.push({ group: actions, icon: it.icon, label: it.label, data: { act: it.act } });
+    cmds.push({ group: actions, icon: "mdi:auto-fix", label: this._t("wizard.run_btn"), data: { act: "wz-open" } });
+    if ((s.pending_completions || []).length) {
+      cmds.push({ group: actions, icon: "mdi:check-all", label: this._t("panel.activity_approve_all"), data: { act: "approve-all-chores" } });
+    }
+    for (const c of s.children || []) {
+      cmds.push({ group: actions, icon: "mdi:plus-minus-variant", label: this._t("panel.palette_adjust_points", { name: c.name }), data: { act: "adjust-points-custom", id: c.id } });
+    }
+    if ((s.children || []).length >= 2) {
+      for (const c of s.children) cmds.push({ group: actions, icon: "mdi:filter-variant", label: this._t("panel.scope_only", { name: c.name }), data: { act: "scope", child: c.id } });
+      if (this._scopeId()) cmds.push({ group: actions, icon: "mdi:filter-variant-remove", label: this._t("panel.scope_clear"), data: { act: "scope", child: "" } });
+    }
+    const lists = [
+      [this._t("panel.tab_children"), s.children, "edit-child", c => c.avatar || "mdi:account-circle"],
+      [this._t("panel.tab_chores"), s.chores, "edit-chore", c => c.icon || "mdi:check-circle-outline"],
+      [this._t("panel.tab_rewards"), s.rewards, "edit-reward", r => r.icon || "mdi:gift-outline"],
+      [this._t("panel.tab_quests"), s.quests, "edit-quest", q => q.icon || "mdi:map-marker-path"],
+      [this._t("panel.tab_challenges"), s.challenges, "edit-challenge", c => c.icon || "mdi:trophy-outline"],
+    ];
+    for (const [group, items, act, icon] of lists) {
+      for (const it of items || []) cmds.push({ group, icon: icon(it), label: it.name || "", data: { act, id: it.id }, searchOnly: true });
+    }
+    return cmds;
+  }
+
+  _paletteResults() {
+    const q = ((this._palette && this._palette.q) || "").trim().toLowerCase();
+    const cmds = this._paletteCommands();
+    if (!q) return cmds.filter(c => !c.searchOnly);
+    const words = q.split(/\s+/);
+    return cmds.filter(c => {
+      const hay = `${c.label} ${c.group}`.toLowerCase();
+      return words.every(w => hay.includes(w));
+    }).slice(0, 60);
+  }
+
+  _paletteListHtml() {
+    const results = this._paletteResults();
+    if (!results.length) return `<div class="tm-pal-empty">${this._t("panel.palette_no_results")}</div>`;
+    const hi = this._palette ? this._palette.hi : 0;
+    let last = null;
+    return results.map((c, i) => {
+      const head = c.group !== last ? `<div class="tm-pal-group">${this._esc(c.group)}</div>` : "";
+      last = c.group;
+      const attrs = Object.entries(c.data)
+        .map(([k, v]) => `data-${k}="${this._esc(v)}"`)
+        .join(" ");
+      return `${head}<button type="button" class="tm-pal-item ${i === hi ? "tm-pal-hi" : ""}" role="option" aria-selected="${i === hi ? "true" : "false"}" data-idx="${i}" ${attrs}>
+        <ha-icon icon="${this._esc(c.icon)}"></ha-icon><span>${this._esc(c.label)}</span>
+      </button>`;
+    }).join("");
+  }
+
+  _paintPaletteList() {
+    const list = this.querySelector(".tm-pal-list");
+    if (!list) return;
+    list.innerHTML = this._paletteListHtml();
+    const hi = list.querySelector(".tm-pal-hi");
+    if (hi && hi.scrollIntoView) hi.scrollIntoView({ block: "nearest" });
+  }
+
+  _renderPalette() {
+    if (!this._palette || !this._state) return "";
+    const ph = this._t("panel.palette_placeholder");
+    return `
+      <div class="tm-pal-scrim" data-act="palette-scrim">
+        <div class="tm-pal" role="dialog" aria-modal="true" aria-label="${this._esc(ph)}">
+          <div class="tm-pal-head">
+            <ha-icon icon="mdi:magnify"></ha-icon>
+            <input class="tm-pal-input" data-palette="q" placeholder="${this._esc(ph)}" value="${this._esc(this._palette.q)}" autocomplete="off" spellcheck="false" aria-label="${this._esc(ph)}">
+            <kbd>Esc</kbd>
+          </div>
+          <div class="tm-pal-list" role="listbox">${this._paletteListHtml()}</div>
+          <div class="tm-pal-foot">${this._t("panel.palette_hint")}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // -- Setup wizard (#980) ------------------------------------------------
+  // A guided first run: children (with a birthday, an age or an age group),
+  // chores suggested for their ages, starter rewards, then one backend call
+  // that creates the lot (taskmate/setup_wizard/apply) and, optionally, a
+  // "Family chores" dashboard. It only ever adds. The draft lives in this
+  // browser's storage until it is created, so leaving part-way loses nothing.
+
+  _wizardHasData() {
+    const s = this._state || {};
+    return (s.children || []).length + (s.chores || []).length + (s.rewards || []).length > 0;
+  }
+
+  // Opens by itself once, when the panel first loads a family with no
+  // children — unless it was skipped before in this browser.
+  _wizardMaybeAutoOpen() {
+    if (this._wzAutoChecked || !this._state) return;
+    this._wzAutoChecked = true;
+    if ((this._state.children || []).length) return;
+    if (localStorage.getItem(WZ_SKIP_KEY) === "true") return;
+    if (this._activeTab !== "today") return;
+    this._wizardOpen();
+  }
+
+  // Settings and the command search ask first when a family already exists.
+  _wizardRequestOpen() {
+    if (!this._wizardHasData()) { this._wizardOpen(); return; }
+    const s = this._state;
+    this._openDialog({ kind: "wizard-confirm", data: {
+      children: (s.children || []).length, chores: (s.chores || []).length, rewards: (s.rewards || []).length,
+    } });
+  }
+
+  async _wizardOpen(opts = {}) {
+    if (!this._wzCatalogue) {
+      const { ok, res, err } = await this._callWS({ type: "taskmate/setup_wizard/catalogue" });
+      if (!ok) { this._showToast("err", this._t("wizard.toast_load_failed", { error: err })); return; }
+      this._wzCatalogue = res;
+    }
+    if (!this._wz || this._wz.step === 5) {
+      const draft = this._wizardLoadDraft();
+      this._wz = draft || this._wizardFresh();
+    }
+    this._wizardSyncExisting();
+    if (opts.step != null) this._wz.step = opts.step;
+    localStorage.removeItem(WZ_SKIP_KEY);
+    this._activeTab = "setup";
+    this._mobileNavOpen = false;
+    this._render();
+  }
+
+  _wizardClose(toTab = "today") {
+    // A finished run leaves nothing to come back to; anything else stays as a draft.
+    if (this._wz && this._wz.step === 5) this._wz = null;
+    else this._wizardSaveDraft();
+    localStorage.setItem(WZ_SKIP_KEY, "true");
+    this._activeTab = toTab;
+    this._render();
+  }
+
+  _wizardLoadDraft() {
+    try {
+      const d = JSON.parse(localStorage.getItem(WZ_DRAFT_KEY) || "null");
+      if (!d || d.v !== 1 || !Array.isArray(d.kids)) return null;
+      d.busy = false;
+      d.result = null;
+      d.step = Math.min(Math.max(0, Number(d.step) || 0), 4);
+      return d;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _wizardSaveDraft() {
+    const wz = this._wz;
+    if (!wz || wz.step === 5) return;
+    try {
+      const { busy: _busy, result: _result, ...keep } = wz;
+      localStorage.setItem(WZ_DRAFT_KEY, JSON.stringify(keep));
+    } catch (_) { /* storage full or blocked: the wizard still works */ }
+  }
+
+  _wizardFresh() {
+    const settings = (this._state && this._state.settings) || {};
+    const pname = settings.points_name || this._t("wizard.pname_stars");
+    const picon = settings.points_icon || "mdi:star";
+    const wz = {
+      v: 1, step: 0, seq: 1,
+      pname, picon, pnameOrig: pname, piconOrig: picon, pnameCustom: false,
+      kids: [], form: null,
+      chores: {}, packs: [], rewards: {}, custom: [], rwName: "", rwCost: 20,
+      approval: "big", dash: true, notify: true, showAll: false,
+    };
+    wz.pnameCustom = !WZ_POINT_NAMES.some(([k]) => this._t(`wizard.pname_${k}`) === pname);
+    return wz;
+  }
+
+  // Existing children join the wizard as "Already set up", so their ages can
+  // steer the suggestions. Keeps any age group the parent picked in the draft.
+  _wizardSyncExisting() {
+    const wz = this._wz;
+    const children = ((this._state && this._state.children) || []).filter(c => !c.is_guest);
+    const picked = Object.fromEntries(wz.kids.filter(k => k.existing).map(k => [k.key, k.band]));
+    const existing = children.map(c => {
+      const full = /^\d{4}-\d{2}-\d{2}$/.test(c.birthday || "");
+      return {
+        key: c.id, name: c.name, icon: c.avatar || "mdi:account-circle", color: this._childColor(c.id),
+        existing: true, mode: full ? "bday" : "none", bday: full ? c.birthday : "", age: 0,
+        band: c.age_group || picked[c.id] || "", origBand: c.age_group || "",
+      };
+    });
+    const ids = new Set(children.map(c => c.id));
+    // A draft's new child who has since been added by hand is dropped here too.
+    const names = new Set(children.map(c => (c.name || "").trim().toLowerCase()));
+    const fresh = wz.kids.filter(k => !k.existing && !ids.has(k.key) && !names.has(k.name.trim().toLowerCase()));
+    wz.kids = [...existing, ...fresh];
+    wz.mode = this._wizardHasData() ? "existing" : "fresh";
+    if (!wz.form) wz.form = this._wizardNewForm();
+    this._wizardInitChores();
+    this._wizardInitRewards();
+  }
+
+  _wizardNewForm() {
+    const used = new Set((this._wz ? this._wz.kids : []).map(k => k.color));
+    const d = new Date();
+    return {
+      name: "", mode: "bday",
+      bday: `${d.getFullYear() - 6}-${String(d.getMonth() + 1).padStart(2, "0")}-01`,
+      age: 6, band: "6_8", icon: WZ_KID_ICONS[(this._wz ? this._wz.kids.length : 0) % WZ_KID_ICONS.length],
+      color: WZ_KID_COLORS.find(c => !used.has(c)) || WZ_KID_COLORS[0],
+    };
+  }
+
+  _wizardAgeOf(kid) {
+    if (kid.mode === "bday" && /^\d{4}-\d{2}-\d{2}$/.test(kid.bday || "")) {
+      const [y, m, d] = kid.bday.split("-").map(Number);
+      const now = new Date();
+      let age = now.getFullYear() - y;
+      if (now.getMonth() + 1 < m || (now.getMonth() + 1 === m && now.getDate() < d)) age--;
+      return Math.max(0, age);
+    }
+    if (kid.mode === "age") return Number(kid.age) || 0;
+    return null;
+  }
+
+  // An age maps onto its group; under-3s get the youngest group.
+  _wizardGroupForAge(age) {
+    if (age == null) return "";
+    const hit = WZ_AGE_GROUPS.find(([, lo, hi]) => age >= lo && age <= hi);
+    return hit ? hit[0] : WZ_AGE_GROUPS[0][0];
+  }
+
+  _wizardBand(kid) {
+    const age = this._wizardAgeOf(kid);
+    return age == null ? (kid.band || "") : this._wizardGroupForAge(age);
+  }
+
+  _wizardBandIdx(id) { return WZ_AGE_GROUPS.findIndex(g => g[0] === id); }
+
+  // A chore can go to children in its age group or older, never younger.
+  _wizardEligible(groupId) {
+    const gi = this._wizardBandIdx(groupId);
+    return this._wz.kids.filter(k => { const b = this._wizardBand(k); return b && this._wizardBandIdx(b) >= gi; });
+  }
+
+  _wizardChoreName(s) { return this._t(`wizard.chore.${s.id}`); }
+  _wizardRewardName(r) { return this._t(`wizard.reward.${r.id}`); }
+
+  // Built-in pack names and their chores are translated here; a key the
+  // locale lacks (a pack added later) falls back to the stored English.
+  _wizardPackName(tpl) {
+    const key = `wizard.pack.${tpl.id}.name`;
+    const t = this._t(key);
+    return t === key ? tpl.name : t;
+  }
+
+  _wizardPackChoreName(tpl, idx) {
+    const key = `wizard.pack.${tpl.id}.chore_${idx}`;
+    const t = this._t(key);
+    return t === key ? tpl.chores[idx].name : t;
+  }
+
+  _wizardPacks() {
+    return ((this._state && this._state.templates) || []).filter(t => t.builtin);
+  }
+
+  _wizardHave(list, name) {
+    const n = (name || "").trim().toLowerCase();
+    return ((this._state && this._state[list]) || []).some(x => (x.name || "").trim().toLowerCase() === n);
+  }
+
+  _wizardInitChores() {
+    const wz = this._wz;
+    const groups = {};
+    for (const s of this._wzCatalogue.chores) (groups[s.age_group] = groups[s.age_group] || []).push(s);
+    for (const [gid, list] of Object.entries(groups)) {
+      const inGroup = wz.kids.filter(k => this._wizardBand(k) === gid).map(k => k.key);
+      list.forEach((s, i) => {
+        const prev = wz.chores[s.id];
+        const keys = new Set(wz.kids.map(k => k.key));
+        if (prev && prev.touched) {
+          prev.who = prev.who.filter(k => keys.has(k));
+          if (!prev.who.length) prev.on = false;
+          return;
+        }
+        const have = this._wizardHave("chores", this._wizardChoreName(s));
+        wz.chores[s.id] = { on: inGroup.length > 0 && i < 5 && !have, pts: s.points, who: inGroup, touched: false };
+      });
+    }
+  }
+
+  _wizardInitRewards() {
+    const wz = this._wz;
+    for (const r of this._wzCatalogue.rewards) {
+      if (wz.rewards[r.id]) continue;
+      wz.rewards[r.id] = { on: !!r.picked && !this._wizardHave("rewards", this._wizardRewardName(r)), cost: r.cost };
+    }
+  }
+
+  _wizardPerWeek(s) { return Number(s.per_week) || 0; }
+
+  // A pack chore named like a ticked suggestion (or a chore the family has)
+  // is only added once.
+  _wizardPackDupe(name) {
+    const n = name.trim().toLowerCase();
+    if (this._wizardHave("chores", name)) return true;
+    return this._wzCatalogue.chores.some(s => this._wz.chores[s.id].on && this._wizardChoreName(s).trim().toLowerCase() === n);
+  }
+
+  _wizardWeekly(kid) {
+    let pts = 0, n = 0;
+    for (const s of this._wzCatalogue.chores) {
+      const c = this._wz.chores[s.id];
+      if (c.on && c.who.includes(kid.key) && !this._wizardHave("chores", this._wizardChoreName(s))) {
+        n++; pts += c.pts * this._wizardPerWeek(s);
+      }
+    }
+    for (const tpl of this._wizardPacks()) {
+      if (!this._wz.packs.includes(tpl.id)) continue;
+      (tpl.chores || []).forEach((c, i) => {
+        if (this._wizardPackDupe(this._wizardPackChoreName(tpl, i))) return;
+        n++; pts += (c.points || 0) * ((c.due_days || []).length || 7);
+      });
+    }
+    return { n, pts: Math.round(pts) };
+  }
+
+  _wizardApproval(points) {
+    const a = this._wz.approval;
+    return a === "all" || (a === "big" && points >= 4);
+  }
+
+  // Everything the Create button will send, built from the current picks.
+  _wizardPlan() {
+    const wz = this._wz;
+    const children = wz.kids.filter(k => !k.existing).map(k => ({
+      ref: k.key, name: k.name.trim(), avatar: k.icon,
+      birthday: k.mode === "bday" ? k.bday : "",
+      age_group: this._wizardBand(k),
+    }));
+    // Existing children: only fill in a missing age group, never change one.
+    const child_updates = wz.kids
+      .filter(k => k.existing && !k.origBand && this._wizardBand(k))
+      .map(k => ({ child_id: k.key, age_group: this._wizardBand(k) }));
+    const chores = [];
+    for (const s of this._wzCatalogue.chores) {
+      const c = wz.chores[s.id];
+      const name = this._wizardChoreName(s);
+      if (!c.on || !c.who.length || this._wizardHave("chores", name)) continue;
+      chores.push({
+        name, points: c.pts, icon: s.icon, assigned_to: [...c.who],
+        requires_approval: this._wizardApproval(c.pts), time_category: s.time_category, daily_limit: 1,
+        ...s.schedule,
+      });
+    }
+    for (const tpl of this._wizardPacks()) {
+      if (!wz.packs.includes(tpl.id)) continue;
+      (tpl.chores || []).forEach((c, i) => {
+        const name = this._wizardPackChoreName(tpl, i);
+        if (this._wizardPackDupe(name)) return;
+        chores.push({
+          name, points: c.points || 0, assigned_to: [],
+          requires_approval: this._wizardApproval(c.points || 0),
+          time_category: c.time_category || "anytime", daily_limit: c.daily_limit || 1,
+          schedule_mode: c.schedule_mode || "specific_days", due_days: [...(c.due_days || [])],
+        });
+      });
+    }
+    const rewards = [];
+    for (const r of this._wzCatalogue.rewards) {
+      const pick = wz.rewards[r.id];
+      const name = this._wizardRewardName(r);
+      if (pick.on && !this._wizardHave("rewards", name)) rewards.push({ name, cost: pick.cost, icon: r.icon });
+    }
+    for (const r of wz.custom) if (r.on) rewards.push({ name: r.name, cost: r.cost, icon: "mdi:gift-outline" });
+    return { children, child_updates, chores, rewards };
+  }
+
+  // "YYYY-MM-DD" naming a day that exists (no 13th month, no 30 February).
+  _wizardRealDate(value) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!m) return false;
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
+  }
+
+  // True when the plan would add or fill in anything at all.
+  _wizardPlanHasWork(plan) {
+    return !!(plan.children.length || plan.child_updates.length || plan.chores.length || plan.rewards.length);
+  }
+
+  _wizardAddKid() {
+    const wz = this._wz;
+    const f = wz.form;
+    const name = (f.name || "").trim();
+    if (!name) return false;
+    const today = new Date().toISOString().slice(0, 10);
+    if (f.mode === "bday" && !this._wizardRealDate(f.bday)) {
+      this._showToast("err", this._t("wizard.toast_invalid_birthday"));
+      return false;
+    }
+    if (f.mode === "bday" && f.bday > today) {
+      this._showToast("err", this._t("wizard.toast_bad_birthday"));
+      return false;
+    }
+    if (wz.kids.some(k => k.name.trim().toLowerCase() === name.toLowerCase())) {
+      this._showToast("err", this._t("wizard.toast_child_exists", { name }));
+      return false;
+    }
+    wz.kids.push({ key: `new${wz.seq++}`, name, icon: f.icon, color: f.color, mode: f.mode,
+      bday: f.bday, age: f.age, band: f.band, existing: false });
+    wz.form = this._wizardNewForm();
+    this._wizardInitChores();
+    return true;
+  }
+
+  _wizardGo(step) {
+    const wz = this._wz;
+    if (wz.busy || step === 5) return;
+    // Leaving Children with a name typed adds that child, as the footer says.
+    if (wz.step === 1 && step > 1 && (wz.form.name || "").trim() && !this._wizardAddKid()) return;
+    if (step >= 2 && !wz.kids.length) { this._showToast("err", this._t("wizard.toast_need_child")); wz.step = 1; this._render(); return; }
+    wz.step = Math.max(0, Math.min(4, step));
+    this._wizardSaveDraft();
+    this._render();
+    const body = this.querySelector(".tm-body");
+    if (body) body.scrollTop = 0;
+  }
+
+  _wizardAct(t, e) {
+    const wz = this._wz;
+    const act = t.dataset.act;
+    const v = t.dataset.v;
+    if (act === "wz-open") { this._wizardRequestOpen(); return; }
+    if (act === "wz-open-confirmed") { this._closeDialog(true); this._wizardOpen(); return; }
+    if (act === "wz-nudge") { this._wizardNudgeAct(t.dataset.id, t.dataset.v, true); return; }
+    if (act === "wz-nudge-dismiss") { this._wizardNudgeAct(t.dataset.id, t.dataset.v, false); return; }
+    if (!wz) return;
+    if (wz.busy && act !== "wz-noop") return;
+    const f = wz.form;
+    switch (act) {
+      case "wz-close": this._wizardClose(); return;
+      case "wz-today": this._wz = null; this._activeTab = "today"; this._render(); return;
+      case "wz-restore": this._wizardClose("settings"); return;
+      case "wz-dashboard":
+        history.pushState(null, "", `/${WZ_DASH_PATH}`);
+        window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+        return;
+      case "wz-go": this._wizardGo(Number(v)); return;
+      case "wz-next": this._wizardGo(wz.step + 1); return;
+      case "wz-back": this._wizardGo(wz.step - 1); return;
+      case "wz-create": this._wizardCreate(); return;
+      case "wz-pname":
+        wz.pnameCustom = v === "custom";
+        if (!wz.pnameCustom) {
+          const hit = WZ_POINT_NAMES.find(([k]) => k === v);
+          wz.pname = this._t(`wizard.pname_${v}`);
+          wz.picon = hit ? hit[1] : wz.picon;
+        }
+        break;
+      case "wz-fmode": f.mode = v; break;
+      case "wz-fage": f.age = Math.max(2, Math.min(18, (Number(f.age) || 0) + Number(t.dataset.d))); break;
+      case "wz-fband": f.band = v; break;
+      case "wz-ficon": f.icon = v; break;
+      case "wz-fcolor": f.color = v; break;
+      case "wz-add-kid": this._wizardAddKid(); break;
+      case "wz-edit-kid": {
+        const k = wz.kids.find(x => x.key === t.dataset.id);
+        if (!k || k.existing) return;
+        wz.kids = wz.kids.filter(x => x !== k);
+        wz.form = { name: k.name, mode: k.mode, bday: k.bday, age: k.age, band: k.band || "6_8", icon: k.icon, color: k.color };
+        this._wizardInitChores();
+        break;
+      }
+      case "wz-del-kid":
+        wz.kids = wz.kids.filter(k => k.existing || k.key !== t.dataset.id);
+        this._wizardInitChores();
+        break;
+      case "wz-kband": {
+        const k = wz.kids.find(x => x.key === t.dataset.id);
+        if (k && k.existing && !k.origBand) { k.band = v; this._wizardInitChores(); }
+        break;
+      }
+      case "wz-sg": {
+        const c = wz.chores[t.dataset.id];
+        const s = this._wzCatalogue.chores.find(x => x.id === t.dataset.id);
+        if (!c || !s) return;
+        if (!c.on && !c.who.length) c.who = this._wizardEligible(s.age_group).map(k => k.key);
+        if (!c.who.length) return;
+        c.on = !c.on; c.touched = true;
+        break;
+      }
+      case "wz-sg-who": {
+        e.stopPropagation();
+        const c = wz.chores[t.dataset.id];
+        if (!c) return;
+        const i = c.who.indexOf(t.dataset.k);
+        if (i >= 0) c.who.splice(i, 1); else c.who.push(t.dataset.k);
+        c.touched = true;
+        // Nobody left means nobody would get it (and an empty list is "everyone").
+        c.on = c.who.length > 0;
+        break;
+      }
+      case "wz-sg-pts": {
+        e.stopPropagation();
+        const c = wz.chores[t.dataset.id];
+        if (!c) return;
+        c.pts = Math.max(1, Math.min(100, c.pts + Number(t.dataset.d)));
+        c.touched = true;
+        break;
+      }
+      case "wz-band-all": {
+        const list = this._wzCatalogue.chores.filter(s => s.age_group === v && !this._wizardHave("chores", this._wizardChoreName(s)));
+        const el = this._wizardEligible(v).map(k => k.key);
+        const all = list.every(s => wz.chores[s.id].on);
+        for (const s of list) {
+          const c = wz.chores[s.id];
+          if (!all && !c.who.length) c.who = [...el];
+          c.on = !all && c.who.length > 0;
+          c.touched = true;
+        }
+        break;
+      }
+      case "wz-show-all": wz.showAll = true; break;
+      case "wz-pack":
+        wz.packs = wz.packs.includes(v) ? wz.packs.filter(p => p !== v) : [...wz.packs, v];
+        break;
+      case "wz-rw": {
+        const r = wz.rewards[t.dataset.id];
+        if (r) r.on = !r.on;
+        break;
+      }
+      case "wz-rw-cost": {
+        e.stopPropagation();
+        const r = wz.rewards[t.dataset.id] || wz.custom.find(x => x.key === t.dataset.id);
+        if (r) r.cost = Math.max(5, Math.min(100000, r.cost + Number(t.dataset.d)));
+        break;
+      }
+      case "wz-rw-custom-toggle": {
+        const r = wz.custom.find(x => x.key === t.dataset.id);
+        if (r) r.on = !r.on;
+        break;
+      }
+      case "wz-rw-add": {
+        const name = (wz.rwName || "").trim();
+        if (!name) return;
+        wz.custom.push({ key: `rw${wz.seq++}`, name, cost: Math.max(0, Math.round(Number(wz.rwCost) || 0)), on: true });
+        wz.rwName = ""; wz.rwCost = 20;
+        break;
+      }
+      case "wz-appr": wz.approval = v; break;
+      case "wz-dash": wz.dash = !wz.dash; break;
+      case "wz-notify": wz.notify = !wz.notify; break;
+      default: return;
+    }
+    this._wizardSaveDraft();
+    this._render();
+  }
+
+  // Typing must not rebuild the page (it would steal the focus), so inputs
+  // update the draft and patch only what shows the value.
+  _wizardInput(t) {
+    const wz = this._wz;
+    if (!wz) return;
+    const key = t.dataset.wzIn;
+    if (key === "pname") { wz.pname = t.value; }
+    else if (key === "rw-name") { wz.rwName = t.value; }
+    else if (key === "rw-cost") { wz.rwCost = t.value; }
+    else if (key === "name") {
+      wz.form.name = t.value;
+      const label = this._t("wizard.add_named", { name: t.value.trim() || this._t("wizard.child_word") });
+      this.querySelectorAll('[data-act="wz-add-kid"]').forEach(b => { b.disabled = !t.value.trim(); b.lastElementChild.textContent = label; });
+      this.querySelectorAll(".tm-wz-mini-name").forEach(el => { el.textContent = t.value.trim() || this._t("wizard.new_child"); });
+      const hint = this.querySelector(".tm-wz-foot-hint");
+      if (hint) hint.textContent = t.value.trim() ? this._t("wizard.foot_will_add", { name: t.value.trim() }) : "";
+    } else if (key === "bday") {
+      wz.form.bday = t.value;
+      const age = this._wizardAgeOf({ mode: "bday", bday: t.value });
+      const text = age != null ? this._t("wizard.age_n", { age }) : "";
+      this.querySelectorAll(".tm-wz-age-now").forEach(el => { el.textContent = text; });
+      this.querySelectorAll(".tm-wz-add .tm-wz-mini-sub").forEach(el => { el.textContent = text || this._t("wizard.ready_for_chores"); });
+    }
+    this._wizardSaveDraft();
+  }
+
+  async _wizardCreate() {
+    const wz = this._wz;
+    if (wz.busy) return;
+    const plan = this._wizardPlan();
+    if (!this._wizardPlanHasWork(plan)) return;
+    wz.busy = true;
+    this._render();
+    const { ok, res, err, code } = await this._callWS({ type: "taskmate/setup_wizard/apply", ...plan });
+    if (!ok) {
+      wz.busy = false;
+      this._render();
+      // Birthday problems come back as codes, so the parent reads them in
+      // their own language rather than Python's wording.
+      const known = { invalid_birthday: "wizard.toast_invalid_birthday", future_birthday: "wizard.toast_bad_birthday" }[code];
+      this._showToast("err", known ? this._t(known) : this._t("wizard.toast_create_failed", { error: err }));
+      return;
+    }
+    // The points name is only touched when it was changed on the Welcome step.
+    const pname = (wz.pname || "").trim();
+    if (pname && (pname !== wz.pnameOrig || wz.picon !== wz.piconOrig)) {
+      await this._callWS({ type: "taskmate/update_settings", points_name: pname.slice(0, 120), points_icon: wz.picon });
+    }
+    if (wz.notify) await this._wizardEnableApprovalAlerts();
+    let dashboard = "off";
+    if (wz.dash) dashboard = await this._wizardCreateDashboard(res.children || {});
+    wz.result = { ...res, dashboard, updated: plan.child_updates.length };
+    wz.busy = false;
+    wz.step = 5;
+    localStorage.removeItem(WZ_DRAFT_KEY);
+    await this._fetchState();
+  }
+
+  // "Tell me when something needs approving": turn the two approval alerts on
+  // if they were off. Never turns anything off.
+  async _wizardEnableApprovalAlerts() {
+    const cfg = (this._notifState && this._notifState.config) || {};
+    for (const typeId of ["pending_chore_approval", "pending_reward_claim"]) {
+      if (cfg[typeId] && cfg[typeId].master_enabled) continue;
+      await this._callWS({ type: "taskmate/notifications/set_master_enabled", type_id: typeId, enabled: true });
+    }
+  }
+
+  _wizardOverviewEntity() {
+    const states = (this._hass && this._hass.states) || {};
+    if (states["sensor.taskmate_overview"]) return "sensor.taskmate_overview";
+    const hit = Object.keys(states).find(id => {
+      const a = id.startsWith("sensor.") && states[id].attributes;
+      return a && a.points_name !== undefined && Array.isArray(a.children);
+    });
+    return hit || "sensor.taskmate_overview";
+  }
+
+  // A "Family chores" dashboard: one child card per child plus the rewards
+  // card. Created only when the url is free — an existing dashboard (or any
+  // panel on that path) is never touched.
+  async _wizardCreateDashboard(refToId) {
+    if (this._hass && this._hass.panels && this._hass.panels[WZ_DASH_PATH]) return "exists";
+    const list = await this._callWS({ type: "lovelace/dashboards/list" });
+    if (!list.ok) return "failed";
+    if ((list.res || []).some(d => d.url_path === WZ_DASH_PATH)) return "exists";
+    const title = this._t("wizard.dash_title");
+    const created = await this._callWS({
+      type: "lovelace/dashboards/create", url_path: WZ_DASH_PATH, title,
+      icon: "mdi:checkbox-marked-circle-plus-outline", mode: "storage", show_in_sidebar: true, require_admin: false,
+    });
+    if (!created.ok) return "failed";
+    const entity = this._wizardOverviewEntity();
+    const cards = this._wz.kids.map(k => ({
+      type: "custom:taskmate-child-card", entity, child_id: refToId[k.key] || k.key,
+      time_category: "all", header_color: k.color,
+    }));
+    cards.push({ type: "custom:taskmate-rewards-card", entity });
+    const saved = await this._callWS({
+      type: "lovelace/config/save", url_path: WZ_DASH_PATH,
+      config: { title, views: [{ title, path: "chores", icon: "mdi:checkbox-marked-circle-outline", cards }] },
+    });
+    return saved.ok ? "created" : "failed";
+  }
+
+  // "Vaiha is 9 now — see new chore ideas" (#980): suggestions never move up
+  // by themselves. Shown once per step up: either button records the new group.
+  _wizardNudgeKid() {
+    for (const c of (this._state && this._state.children) || []) {
+      if (!c.age_group || !/^\d{4}-\d{2}-\d{2}$/.test(c.birthday || "")) continue;
+      const kid = { mode: "bday", bday: c.birthday };
+      const now = this._wizardBand(kid);
+      if (this._wizardBandIdx(now) > this._wizardBandIdx(c.age_group)) return { child: c, age: this._wizardAgeOf(kid), group: now };
+    }
+    return null;
+  }
+
+  _wizardNudge() {
+    const hit = this._wizardNudgeKid();
+    if (!hit) return "";
+    const id = this._esc(hit.child.id);
+    return `
+      <div class="tm-wz-nudge" style="--kc:${this._childColor(hit.child.id)}">
+        ${this._childAvatar(hit.child)}
+        <span class="tm-wz-nudge-text">${this._t("wizard.nudge_text", { name: `<strong>${this._esc(hit.child.name)}</strong>`, age: hit.age })}</span>
+        <button type="button" class="tm-btn tm-btn-sm tm-btn-raised" data-act="wz-nudge" data-id="${id}" data-v="${hit.group}">
+          <ha-icon icon="mdi:auto-fix"></ha-icon>${this._t("wizard.nudge_btn")}
+        </button>
+        <button type="button" class="tm-icon-btn" data-act="wz-nudge-dismiss" data-id="${id}" data-v="${hit.group}" title="${this._esc(this._t("wizard.nudge_dismiss"))}" aria-label="${this._esc(this._t("wizard.nudge_dismiss"))}">
+          <ha-icon icon="mdi:close"></ha-icon>
+        </button>
+      </div>`;
+  }
+
+  async _wizardNudgeAct(childId, group, open) {
+    const { ok, err } = await this._callWS({ type: "taskmate/update_child", child_id: childId, age_group: group });
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return; }
+    await this._fetchState();
+    if (open) await this._wizardOpen({ step: 2 });
+  }
+
+  // ---- wizard rendering ----
+  _wizardKav(kid, size = 44, off = false) {
+    return `<span class="tm-wz-kav ${off ? "tm-wz-kav-off" : ""}" style="--kc:${this._esc(kid.color)};--s:${size}px" title="${this._esc(kid.name)}"><ha-icon icon="${this._esc(kid.icon)}"></ha-icon></span>`;
+  }
+
+  _wizardUnit(n) {
+    return `<span class="tm-wz-unit">${this._fmtNum(n)}<ha-icon icon="${this._esc(this._wz.picon || "mdi:star")}"></ha-icon></span>`;
+  }
+
+  _wizardGroupLabel(id) { return this._t(`wizard.age_group.${id}`); }
+
+  _wizardFreqLabel(s) {
+    const time = this._t(`panel.time_${s.time_category}`);
+    let freq;
+    if (s.frequency === "days") freq = s.days.map(d => this._labelOf(DAYS, d)).join(", ");
+    else freq = this._t(`wizard.freq_${s.frequency}`);
+    return `${freq} · ${time}`;
+  }
+
+  _wizardBody() {
+    const wz = this._wz;
+    if (!wz || !this._wzCatalogue) {
+      return this._emptyState("🪄", this._t("wizard.title"), this._t("wizard.intro_existing"), "wz-open", this._t("wizard.run_btn"));
+    }
+    const step = wz.step;
+    const last = step === 5;
+    const steps = WZ_STEPS.map((id, i) => `
+      ${i ? `<i class="tm-wz-sep ${i <= step ? "tm-wz-done" : ""}"></i>` : ""}
+      <button type="button" class="tm-wz-step ${i === step ? "tm-wz-on" : i < step ? "tm-wz-done" : ""}" data-act="wz-go" data-v="${i}" ${last || i === 5 ? "disabled" : ""} ${i === step ? 'aria-current="step"' : ""}>
+        <span class="tm-wz-n">${i < step ? `<ha-icon icon="mdi:check"></ha-icon>` : i + 1}</span><span class="tm-wz-l">${this._t(`wizard.step_${id}`)}</span>
+      </button>`).join("");
+    const nextKey = ["wizard.next_welcome", "wizard.next_children", "wizard.next_chores", "wizard.next_rewards"][step];
+    const body = [
+      () => this._wizardStepWelcome(), () => this._wizardStepChildren(), () => this._wizardStepChores(),
+      () => this._wizardStepRewards(), () => this._wizardStepReview(), () => this._wizardStepDone(),
+    ][step]();
+    const typed = step === 1 && (wz.form.name || "").trim();
+    return `
+      <div class="tm-wz">
+        <div class="tm-wz-box">
+          <div class="tm-wz-top">
+            <span class="tm-wz-title"><ha-icon icon="mdi:auto-fix"></ha-icon>${this._t("wizard.title")}</span>
+            ${last ? "" : `<button type="button" class="tm-icon-btn tm-wz-x" data-act="wz-close" title="${this._esc(this._t("wizard.close_hint"))}" aria-label="${this._esc(this._t("wizard.close_hint"))}"><ha-icon icon="mdi:close"></ha-icon></button>`}
+          </div>
+          <nav class="tm-wz-steps" aria-label="${this._esc(this._t("wizard.title"))}">
+            ${steps}
+            <span class="tm-wz-mlabel">${this._t("wizard.step_of", { n: step + 1, total: WZ_STEPS.length, name: this._t(`wizard.step_${WZ_STEPS[step]}`) })}</span>
+          </nav>
+          <div class="tm-wz-body">${body}</div>
+          ${last ? "" : `
+            <div class="tm-wz-foot">
+              ${step
+                ? `<button type="button" class="tm-btn" data-act="wz-back" ${wz.busy ? "disabled" : ""}><ha-icon class="tm-rtl-flip" icon="mdi:chevron-left"></ha-icon>${this._t("wizard.back")}</button>`
+                : `<button type="button" class="tm-btn tm-wz-text-btn" data-act="wz-close">${this._t("wizard.skip")}</button>`}
+              <span class="tm-wz-sp"></span>
+              ${step === 0 && wz.mode === "fresh" ? `<button type="button" class="tm-btn tm-wz-text-btn" data-act="wz-restore">${this._t("wizard.restore")}</button>` : ""}
+              ${step === 1 ? `<span class="tm-wz-foot-hint">${typed ? this._esc(this._t("wizard.foot_will_add", { name: typed })) : ""}</span>` : ""}
+              ${step === 4
+                ? `<button type="button" class="tm-btn tm-btn-raised tm-wz-create" data-act="wz-create" ${wz.busy || !this._wizardPlanHasWork(this._wizardPlan()) ? "disabled" : ""}>${wz.busy ? `<span class="tm-btn-spinner"></span>${this._t("wizard.creating")}` : this._t(wz.mode === "existing" ? "wizard.create_existing" : "wizard.create")}</button>`
+                : `<button type="button" class="tm-btn tm-btn-raised" data-act="wz-next">${this._t(nextKey)}<ha-icon class="tm-rtl-flip" icon="mdi:chevron-right"></ha-icon></button>`}
+            </div>`}
+        </div>
+      </div>`;
+  }
+
+  _wizardStepWelcome() {
+    const wz = this._wz;
+    const ex = wz.mode === "existing";
+    const s = this._state;
+    const tiles = [
+      ["mdi:account-multiple", "#3498db", "children"],
+      ["mdi:check-circle-outline", "#2ecc71", "chores"],
+      ["mdi:gift-outline", "#9b59b6", "rewards"],
+    ];
+    return `
+      ${ex ? `<div class="tm-wz-banner"><ha-icon icon="mdi:information-outline"></ha-icon><div>${this._t("wizard.existing_banner", {
+        children: this._wizardCount("children", (s.children || []).length),
+        chores: this._wizardCount("chores", (s.chores || []).length),
+        rewards: this._wizardCount("rewards", (s.rewards || []).length) })}</div></div>` : ""}
+      <div class="tm-wz-hero">
+        <span class="tm-wz-hero-ic"><ha-icon icon="mdi:auto-fix"></ha-icon></span>
+        <div>
+          <h2 class="tm-wz-h">${this._t(ex ? "wizard.welcome_title_existing" : "wizard.welcome_title")}</h2>
+          <p class="tm-wz-p tm-wz-p0">${this._t(ex ? "wizard.welcome_copy_existing" : "wizard.welcome_copy")}</p>
+        </div>
+      </div>
+      <div class="tm-wz-tiles">
+        ${tiles.map(([icon, color, id], i) => `
+          <div class="tm-wz-tile"><span class="tm-wz-tile-ic" style="--c:${color}"><ha-icon icon="${icon}"></ha-icon></span>
+            <div><b>${i + 1} · ${this._t(`wizard.step_${id}`)}</b><span>${this._t(`wizard.tile_${id}`)}</span></div></div>`).join("")}
+      </div>
+      <div class="tm-wz-lbl tm-wz-lbl-lg">${this._t("wizard.pname_question")}</div>
+      <div class="tm-chip-row">
+        ${WZ_POINT_NAMES.map(([k, icon]) => {
+          const on = !wz.pnameCustom && wz.pname === this._t(`wizard.pname_${k}`);
+          return `<button type="button" class="tm-chip-btn ${on ? "tm-chip-on" : ""}" data-act="wz-pname" data-v="${k}" aria-pressed="${on}"><ha-icon icon="${icon}"></ha-icon>${this._t(`wizard.pname_${k}`)}</button>`;
+        }).join("")}
+        <button type="button" class="tm-chip-btn ${wz.pnameCustom ? "tm-chip-on" : ""}" data-act="wz-pname" data-v="custom" aria-pressed="${wz.pnameCustom}"><ha-icon icon="mdi:pencil-outline"></ha-icon>${this._t("wizard.pname_custom")}</button>
+      </div>
+      ${wz.pnameCustom ? `<input type="text" class="tm-input tm-wz-pname" data-wz-in="pname" maxlength="120" value="${this._esc(wz.pname)}" aria-label="${this._esc(this._t("wizard.pname_question"))}">` : ""}
+      <p class="tm-wz-hint">${this._t("wizard.pname_hint")}</p>`;
+  }
+
+  _wizardKidMeta(k) {
+    const bits = [];
+    const age = this._wizardAgeOf(k);
+    if (k.mode === "bday" && age != null) {
+      const [y, m, d] = k.bday.split("-").map(Number);
+      const when = new Date(y, m - 1, d).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" });
+      bits.push(`<span><ha-icon icon="mdi:cake-variant-outline"></ha-icon>${this._esc(when)} · ${this._t("wizard.age_n", { age })}</span>`);
+    } else if (k.mode === "age" && age != null) {
+      bits.push(`<span>${this._t("wizard.age_n", { age })}</span>`);
+    }
+    const band = this._wizardBand(k);
+    if (band) {
+      const g = this._wzCatalogue.age_groups.find(x => x.id === band) || {};
+      bits.push(`<span class="tm-wz-tag" style="--c:${this._esc(g.color || "#888")}">${this._t("wizard.group_chores", { group: this._wizardGroupLabel(band) })}</span>`);
+    }
+    return bits.join(`<span class="tm-wz-faint">·</span>`);
+  }
+
+  _wizardStepChildren() {
+    const wz = this._wz;
+    const f = wz.form;
+    const preview = { mode: f.mode, bday: f.bday, age: f.age };
+    const pa = this._wizardAgeOf(preview);
+    const groups = this._wzCatalogue.age_groups;
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = wz.kids.map(k => {
+      const needsBand = k.existing && !this._wizardBand(k);
+      const bandPick = k.existing && !k.origBand && k.mode !== "bday";
+      return `
+        <div class="tm-wz-kid">
+          ${this._wizardKav(k)}
+          <div class="tm-wz-grow">
+            <div class="tm-wz-kid-name">${this._esc(k.name)}${k.existing ? `<span class="tm-pill tm-pill-success">${this._t("wizard.already_set_up")}</span>` : ""}</div>
+            <div class="tm-wz-kid-meta">${needsBand ? `<span class="tm-wz-warn"><ha-icon icon="mdi:information-outline"></ha-icon>${this._t("wizard.no_age_yet")}</span>` : this._wizardKidMeta(k)}</div>
+            ${bandPick ? `<div class="tm-chip-row tm-wz-bandpick">${groups.map(g => `<button type="button" class="tm-chip-btn ${k.band === g.id ? "tm-chip-on" : ""}" data-act="wz-kband" data-id="${this._esc(k.key)}" data-v="${g.id}">${this._wizardGroupLabel(g.id)}</button>`).join("")}</div>` : ""}
+          </div>
+          ${k.existing ? "" : `
+            <button type="button" class="tm-icon-btn" data-act="wz-edit-kid" data-id="${this._esc(k.key)}" title="${this._esc(this._t("panel.btn_edit"))}" aria-label="${this._esc(this._t("panel.btn_edit"))}"><ha-icon icon="mdi:pencil-outline"></ha-icon></button>
+            <button type="button" class="tm-icon-btn" data-act="wz-del-kid" data-id="${this._esc(k.key)}" title="${this._esc(this._t("wizard.remove"))}" aria-label="${this._esc(this._t("wizard.remove"))}"><ha-icon icon="mdi:delete-outline"></ha-icon></button>`}
+        </div>`;
+    }).join("");
+    const modes = [["bday", "wizard.age_mode_bday"], ["age", "wizard.age_mode_age"], ["none", "wizard.age_mode_none"]];
+    let ageCtl;
+    if (f.mode === "bday") {
+      ageCtl = `<div class="tm-wz-inline"><input type="date" class="tm-input tm-wz-date" data-wz-in="bday" max="${today}" value="${this._esc(f.bday)}" aria-label="${this._esc(this._t("wizard.age_mode_bday"))}">
+        <span class="tm-meta tm-wz-age-now">${pa != null ? this._t("wizard.age_n", { age: pa }) : ""}</span></div>
+        <p class="tm-wz-hint">${this._t("wizard.bday_hint")}</p>`;
+    } else if (f.mode === "age") {
+      ageCtl = `<div class="tm-wz-stepper"><button type="button" data-act="wz-fage" data-d="-1" aria-label="−">−</button><span>${this._num(f.age)}</span><button type="button" data-act="wz-fage" data-d="1" aria-label="+">+</button></div>`;
+    } else {
+      ageCtl = `<div class="tm-chip-row">${groups.map(g => `<button type="button" class="tm-chip-btn ${f.band === g.id ? "tm-chip-on" : ""}" data-act="wz-fband" data-v="${g.id}">${this._wizardGroupLabel(g.id)}</button>`).join("")}</div>
+        <p class="tm-wz-hint">${this._t("wizard.group_hint")}</p>`;
+    }
+    const typed = (f.name || "").trim();
+    return `
+      <h2 class="tm-wz-h">${this._t("wizard.children_title")}</h2>
+      <p class="tm-wz-p">${this._t("wizard.children_copy")}</p>
+      ${rows ? `<div class="tm-wz-kids">${rows}</div>` : ""}
+      <div class="tm-wz-add" style="--kc:${this._esc(f.color)}">
+        <div>
+          <h4><ha-icon icon="mdi:plus"></ha-icon>${this._t("wizard.add_child")}</h4>
+          <label class="tm-wz-lbl" for="tm-wz-name">${this._t("wizard.name")}</label>
+          <input id="tm-wz-name" type="text" class="tm-input tm-wz-full" data-wz-in="name" maxlength="120" placeholder="${this._esc(this._t("wizard.name_placeholder"))}" value="${this._esc(f.name)}">
+          <div class="tm-wz-lbl">${this._t("wizard.age")}</div>
+          <div class="tm-seg tm-wz-seg" role="tablist">${modes.map(([m, key]) => `<button type="button" role="tab" class="${f.mode === m ? "tm-seg-on" : ""}" aria-selected="${f.mode === m}" data-act="wz-fmode" data-v="${m}">${this._t(key)}</button>`).join("")}</div>
+          <div class="tm-wz-agectl">${ageCtl}</div>
+          <div class="tm-wz-lbl">${this._t("wizard.avatar")}</div>
+          <div class="tm-wz-icons">${WZ_KID_ICONS.map(ic => `<button type="button" class="${f.icon === ic ? "tm-wz-on" : ""}" data-act="wz-ficon" data-v="${ic}" aria-pressed="${f.icon === ic}"><ha-icon icon="${ic}"></ha-icon></button>`).join("")}</div>
+          <div class="tm-wz-lbl">${this._t("wizard.colour")}</div>
+          <div class="tm-wz-swatches">${WZ_KID_COLORS.map(c => `<button type="button" class="${f.color === c ? "tm-wz-on" : ""}" style="background:${c}" data-act="wz-fcolor" data-v="${c}" aria-pressed="${f.color === c}" aria-label="${c}"></button>`).join("")}</div>
+          <button type="button" class="tm-btn tm-btn-raised tm-wz-addbtn" data-act="wz-add-kid" ${typed ? "" : "disabled"}><ha-icon icon="mdi:plus"></ha-icon><span>${this._esc(this._t("wizard.add_named", { name: typed || this._t("wizard.child_word") }))}</span></button>
+        </div>
+        <div>
+          <div class="tm-wz-lbl tm-wz-lbl-top">${this._t("wizard.preview")}</div>
+          <div class="tm-wz-mini" style="--hd:${this._esc(f.color)}">
+            <div class="tm-wz-mini-head">
+              <span class="tm-wz-mini-av"><ha-icon icon="${this._esc(f.icon)}"></ha-icon></span>
+              <div class="tm-wz-grow"><div class="tm-wz-mini-name">${this._esc(typed || this._t("wizard.new_child"))}</div>
+                <div class="tm-wz-mini-sub">${pa != null ? this._t("wizard.age_n", { age: pa }) : this._t("wizard.ready_for_chores")}</div></div>
+              <span class="tm-wz-mini-pts"><ha-icon icon="${this._esc(wz.picon)}"></ha-icon>0</span>
+            </div>
+            <div class="tm-wz-mini-body">
+              <div class="tm-wz-mini-row"><ha-icon icon="mdi:check"></ha-icon>${this._t("wizard.preview_chores")}</div>
+              <div class="tm-wz-mini-row tm-wz-dim"><ha-icon icon="mdi:gift-outline"></ha-icon>${this._t("wizard.preview_rewards")}</div>
+            </div>
+          </div>
+          <p class="tm-wz-hint">${this._t("wizard.preview_hint")}</p>
+        </div>
+      </div>`;
+  }
+
+  _wizardSuggestionRow(g, s) {
+    const c = this._wz.chores[s.id];
+    const name = this._wizardChoreName(s);
+    if (this._wizardHave("chores", name)) {
+      return `<div class="tm-wz-sg tm-wz-have" style="--bc:${this._esc(g.color)}"><span class="tm-wz-cbx"><ha-icon icon="mdi:check"></ha-icon></span>
+        <span class="tm-wz-ic"><ha-icon icon="${this._esc(s.icon)}"></ha-icon></span>
+        <div class="tm-wz-nm"><b>${this._esc(name)}</b><small>${this._t("wizard.have_chore")}</small></div>
+        <span class="tm-wz-who"></span><span class="tm-wz-pts"><span class="tm-pill tm-pill-success">${this._t("wizard.already_have")}</span></span></div>`;
+    }
+    const el = this._wizardEligible(g.id);
+    return `
+      <div class="tm-wz-sg ${c.on ? "tm-wz-on" : ""} ${el.length ? "" : "tm-wz-have"}" style="--bc:${this._esc(g.color)}" data-act="wz-sg" data-id="${s.id}" role="checkbox" aria-checked="${c.on}" tabindex="0">
+        <span class="tm-wz-cbx"><ha-icon icon="mdi:check"></ha-icon></span>
+        <span class="tm-wz-ic"><ha-icon icon="${this._esc(s.icon)}"></ha-icon></span>
+        <div class="tm-wz-nm"><b>${this._esc(name)}</b><small>${el.length ? this._esc(this._wizardFreqLabel(s)) : this._t("wizard.nobody_old_enough")}</small></div>
+        <span class="tm-wz-who">${el.map(k => `<button type="button" data-act="wz-sg-who" data-id="${s.id}" data-k="${this._esc(k.key)}" aria-pressed="${c.who.includes(k.key)}" title="${this._esc(k.name)}">${this._wizardKav(k, 26, !c.who.includes(k.key))}</button>`).join("")}</span>
+        <span class="tm-wz-pts"><span class="tm-wz-mstep"><button type="button" data-act="wz-sg-pts" data-id="${s.id}" data-d="-1" aria-label="−">−</button><span>${this._wizardUnit(c.pts)}</span><button type="button" data-act="wz-sg-pts" data-id="${s.id}" data-d="1" aria-label="+">+</button></span></span>
+      </div>`;
+  }
+
+  _wizardStepChores() {
+    const wz = this._wz;
+    const withKids = new Set(wz.kids.map(k => this._wizardBand(k)).filter(Boolean));
+    const bands = this._wzCatalogue.age_groups.map(g => {
+      const list = this._wzCatalogue.chores.filter(s => s.age_group === g.id);
+      const kids = wz.kids.filter(k => this._wizardBand(k) === g.id);
+      const open = withKids.has(g.id) || wz.showAll;
+      const pickable = list.filter(s => !this._wizardHave("chores", this._wizardChoreName(s)));
+      const onN = list.filter(s => wz.chores[s.id].on).length;
+      const allOn = pickable.length > 0 && pickable.every(s => wz.chores[s.id].on);
+      return `
+        <section class="tm-wz-band ${open ? "" : "tm-wz-band-empty"}">
+          <div class="tm-wz-band-h">
+            <span class="tm-wz-band-ic" style="background:${this._esc(g.color)}"><ha-icon icon="${this._esc(g.icon)}"></ha-icon></span>
+            <div class="tm-wz-grow">
+              <div class="tm-wz-band-age">${this._wizardGroupLabel(g.id)}${kids.length ? `<span class="tm-wz-stack">${kids.map(k => this._wizardKav(k, 22)).join("")}</span>` : ""}</div>
+              <div class="tm-wz-band-sub">${open ? this._t(`wizard.age_group_sub.${g.id}`) : this._t("wizard.nobody_in_group")}</div>
+            </div>
+            ${open
+              ? `<span class="tm-pill ${onN ? "tm-pill-accent" : ""}">${this._t("wizard.picked_n", { count: onN })}</span>
+                 ${this._wizardEligible(g.id).length ? `<button type="button" class="tm-wz-lnk" data-act="wz-band-all" data-v="${g.id}">${this._t(allOn ? "wizard.clear" : "wizard.pick_all")}</button>` : ""}`
+              : `<button type="button" class="tm-wz-lnk" data-act="wz-show-all">${this._t("wizard.show_anyway")}</button>`}
+          </div>
+          ${open ? list.map(s => this._wizardSuggestionRow(g, s)).join("") : ""}
+        </section>`;
+    }).join("");
+    const packs = this._wizardPacks();
+    const packBands = packs.filter(p => wz.packs.includes(p.id)).map(p => `
+      <section class="tm-wz-band">
+        <div class="tm-wz-band-h">
+          <span class="tm-wz-band-ic" style="background:var(--tm-accent)"><ha-icon icon="${this._esc(p.icon || "mdi:clipboard-list")}"></ha-icon></span>
+          <div class="tm-wz-grow"><div class="tm-wz-band-age">${this._esc(this._wizardPackName(p))}<span class="tm-pill">${this._t("wizard.template_pack")}</span></div>
+            <div class="tm-wz-band-sub">${this._t("wizard.pack_sub")}</div></div>
+          <button type="button" class="tm-wz-lnk" data-act="wz-pack" data-v="${this._esc(p.id)}">${this._t("wizard.remove")}</button>
+        </div>
+        ${(p.chores || []).map((c, i) => {
+          const name = this._wizardPackChoreName(p, i);
+          const dupe = this._wizardPackDupe(name);
+          const days = (c.due_days || []).length ? c.due_days.map(d => this._labelOf(DAYS, d)).join(", ") : this._t("wizard.freq_daily");
+          return `<div class="tm-wz-sg ${dupe ? "tm-wz-have" : "tm-wz-on"} tm-wz-static" style="--bc:var(--tm-accent)">
+            <span class="tm-wz-cbx"><ha-icon icon="mdi:check"></ha-icon></span>
+            <span class="tm-wz-ic"><ha-icon icon="${this._esc(p.icon || "mdi:clipboard-list")}"></ha-icon></span>
+            <div class="tm-wz-nm"><b>${this._esc(name)}</b><small>${dupe ? this._t("wizard.pack_dupe") : this._esc(`${days} · ${this._t(`panel.time_${c.time_category || "anytime"}`)}`)}</small></div>
+            <span class="tm-wz-who">${wz.kids.map(k => this._wizardKav(k, 26)).join("")}</span>
+            <span class="tm-wz-pts">${this._wizardUnit(c.points || 0)}</span>
+          </div>`;
+        }).join("")}
+      </section>`).join("");
+    return `
+      <h2 class="tm-wz-h">${this._t("wizard.chores_title")}</h2>
+      <p class="tm-wz-p">${this._t("wizard.chores_copy")}</p>
+      <div class="tm-wz-cols">
+        <div>${bands}${packBands}</div>
+        <aside class="tm-wz-aside">
+          <div class="tm-wz-panel"><h4>${this._t("wizard.per_week")}</h4>
+            ${wz.kids.map(k => { const w = this._wizardWeekly(k); return `
+              <div class="tm-wz-wk">${this._wizardKav(k, 28)}<div class="tm-wz-grow"><b>${this._esc(k.name)}</b><div class="tm-wz-faint">${this._wizardCount("chores", w.n)}</div></div>${this._wizardUnit(w.pts)}</div>`; }).join("")}
+            <p class="tm-wz-hint">${this._t("wizard.per_week_hint")}</p>
+          </div>
+          <div class="tm-wz-panel"><h4>${this._t("wizard.packs_title")}</h4>
+            ${packs.map(p => { const on = wz.packs.includes(p.id); return `
+              <button type="button" class="tm-wz-pack ${on ? "tm-wz-on" : ""}" data-act="wz-pack" data-v="${this._esc(p.id)}" aria-pressed="${on}">
+                <span class="tm-wz-cbx"><ha-icon icon="mdi:check"></ha-icon></span><ha-icon icon="${this._esc(p.icon || "mdi:clipboard-list")}"></ha-icon>
+                <span class="tm-wz-grow">${this._esc(this._wizardPackName(p))}</span><span class="tm-wz-faint">${(p.chores || []).length}</span>
+              </button>`; }).join("")}
+            <p class="tm-wz-hint">${this._t("wizard.packs_hint")}</p>
+          </div>
+        </aside>
+      </div>`;
+  }
+
+  _wizardTopEarner() {
+    return this._wz.kids.map(k => [k, this._wizardWeekly(k).pts]).filter(([, p]) => p > 0).sort((a, b) => b[1] - a[1])[0] || null;
+  }
+
+  _wizardEvery(cost, top) {
+    if (!top) return "";
+    const days = Math.max(1, Math.round(cost / (top[1] / 7)));
+    return this._t(days === 1 ? "wizard.every_day" : "wizard.every_n_days", { count: days });
+  }
+
+  _wizardStepRewards() {
+    const wz = this._wz;
+    const top = this._wizardTopEarner();
+    const card = (id, name, icon, pick, have, custom = false) => {
+      if (have) return `<div class="tm-wz-rw tm-wz-have"><div class="tm-wz-rw-top"><span class="tm-wz-ic"><ha-icon icon="${this._esc(icon)}"></ha-icon></span><b>${this._esc(name)}</b></div>
+        <div class="tm-wz-rw-foot"><span class="tm-pill tm-pill-success">${this._t("wizard.already_have")}</span></div></div>`;
+      return `<div class="tm-wz-rw ${pick.on ? "tm-wz-on" : ""}" data-act="${custom ? "wz-rw-custom-toggle" : "wz-rw"}" data-id="${this._esc(id)}" role="checkbox" aria-checked="${pick.on}" tabindex="0">
+        <span class="tm-wz-cbx"><ha-icon icon="mdi:check"></ha-icon></span>
+        <div class="tm-wz-rw-top"><span class="tm-wz-ic"><ha-icon icon="${this._esc(icon)}"></ha-icon></span><b>${this._esc(name)}</b></div>
+        <div class="tm-wz-rw-foot"><span class="tm-wz-mstep"><button type="button" data-act="wz-rw-cost" data-id="${this._esc(id)}" data-d="-5" aria-label="−">−</button><span>${this._wizardUnit(pick.cost)}</span><button type="button" data-act="wz-rw-cost" data-id="${this._esc(id)}" data-d="5" aria-label="+">+</button></span>
+          <span class="tm-wz-when">${this._esc(this._wizardEvery(pick.cost, top))}</span></div>
+      </div>`;
+    };
+    const tiers = this._wzCatalogue.reward_tiers.map(tier => `
+      <div class="tm-wz-tier">${this._t(`wizard.tier.${tier}`)}</div>
+      <div class="tm-wz-rw-grid">${this._wzCatalogue.rewards.filter(r => r.tier === tier).map(r => {
+        const name = this._wizardRewardName(r);
+        return card(r.id, name, r.icon, wz.rewards[r.id], this._wizardHave("rewards", name));
+      }).join("")}</div>`).join("");
+    const custom = wz.custom.length ? `
+      <div class="tm-wz-tier">${this._t("wizard.tier.custom")}</div>
+      <div class="tm-wz-rw-grid">${wz.custom.map(r => card(r.key, r.name, "mdi:gift-outline", r, false, true)).join("")}</div>` : "";
+    const earn = top ? this._t("wizard.rewards_earns", {
+      name: this._esc(top[0].name), amount: `<b class="tm-wz-gold">${top[1]} ${this._esc(wz.pname)}</b>` }) : "";
+    return `
+      <h2 class="tm-wz-h">${this._t("wizard.rewards_title")}</h2>
+      <p class="tm-wz-p">${this._t("wizard.rewards_copy")} ${earn}</p>
+      <div class="tm-wz-cols">
+        <div>
+          ${tiers}${custom}
+          <div class="tm-wz-rw-add">
+            <input type="text" class="tm-input" data-wz-in="rw-name" maxlength="200" placeholder="${this._esc(this._t("wizard.own_reward_placeholder"))}" value="${this._esc(wz.rwName)}" aria-label="${this._esc(this._t("wizard.own_reward_placeholder"))}">
+            <input type="number" class="tm-input tm-wz-cost" data-wz-in="rw-cost" min="0" step="5" value="${this._num(wz.rwCost, 20)}" aria-label="${this._esc(this._t("wizard.cost"))}">
+            <button type="button" class="tm-btn" data-act="wz-rw-add"><ha-icon icon="mdi:plus"></ha-icon>${this._t("wizard.own_reward_add")}</button>
+          </div>
+        </div>
+        <aside class="tm-wz-aside"><div class="tm-wz-panel"><h4>${this._t("wizard.tips")}</h4>
+          <ul class="tm-wz-tips"><li>${this._t("wizard.tip_1")}</li><li>${this._t("wizard.tip_2")}</li><li>${this._t("wizard.tip_3")}</li></ul></div></aside>
+      </div>`;
+  }
+
+  _wizardCount(noun, n) {
+    return this._t(`wizard.count_${noun}_${n === 1 ? "one" : "many"}`, { count: n });
+  }
+
+  _wizardCounts(plan) {
+    return {
+      children: this._wizardCount("children", plan.children.length),
+      chores: this._wizardCount("chores", plan.chores.length),
+      rewards: this._wizardCount("rewards", plan.rewards.length),
+    };
+  }
+
+  _wizardStepReview() {
+    const wz = this._wz;
+    const s = this._state;
+    const plan = this._wizardPlan();
+    const c = this._wizardCounts(plan);
+    const keep = { ...c, have_chores: this._wizardCount("chores", (s.chores || []).length), have_rewards: this._wizardCount("rewards", (s.rewards || []).length) };
+    const intro = !this._wizardPlanHasWork(plan) ? this._t("wizard.review_nothing")
+      : wz.mode !== "existing" ? this._t("wizard.review_fresh", c)
+      : this._t(plan.children.length ? "wizard.review_existing" : "wizard.review_existing_no_children", keep);
+    const packNames = plan.chores.filter(ch => !ch.assigned_to.length).map(ch => ch.name);
+    const kidCards = wz.kids.map(k => {
+      const names = plan.chores.filter(ch => ch.assigned_to.includes(k.key)).map(ch => ch.name).concat(packNames);
+      const w = this._wizardWeekly(k);
+      const age = this._wizardAgeOf(k);
+      return `
+        <div class="tm-wz-rv-kid">
+          <div class="tm-wz-mini-head" style="--hd:${this._esc(k.color)}">
+            <span class="tm-wz-mini-av"><ha-icon icon="${this._esc(k.icon)}"></ha-icon></span>
+            <div class="tm-wz-grow"><div class="tm-wz-mini-name">${this._esc(k.name)}</div>
+              <div class="tm-wz-mini-sub">${age != null ? `${this._t("wizard.age_n", { age })} · ` : this._wizardBand(k) ? `${this._wizardGroupLabel(this._wizardBand(k))} · ` : ""}${this._t(k.existing ? "wizard.kid_existing" : "wizard.kid_new")}</div></div>
+            <span class="tm-wz-mini-pts">${this._t("wizard.per_week_short", { amount: w.pts })}<ha-icon icon="${this._esc(wz.picon)}"></ha-icon></span>
+          </div>
+          <ul>${names.slice(0, 5).map(n => `<li>${this._esc(n)}</li>`).join("") || `<li class="tm-wz-faint">${this._t("wizard.no_new_chores")}</li>`}</ul>
+          ${names.length > 5 ? `<div class="tm-wz-more">${this._t("wizard.n_more", { count: names.length - 5 })}</div>` : ""}
+        </div>`;
+    }).join("");
+    const appr = [["none", "wizard.appr_none"], ["big", "wizard.appr_big"], ["all", "wizard.appr_all"]];
+    const sw = (act, on, title, hint) => `
+      <div class="tm-wz-tog"><div class="tm-wz-grow">${title}<small>${hint}</small></div>
+        <button type="button" class="tm-wz-sw ${on ? "tm-wz-on" : ""}" data-act="${act}" role="switch" aria-checked="${on}" aria-label="${this._esc(title)}"></button></div>`;
+    return `
+      <h2 class="tm-wz-h">${this._t("wizard.review_title")}</h2>
+      <p class="tm-wz-p">${intro}</p>
+      <div class="tm-wz-rv-kids">${kidCards}</div>
+      <div class="tm-wz-cols">
+        <div class="tm-wz-panel tm-wz-opts"><h4>${this._t("wizard.defaults")}</h4>
+          <div class="tm-wz-tog"><div class="tm-wz-grow">${this._t("wizard.appr_title")}<small>${this._t("wizard.appr_hint")}</small></div>
+            <div class="tm-seg tm-wz-seg" role="tablist">${appr.map(([v, key]) => `<button type="button" role="tab" class="${wz.approval === v ? "tm-seg-on" : ""}" aria-selected="${wz.approval === v}" data-act="wz-appr" data-v="${v}">${this._t(key)}</button>`).join("")}</div></div>
+          ${sw("wz-dash", wz.dash, this._t("wizard.dash_toggle"), this._t("wizard.dash_hint"))}
+          ${sw("wz-notify", wz.notify, this._t("wizard.notify_toggle"), this._t("wizard.notify_hint"))}
+        </div>
+        <div class="tm-wz-panel"><h4>${this._t("wizard.rewards_n", { count: plan.rewards.length })}</h4>
+          ${plan.rewards.map(r => `<div class="tm-wz-wk tm-wz-wk-sm"><ha-icon icon="${this._esc(r.icon)}"></ha-icon><span class="tm-wz-grow">${this._esc(r.name)}</span>${this._wizardUnit(r.cost)}</div>`).join("") || `<p class="tm-wz-hint">${this._t("wizard.no_rewards")}</p>`}
+        </div>
+      </div>`;
+  }
+
+  _wizardStepDone() {
+    const wz = this._wz;
+    const r = wz.result || {};
+    const conf = Array.from({ length: 36 }, (_, i) =>
+      `<i style="inset-inline-start:${(i * 37) % 100}%;top:${(i * 53) % 60}%;background:${WZ_KID_COLORS[i % 8]};transform:rotate(${i * 29}deg)"></i>`).join("");
+    // Only what was actually added: never a row of zeros.
+    const phrase = (noun, n) => (n ? `<span>${this._wizardCount(noun, n)}</span>` : "");
+    const added = (r.children_added || 0) + (r.chores_added || 0) + (r.rewards_added || 0) + (r.updated || 0);
+    const copy = !added && r.dashboard !== "created" ? "wizard.done_copy_nothing"
+      : wz.mode === "existing" ? "wizard.done_copy_existing" : "wizard.done_copy";
+    const dash = r.dashboard === "created" || r.dashboard === "exists";
+    const dashNote = r.dashboard === "exists" ? this._t("wizard.dash_existed")
+      : r.dashboard === "failed" ? this._t("wizard.dash_failed") : "";
+    return `
+      <div class="tm-wz-finish">
+        <div class="tm-wz-confetti" aria-hidden="true">${conf}</div>
+        <div class="tm-wz-done-ic"><ha-icon icon="mdi:check"></ha-icon></div>
+        <h2 class="tm-wz-h tm-wz-h-big">${this._t("wizard.done_title")}</h2>
+        <p class="tm-wz-p tm-wz-center">${this._t(copy)}</p>
+        <div class="tm-wz-stats">
+          ${phrase("children", r.children_added || 0)}
+          ${phrase("chores", r.chores_added || 0)}
+          ${phrase("rewards", r.rewards_added || 0)}
+          ${r.dashboard === "created" ? `<span>${this._t("wizard.one_dashboard")}</span>` : ""}
+        </div>
+        ${dashNote ? `<p class="tm-wz-hint tm-wz-center">${dashNote}</p>` : ""}
+        <div class="tm-wz-next">
+          <div><b><ha-icon icon="mdi:tablet"></ha-icon>${this._t("wizard.next_tablet_title")}</b>${this._t("wizard.next_tablet")}</div>
+          <div><b><ha-icon icon="mdi:home-outline"></ha-icon>${this._t("wizard.next_today_title")}</b>${this._t("wizard.next_today")}</div>
+          <div><b><ha-icon icon="mdi:auto-fix"></ha-icon>${this._t("wizard.next_change_title")}</b>${this._t("wizard.next_change")}</div>
+        </div>
+        <div class="tm-wz-done-acts">
+          ${dash ? `<button type="button" class="tm-btn" data-act="wz-dashboard"><ha-icon icon="mdi:view-dashboard-outline"></ha-icon>${this._t("wizard.open_dashboard")}</button>` : ""}
+          <button type="button" class="tm-btn tm-btn-raised" data-act="wz-today">${this._t("wizard.go_today")}<ha-icon class="tm-rtl-flip" icon="mdi:chevron-right"></ha-icon></button>
+        </div>
+      </div>`;
+  }
+
+  _renderWizardConfirmDialog() {
+    const d = this._dialog.data;
+    return this._dialogShell(this._t("wizard.confirm_title"),
+      `<p>${this._t("wizard.confirm_have", { children: this._wizardCount("children", d.children), chores: this._wizardCount("chores", d.chores), rewards: this._wizardCount("rewards", d.rewards) })}</p>
+       <ul class="tm-wz-confirm">
+         <li>${this._t("wizard.confirm_add")}</li>
+         <li>${this._t("wizard.confirm_have_shown")}</li>
+         <li>${this._t("wizard.confirm_never")}</li>
+       </ul>`,
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="wz-open-confirmed"><ha-icon icon="mdi:auto-fix"></ha-icon>${this._t("wizard.open_btn")}</button>`);
+  }
+
+  // Settings → Setup wizard (#980), at the top of Settings.
+  _wizardSettingsSection() {
+    return `
+      <div class="tm-section tm-wz-settings">
+        <div class="tm-setting-row">
+          <div class="tm-setting-label"><span class="tm-wz-settings-t"><ha-icon icon="mdi:auto-fix"></ha-icon>${this._t("wizard.title")}</span><small>${this._t("wizard.settings_hint")}</small></div>
+          <div><button type="button" class="tm-btn tm-btn-raised" data-act="wz-open"><ha-icon icon="mdi:auto-fix"></ha-icon>${this._t("wizard.run_btn")}</button></div>
+        </div>
+      </div>`;
+  }
+
+  // The Today page with no children yet: start the wizard or go it alone.
+  _wizardTodayEmpty() {
+    return `
+      <div class="tm-card tm-wz-empty">
+        <div class="tm-wz-empty-ic"><ha-icon icon="mdi:auto-fix"></ha-icon></div>
+        <h2>${this._t("wizard.empty_title")}</h2>
+        <p>${this._t("wizard.empty_copy")}</p>
+        <div class="tm-wz-empty-acts">
+          <button type="button" class="tm-btn tm-btn-raised" data-act="wz-open"><ha-icon icon="mdi:auto-fix"></ha-icon>${this._t("wizard.start_btn")}</button>
+          <button type="button" class="tm-btn" data-act="add-child"><ha-icon icon="mdi:plus"></ha-icon>${this._t("wizard.add_child_myself")}</button>
+        </div>
+      </div>`;
+  }
+
+  _wizardStyles() {
+    return `<style>
+      /* Setup wizard (#980) */
+      .tm-wz { container: tm-wz / inline-size; max-width: 1020px; margin: 0 auto; }
+      .tm-wz-box { background: var(--tm-surface-0); border: 1px solid var(--tm-border); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
+      .tm-wz-top { display: flex; align-items: center; gap: 10px; padding: 14px 20px 0; }
+      .tm-wz-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; flex: 1; }
+      .tm-wz-title ha-icon { color: var(--tm-accent); --mdc-icon-size: 18px; }
+      .tm-wz-x ha-icon { --mdc-icon-size: 20px; }
+      .tm-wz-steps { display: flex; align-items: center; gap: 8px; padding: 14px 20px; border-bottom: 1px solid var(--tm-border-soft); }
+      .tm-wz-step { display: flex; align-items: center; gap: 8px; color: var(--tm-text-faint); font: 500 13px/1.3 inherit; font-family: inherit; white-space: nowrap; background: none; border: 0; padding: 0; cursor: pointer; }
+      .tm-wz-step:disabled { cursor: default; }
+      .tm-wz-n { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--tm-border-strong); display: grid; place-items: center; font-size: 11.5px; font-weight: 700; flex: none; --mdc-icon-size: 14px; }
+      .tm-wz-step.tm-wz-on { color: var(--tm-text); }
+      .tm-wz-step.tm-wz-on .tm-wz-n { border-color: var(--tm-accent); background: var(--tm-accent); color: #fff; }
+      .tm-wz-step.tm-wz-done { color: var(--tm-text-muted); }
+      .tm-wz-step.tm-wz-done .tm-wz-n { border-color: var(--tm-positive); background: var(--tm-positive); color: #fff; }
+      .tm-wz-sep { flex: 1; height: 2px; min-width: 10px; background: var(--tm-border); border-radius: 2px; }
+      .tm-wz-sep.tm-wz-done { background: var(--tm-positive); }
+      .tm-wz-mlabel { display: none; font-size: 12.5px; color: var(--tm-text-muted); }
+      .tm-wz-body { padding: 26px 28px; min-height: 480px; }
+      .tm-wz-foot { display: flex; gap: 10px; align-items: center; padding: 14px 20px; border-top: 1px solid var(--tm-border-soft); background: var(--tm-surface-2); }
+      .tm-wz-foot .tm-btn ha-icon { --mdc-icon-size: 18px; }
+      .tm-wz-sp { flex: 1; }
+      .tm-wz-text-btn { border-color: transparent; background: none; color: var(--tm-text-muted); }
+      .tm-wz-text-btn:hover { color: var(--tm-text); background: none; border-color: transparent; }
+      .tm-wz-foot-hint { font-size: 12.5px; color: var(--tm-text-faint); }
+      .tm-wz-create { background: var(--tm-positive); border-color: var(--tm-positive); }
+      .tm-wz-create:hover { background: color-mix(in srgb, var(--tm-positive), #000 12%); border-color: color-mix(in srgb, var(--tm-positive), #000 12%); }
+      .tm-wz-h { font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+      .tm-wz-h-big { font-size: 26px; }
+      .tm-wz-p { color: var(--tm-text-muted); margin: 0 0 20px; max-width: 680px; }
+      .tm-wz-p0 { margin: 0; }
+      .tm-wz-center { margin-inline: auto; text-align: center; }
+      .tm-wz-hint { font-size: 12.5px; color: var(--tm-text-faint); margin: 6px 0 0; }
+      .tm-wz-faint { color: var(--tm-text-faint); font-size: 12px; }
+      .tm-wz-gold { color: var(--tm-gold); }
+      .tm-wz-grow { flex: 1; min-width: 0; }
+      .tm-wz-lbl { display: block; font-size: 12.5px; font-weight: 600; color: var(--tm-text-muted); margin: 14px 0 6px; }
+      .tm-wz-lbl-lg { font-size: 14px; color: var(--tm-text); }
+      .tm-wz-lbl-top { margin-top: 0; }
+      .tm-wz-full { width: 100%; box-sizing: border-box; }
+      .tm-wz-pname { margin-top: 10px; max-width: 260px; }
+      .tm-wz-banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: var(--tm-accent-soft); border: 1px solid var(--tm-accent-border); margin-bottom: 18px; font-size: 13.5px; }
+      .tm-wz-banner ha-icon { color: var(--tm-accent); flex: none; --mdc-icon-size: 18px; }
+      .tm-wz-hero { display: flex; gap: 18px; align-items: center; margin-bottom: 22px; }
+      .tm-wz-hero-ic { width: 72px; height: 72px; border-radius: 20px; background: linear-gradient(135deg, #03a9f4, #9b59b6); display: grid; place-items: center; color: #fff; flex: none; --mdc-icon-size: 36px; }
+      .tm-wz-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+      .tm-wz-tile { background: var(--tm-bg); border: 1px solid var(--tm-border); border-radius: 12px; padding: 14px; display: flex; gap: 12px; align-items: flex-start; }
+      .tm-wz-tile b { display: block; margin-bottom: 2px; }
+      .tm-wz-tile span:not(.tm-wz-tile-ic) { font-size: 12.5px; color: var(--tm-text-muted); }
+      .tm-wz-tile-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--c), transparent 82%); color: var(--c); --mdc-icon-size: 18px; }
+      .tm-wz .tm-chip-btn { display: inline-flex; align-items: center; gap: 5px; }
+      .tm-wz .tm-chip-btn ha-icon { --mdc-icon-size: 14px; }
+      /* Children */
+      .tm-wz-kids { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+      .tm-wz-kid { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border: 1px solid var(--tm-border); border-radius: 12px; background: var(--tm-bg); }
+      .tm-wz-kid-name { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .tm-wz-kid-meta { font-size: 12.5px; color: var(--tm-text-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
+      .tm-wz-kid-meta ha-icon { --mdc-icon-size: 14px; margin-inline-end: 4px; vertical-align: -2px; }
+      .tm-wz-warn { color: var(--tm-warning); }
+      .tm-wz-bandpick { margin-top: 8px; }
+      .tm-wz-tag { font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 999px; background: color-mix(in srgb, var(--c), transparent 78%); color: var(--tm-text); white-space: nowrap; }
+      .tm-wz-kav { width: var(--s, 44px); height: var(--s, 44px); border-radius: 50%; background: var(--kc); display: grid; place-items: center; color: #fff; flex: none; box-sizing: border-box; border: 2px solid rgba(255, 255, 255, 0.25); --mdc-icon-size: calc(var(--s, 44px) * 0.5); }
+      .tm-wz-kav-off { opacity: 0.3; filter: grayscale(0.6); }
+      .tm-wz-add { border: 1px dashed var(--tm-border-strong); border-radius: 14px; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; }
+      .tm-wz-add h4 { margin: 0 0 4px; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+      .tm-wz-add h4 ha-icon { --mdc-icon-size: 16px; }
+      .tm-wz-seg { margin-inline-start: 0; }
+      .tm-wz-agectl { margin-top: 10px; }
+      .tm-wz-inline { display: flex; align-items: center; gap: 12px; }
+      .tm-wz-date { width: 200px; }
+      .tm-wz-stepper { display: inline-flex; align-items: center; border: 1px solid var(--tm-border); border-radius: 8px; overflow: hidden; }
+      .tm-wz-stepper button { width: 34px; height: 34px; border: 0; background: var(--tm-surface-2); color: var(--tm-text); cursor: pointer; font-size: 18px; font-family: inherit; }
+      .tm-wz-stepper span { min-width: 54px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .tm-wz-icons { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+      .tm-wz-icons button { height: 36px; border-radius: 9px; border: 1px solid var(--tm-border); background: var(--tm-bg); color: var(--tm-text-muted); display: grid; place-items: center; cursor: pointer; --mdc-icon-size: 18px; }
+      .tm-wz-icons button.tm-wz-on { border-color: var(--kc); background: color-mix(in srgb, var(--kc), transparent 80%); color: var(--tm-text); }
+      .tm-wz-swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+      .tm-wz-swatches button { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+      .tm-wz-swatches button.tm-wz-on { box-shadow: 0 0 0 2px var(--tm-surface-0), 0 0 0 4px var(--tm-text); }
+      .tm-wz-addbtn { margin-top: 16px; }
+      .tm-wz-mini, .tm-wz-rv-kid { border-radius: 12px; overflow: hidden; background: var(--tm-surface-0); border: 1px solid var(--tm-border); }
+      .tm-wz-mini-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--hd); color: #fff; }
+      .tm-wz-mini-av { width: 40px; height: 40px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); border: 2px solid rgba(255, 255, 255, 0.35); display: grid; place-items: center; flex: none; --mdc-icon-size: 22px; box-sizing: border-box; }
+      .tm-wz-mini-name { font-weight: 700; font-size: 1.1rem; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tm-wz-mini-sub { font-size: 12.5px; opacity: 0.9; }
+      .tm-wz-mini-pts { display: inline-flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.18); border: 1px solid rgba(255, 255, 255, 0.28); padding: 4px 10px; border-radius: 20px; font-weight: 800; white-space: nowrap; --mdc-icon-size: 15px; }
+      .tm-wz-mini-pts ha-icon { color: #ffd54f; }
+      .tm-wz-mini-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+      .tm-wz-mini-row { height: 34px; border-radius: 12px; border: 2px solid color-mix(in srgb, var(--kc), transparent 30%); background: color-mix(in srgb, var(--kc), transparent 92%); display: flex; align-items: center; padding: 0 10px; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--tm-text-muted); --mdc-icon-size: 14px; }
+      .tm-wz-dim { opacity: 0.6; }
+      /* Chores */
+      .tm-wz-cols { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 22px; align-items: start; }
+      .tm-wz-aside { position: sticky; top: 0; display: flex; flex-direction: column; gap: 14px; }
+      .tm-wz-panel { background: var(--tm-bg); border: 1px solid var(--tm-border); border-radius: 12px; padding: 14px; }
+      .tm-wz-panel h4 { margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tm-text-muted); }
+      .tm-wz-band { border: 1px solid var(--tm-border); border-radius: 14px; margin-bottom: 14px; overflow: hidden; background: var(--tm-bg); }
+      .tm-wz-band-h { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--tm-surface-2); border-bottom: 1px solid var(--tm-border-soft); }
+      .tm-wz-band-empty .tm-wz-band-h { border-bottom: 0; }
+      .tm-wz-band-age { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .tm-wz-band-sub { font-size: 12.5px; color: var(--tm-text-muted); }
+      .tm-wz-band-ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: #fff; flex: none; --mdc-icon-size: 20px; }
+      .tm-wz-stack { display: inline-flex; }
+      .tm-wz-stack .tm-wz-kav + .tm-wz-kav { margin-inline-start: -8px; }
+      .tm-wz-lnk { background: none; border: 0; color: var(--tm-accent); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; padding: 4px; }
+      .tm-wz-sg { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; grid-template-areas: "cb ic nm who pts"; gap: 12px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--tm-border-soft); cursor: pointer; }
+      .tm-wz-band-h + .tm-wz-sg { border-top: 0; }
+      .tm-wz-sg.tm-wz-on { background: color-mix(in srgb, var(--tm-accent), transparent 94%); }
+      .tm-wz-cbx { grid-area: cb; width: 22px; height: 22px; border-radius: 6px; border: 2px solid var(--tm-border-strong); display: grid; place-items: center; color: transparent; background: var(--tm-surface-0); box-sizing: border-box; --mdc-icon-size: 14px; flex: none; }
+      .tm-wz-on > .tm-wz-cbx { background: var(--tm-accent); border-color: var(--tm-accent); color: #fff; }
+      .tm-wz-sg .tm-wz-ic { grid-area: ic; width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--tm-surface-2); color: var(--tm-text-muted); --mdc-icon-size: 18px; }
+      .tm-wz-sg.tm-wz-on .tm-wz-ic { color: #fff; background: var(--bc); }
+      .tm-wz-nm { grid-area: nm; min-width: 0; }
+      .tm-wz-nm b { font-weight: 600; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .tm-wz-nm small { font-size: 12px; color: var(--tm-text-muted); }
+      .tm-wz-who { grid-area: who; display: flex; gap: 4px; }
+      .tm-wz-who button { padding: 0; border: 0; background: none; cursor: pointer; }
+      .tm-wz-pts { grid-area: pts; }
+      .tm-wz-have, .tm-wz-static { cursor: default; }
+      .tm-wz-have { opacity: 0.5; }
+      .tm-wz-have .tm-wz-cbx { visibility: hidden; }
+      .tm-wz-mstep { display: inline-flex; align-items: center; border: 1px solid var(--tm-border); border-radius: 8px; overflow: hidden; background: var(--tm-surface-0); }
+      .tm-wz-mstep button { width: 26px; height: 28px; border: 0; background: var(--tm-surface-2); color: var(--tm-text); cursor: pointer; font-size: 15px; font-family: inherit; }
+      .tm-wz-mstep > span { min-width: 48px; text-align: center; }
+      .tm-wz-unit { display: inline-flex; align-items: center; gap: 3px; font-weight: 700; font-size: 13px; color: var(--tm-gold); font-variant-numeric: tabular-nums; white-space: nowrap; --mdc-icon-size: 13px; }
+      .tm-wz-wk { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--tm-border-soft); }
+      .tm-wz-wk:first-of-type { border-top: 0; }
+      .tm-wz-wk-sm { padding: 6px 0; --mdc-icon-size: 16px; }
+      .tm-wz-pack { display: flex; align-items: center; gap: 10px; padding: 7px 0; font: inherit; font-size: 13px; cursor: pointer; width: 100%; background: none; border: 0; color: var(--tm-text); text-align: start; --mdc-icon-size: 16px; }
+      .tm-wz-pack > ha-icon { color: var(--tm-accent); }
+      .tm-wz-pack .tm-wz-cbx { width: 18px; height: 18px; border-radius: 5px; --mdc-icon-size: 12px; }
+      /* Rewards */
+      .tm-wz-tier { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tm-text-muted); margin: 16px 0 8px; }
+      .tm-wz-tier:first-child { margin-top: 0; }
+      .tm-wz-rw-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+      .tm-wz-rw { border: 1px solid var(--tm-border); border-radius: 14px; background: var(--tm-bg); padding: 14px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; position: relative; }
+      .tm-wz-rw.tm-wz-on { border-color: #9b59b6; background: color-mix(in srgb, #9b59b6 9%, var(--tm-bg)); }
+      .tm-wz-rw-top { display: flex; gap: 10px; align-items: center; padding-inline-end: 26px; }
+      .tm-wz-rw-top b { font-size: 14px; line-height: 1.25; }
+      .tm-wz-rw .tm-wz-ic { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: var(--tm-surface-2); color: var(--tm-text-muted); flex: none; --mdc-icon-size: 20px; }
+      .tm-wz-rw.tm-wz-on .tm-wz-ic { background: linear-gradient(135deg, #9b59b6, #8e44ad); color: #fff; }
+      .tm-wz-rw > .tm-wz-cbx { position: absolute; top: 10px; inset-inline-end: 10px; width: 20px; height: 20px; }
+      .tm-wz-rw.tm-wz-on > .tm-wz-cbx { background: #9b59b6; border-color: #9b59b6; }
+      .tm-wz-rw-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+      .tm-wz-when { font-size: 11.5px; color: var(--tm-text-faint); white-space: nowrap; }
+      .tm-wz-rw-add { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+      .tm-wz-rw-add .tm-input { flex: 1; min-width: 160px; }
+      .tm-wz-rw-add .tm-wz-cost { flex: 0 0 90px; min-width: 0; }
+      .tm-wz-tips { margin: 0; padding-inline-start: 18px; font-size: 12.5px; color: var(--tm-text-muted); line-height: 1.6; }
+      /* Review */
+      .tm-wz-rv-kids { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; margin-bottom: 18px; }
+      .tm-wz-rv-kid .tm-wz-mini-av { width: 36px; height: 36px; --mdc-icon-size: 20px; }
+      .tm-wz-rv-kid .tm-wz-mini-name { font-size: 1.05rem; }
+      .tm-wz-rv-kid ul { margin: 0; padding-block: 10px 12px; padding-inline: 30px 14px; font-size: 12.5px; color: var(--tm-text-muted); line-height: 1.6; }
+      .tm-wz-more { font-size: 12px; color: var(--tm-text-faint); padding: 0 14px 12px; }
+      .tm-wz-tog { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--tm-border-soft); font-size: 13.5px; flex-wrap: wrap; }
+      .tm-wz-opts h4 + .tm-wz-tog { border-top: 0; }
+      .tm-wz-tog small { display: block; color: var(--tm-text-faint); font-size: 12px; }
+      .tm-wz-sw { width: 36px; height: 20px; border-radius: 999px; background: var(--tm-border-strong); position: relative; cursor: pointer; flex: none; border: 0; padding: 0; }
+      .tm-wz-sw::after { content: ""; position: absolute; top: 2px; inset-inline-start: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: inset-inline-start 0.15s; }
+      .tm-wz-sw.tm-wz-on { background: var(--tm-accent); }
+      .tm-wz-sw.tm-wz-on::after { inset-inline-start: 18px; }
+      /* Done */
+      .tm-wz-finish { text-align: center; padding: 26px 10px 10px; position: relative; }
+      .tm-wz-done-ic { width: 92px; height: 92px; border-radius: 50%; margin: 0 auto 16px; display: grid; place-items: center; background: linear-gradient(135deg, #2ecc71, #16a085); color: #fff; box-shadow: 0 10px 30px rgba(46, 204, 113, 0.35); --mdc-icon-size: 48px; position: relative; }
+      .tm-wz-confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+      .tm-wz-confetti i { position: absolute; width: 9px; height: 14px; border-radius: 2px; opacity: 0.7; }
+      .tm-wz-finish > :not(.tm-wz-confetti) { position: relative; }
+      .tm-wz-stats { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 14px 0 24px; position: relative; }
+      .tm-wz-stats span { background: var(--tm-bg); border: 1px solid var(--tm-border); border-radius: 999px; padding: 6px 14px; font-size: 13px; }
+      .tm-wz-next { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; text-align: start; max-width: 860px; margin: 0 auto; position: relative; }
+      .tm-wz-next div { background: var(--tm-bg); border: 1px solid var(--tm-border); border-radius: 12px; padding: 14px; font-size: 13px; color: var(--tm-text-muted); }
+      .tm-wz-next b { display: flex; gap: 8px; align-items: center; color: var(--tm-text); margin-bottom: 4px; font-size: 14px; --mdc-icon-size: 18px; }
+      .tm-wz-next b ha-icon { color: var(--tm-accent); }
+      .tm-wz-done-acts { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 26px; position: relative; }
+      /* Entry points */
+      .tm-wz-empty { text-align: center; padding: 50px 20px; }
+      .tm-wz-empty-ic { width: 84px; height: 84px; border-radius: 24px; margin: 0 auto 16px; background: linear-gradient(135deg, #03a9f4, #9b59b6); display: grid; place-items: center; color: #fff; --mdc-icon-size: 40px; }
+      .tm-wz-empty h2 { margin: 0 0 6px; font-size: 22px; }
+      .tm-wz-empty p { color: var(--tm-text-muted); margin: 0 auto 20px; max-width: 520px; }
+      .tm-wz-empty-acts { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+      .tm-wz-settings { border-color: var(--tm-accent-border); }
+      .tm-wz-settings-t { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; --mdc-icon-size: 16px; }
+      .tm-wz-settings-t ha-icon { color: var(--tm-accent); }
+      .tm-wz-confirm { margin: 8px 0 0; padding-inline-start: 20px; line-height: 1.7; }
+      .tm-wz-nudge { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 16px; border-radius: 12px; background: var(--tm-accent-soft); border: 1px solid var(--tm-accent-border); }
+      .tm-wz-nudge-text { flex: 1; min-width: 180px; }
+      .tm-wz-nudge .tm-btn ha-icon { --mdc-icon-size: 16px; }
+      @container tm-wz (max-width: 640px) {
+        .tm-wz-step .tm-wz-l, .tm-wz-sep { display: none; }
+        .tm-wz-steps { gap: 6px; }
+        .tm-wz-mlabel { display: block; margin-inline-start: auto; }
+        .tm-wz-body { padding: 18px 14px; min-height: 0; }
+        .tm-wz-h { font-size: 19px; }
+        .tm-wz-cols, .tm-wz-add { grid-template-columns: 1fr; }
+        .tm-wz-aside { position: static; }
+        .tm-wz-tiles { grid-template-columns: 1fr; }
+        .tm-wz-hero-ic { width: 54px; height: 54px; --mdc-icon-size: 28px; }
+        .tm-wz-rw-grid { grid-template-columns: 1fr; }
+        .tm-wz-sg { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "cb ic nm pts" ". . who who"; row-gap: 6px; padding: 9px 10px; }
+        .tm-wz-next { grid-template-columns: 1fr; }
+        .tm-wz-foot { padding: 12px 14px; flex-wrap: wrap; }
+        .tm-wz-icons { grid-template-columns: repeat(6, 1fr); }
+        .tm-wz-band-sub { display: none; }
+        .tm-wz-date { width: 170px; }
+      }
+    </style>`;
   }
 
   // -- Chores tab --------------------------------------------------------
@@ -3473,6 +6489,14 @@ class TaskMatePanel extends HTMLElement {
       ? this._t("panel.common_one_shot")
       : ((c.due_days || []).length === 0 ? this._t("panel.common_daily") : (c.due_days || []).map(d => this._labelOf(DAYS, d)).join(" · "));
     const schedClass = c.schedule_mode === "recurring" ? "tm-pill-accent" : c.schedule_mode === "one_shot" ? "tm-pill-warn" : "tm-pill-success";
+    // A weekly quota doesn't replace the day list — the chore is still only
+    // offered on those days, it just stops once the week's count is filled.
+    const weeklyPill = Number(c.weekly_target) > 0
+      ? ` <span class="tm-pill tm-pill-accent">${this._t("panel.chore_weekly_target_pill", { count: Number(c.weekly_target) })}</span>`
+      : "";
+    const teamPill = Number(c.team_size) >= 2
+      ? ` <span class="tm-pill tm-pill-accent">${this._t("panel.chore_team_pill", { count: Number(c.team_size) })}</span>`
+      : "";
     const modeBadge = c.assignment_mode && c.assignment_mode !== "everyone"
       ? `<span class="tm-pill tm-pill-${this._esc(c.assignment_mode)}">${this._t(`panel.assign_${c.assignment_mode}_short`)}</span>` : "";
     const nameCell = renaming
@@ -3492,9 +6516,9 @@ class TaskMatePanel extends HTMLElement {
         </div></td>
         <td><strong class="tm-numeric">${c.task_type === "timed" ? `${this._num(c.timed_rate_points)}/${this._num(c.timed_rate_minutes, 1)} min` : this._num(c.points)}</strong></td>
         <td><span class="tm-pill">${this._esc(this._timeCategoryLabel(c.time_category))}</span></td>
-        <td>${assignedNames} ${modeBadge}</td>
+        <td>${assignedNames} ${modeBadge}${teamPill}</td>
         <td>${currentName}</td>
-        <td><span class="tm-pill ${schedClass} tm-pill-dot">${this._esc(schedLabel)}</span></td>
+        <td><span class="tm-pill ${schedClass} tm-pill-dot">${this._esc(schedLabel)}</span>${weeklyPill}</td>
         <td>${c.requires_approval ? `<span class='tm-yes'>${this._t("panel.common_yes")}</span>` : `<span class='tm-no'>${this._t("panel.common_no")}</span>`}</td>
       </tr>
     `;
@@ -3542,7 +6566,7 @@ class TaskMatePanel extends HTMLElement {
         <div class="tm-child-head">
           <div class="tm-avatar tm-avatar-reward">${this._mdi(r.icon || "mdi:gift")}</div>
           <div class="tm-child-name">
-            <h3>${this._esc(r.name)} ${r.is_jackpot ? `<span class="tm-pill tm-pill-jackpot">🏆 ${this._t("panel.reward_badge_jackpot")}</span>` : ""} ${r.pool_enabled ? `<span class="tm-pill tm-pill-pool">${this._t("panel.reward_badge_pool")}</span>` : ""} ${this._rewardTimeLockPill(r)}</h3>
+            <h3>${this._esc(r.name)} ${r.is_jackpot ? `<span class="tm-pill tm-pill-jackpot">🏆 ${this._t("panel.reward_badge_jackpot")}</span>` : ""} ${r.pool_enabled ? `<span class="tm-pill tm-pill-pool">${this._t("panel.reward_badge_pool")}</span>` : ""} ${r.streak_freeze ? `<span class="tm-pill tm-pill-pool">❄️ ${this._t("panel.reward_badge_streak_freeze")}</span>` : ""} ${this._rewardTimeLockPill(r)}</h3>
             ${this._idBadge(r.id)}
             <div class="tm-meta">${this._esc(r.description || "")}</div>
           </div>
@@ -3554,7 +6578,7 @@ class TaskMatePanel extends HTMLElement {
         </div>
         ${showProgress ? `
           <div class="tm-progress"><span style="width:${pct}%"></span></div>
-          <div class="tm-progress-text"><span><strong>${this._fmtNum(totalPooled)}</strong> / ${this._fmtNum(r.cost)}</span><span>${pct}%</span></div>
+          <div class="tm-progress-text"><span${this.getAttribute("dir") === "rtl" ? ' dir="ltr"' : ""}><strong>${this._fmtNum(totalPooled)}</strong> / ${this._fmtNum(r.cost)}</span><span>${pct}%</span></div>
         ` : ""}
         <div class="tm-card-foot">
           <button type="button" class="tm-btn tm-btn-sm" data-act="edit-reward" data-id="${this._esc(r.id)}">${this._t("panel.btn_edit")}</button>
@@ -3562,6 +6586,304 @@ class TaskMatePanel extends HTMLElement {
         </div>
       </article>
     `;
+  }
+
+  // -- Wishlists tab (#932) ----------------------------------------------
+  // Children add wishes from the wishlist card; parents approve them here
+  // (confirming or changing the target), pledge on behalf of relatives, and
+  // hand a funded wish over by approving its reward claim.
+  _safeWishImage(u) {
+    return typeof u === "string" && u.startsWith("/api/taskmate/image/") ? u : "";
+  }
+
+  // A wish link is typed by a child: only an absolute http(s) URL is ever
+  // emitted into an href. _esc() stops markup injection, not a javascript: URL.
+  _safeWishLink(u) {
+    if (typeof u !== "string" || !u) return null;
+    try {
+      const url = new URL(u);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+      return { href: url.href, host: url.hostname.replace(/^www\./, "") };
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  _wishThumb(w, size = 44) {
+    const src = this._safeWishImage(w.image_url);
+    return src
+      ? `<img class="tm-wl-thumb" style="width:${size}px;height:${size}px" src="${this._esc(src)}" alt="" loading="lazy">`
+      : `<span class="tm-wl-thumb tm-wl-thumb-ph" style="width:${size}px;height:${size}px">${this._mdi("mdi:gift-outline")}</span>`;
+  }
+
+  _wishLinkChip(w) {
+    const link = this._safeWishLink(w.link);
+    return link
+      ? `<a class="tm-pill tm-pill-accent tm-wl-link" href="${this._esc(link.href)}" target="_blank" rel="noopener noreferrer">${this._mdi("mdi:link-variant")} ${this._esc(link.host)}</a>`
+      : "";
+  }
+
+  _wishBar(w) {
+    const target = this._num(w.target);
+    const saved = this._num(w.saved);
+    const pledged = this._num(w.pledged);
+    const pct = (n) => (target > 0 ? Math.max(0, Math.min(100, (n / target) * 100)) : 0);
+    return `
+      <div class="tm-wl-split"><i class="tm-wl-me" style="width:${pct(saved)}%"></i><i class="tm-wl-fam" style="width:${pct(Math.min(pledged, Math.max(0, target - saved)))}%"></i></div>
+      <div class="tm-meta tm-numeric">${this._ltrNums(`${this._fmtNum(Math.min(target, saved + pledged))} / ${this._fmtNum(target)}`)}</div>`;
+  }
+
+  _renderWishlistsTab() {
+    const children = this._state.children || [];
+    const childById = Object.fromEntries(children.map(c => [c.id, c]));
+    // The wishlist's own child picker wins; otherwise follow the child filter (#966).
+    const picked = this._wishChild || this._scopeId();
+    const filter = picked && childById[picked] ? picked : "";
+    const all = (this._state.wishes || []).filter(w => childById[w.child_id] && (!filter || w.child_id === filter));
+    const pending = all.filter(w => w.status === "pending");
+    const active = all.filter(w => w.status === "active" || w.status === "redeem_requested");
+    const history = all
+      .filter(w => w.status === "redeemed" || w.status === "declined")
+      .sort((a, b) => String(b.redeemed_at || b.declined_at || "").localeCompare(String(a.redeemed_at || a.declined_at || "")));
+    const pledges = all
+      .flatMap(w => (w.pledges || []).map(p => ({ ...p, wish: w })))
+      .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+    const pointsName = this._state.settings.points_name || this._t("common.points");
+    const who = (w) => this._esc((childById[w.child_id] || {}).name || "?");
+
+    const chips = `
+      <div class="tm-chip-row">
+        <button type="button" class="tm-chip-btn ${filter ? "" : "tm-chip-on"}" data-act="wish-filter" data-id="">${this._t("panel.wish_filter_all")}</button>
+        ${children.map(c => `<button type="button" class="tm-chip-btn ${filter === c.id ? "tm-chip-on" : ""}" data-act="wish-filter" data-id="${this._esc(c.id)}">${this._esc(c.name)}</button>`).join("")}
+      </div>`;
+
+    const pendingHtml = pending.length === 0 ? `<p class="tm-meta">${this._t("panel.wish_none_pending")}</p>` : pending.map(w => {
+      const typed = (this._wishTargets || {})[w.id];
+      const value = typed != null ? typed : this._num(w.target);
+      return `
+        <div class="tm-approval-item tm-wl-appr">
+          ${this._wishThumb(w, 52)}
+          <div class="tm-approval-body">
+            <div class="tm-approval-line"><strong>${this._esc(w.name)}</strong> ${this._wishLinkChip(w)}</div>
+            <div class="tm-meta">${this._t("panel.wish_suggested", { child: who(w), points: this._fmtNum(w.suggested_target || w.target), points_name: this._esc(pointsName) })} · ${this._esc(this._timeAgo(w.created_at))}</div>
+          </div>
+          <label class="tm-wl-target">
+            <span class="tm-meta">${this._t("panel.wish_target")}</span>
+            <input class="tm-input" type="number" min="1" max="100000" data-wish-target="${this._esc(w.id)}" value="${this._esc(value)}">
+          </label>
+          <div class="tm-approval-actions">
+            <button type="button" class="tm-btn tm-btn-sm" data-act="wish-decline" data-id="${this._esc(w.id)}">${this._t("panel.wish_decline")}</button>
+            <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="wish-approve" data-id="${this._esc(w.id)}">${this._t("panel.wish_approve")}</button>
+          </div>
+        </div>`;
+    }).join("");
+
+    const activeHtml = active.length === 0 ? `<p class="tm-meta">${this._t("panel.wish_none_active")}</p>` : `
+      <div class="tm-table-wrap">
+        <table class="tm-table tm-wl-table">
+          <thead><tr>
+            <th class="tm-col-sticky">${this._t("panel.wish_col_wish")}</th><th class="tm-wl-progress">${this._t("panel.wish_col_progress")}</th>
+            <th>${this._t("panel.wish_col_saved")}</th><th>${this._t("panel.wish_col_pledged")}</th>
+            <th>${this._t("panel.wish_col_status")}</th>
+          </tr></thead>
+          <tbody>
+            ${active.map(w => {
+              const status = w.status === "redeem_requested"
+                ? `<span class="tm-pill tm-pill-success">${this._t("panel.wish_status_redeem")}</span>`
+                : w.funded ? `<span class="tm-pill tm-pill-success">${this._t("panel.wish_status_funded")}</span>`
+                : `<span class="tm-pill tm-pill-accent">${this._t("panel.wish_status_saving")}</span>`;
+              const main = w.status === "redeem_requested" && w.claim_id
+                ? `<button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="wish-fulfil" data-id="${this._esc(w.claim_id)}">${this._mdi("mdi:gift-outline")} ${this._t("panel.wish_fulfil")}</button>`
+                : (!w.funded && w.status === "active")
+                  ? `<button type="button" class="tm-btn tm-btn-sm" data-act="wish-pledge" data-id="${this._esc(w.id)}">${this._mdi("mdi:heart-outline")} ${this._t("panel.wish_pledge")}</button>`
+                  : "";
+              return `
+                <tr class="tm-row">
+                  <td class="tm-col-sticky tm-cell-wrap"><div class="tm-name-cell tm-name-cell-wrap">
+                    <div class="tm-name-main tm-wl-cell">${this._wishThumb(w, 32)}<div><strong>${this._esc(w.name)}</strong><div class="tm-meta">${who(w)} ${this._wishLinkChip(w)}</div></div></div>
+                    <div class="tm-name-actions tm-wl-acts">${main}
+                      <button type="button" class="tm-icon-btn" data-act="wish-delete" data-id="${this._esc(w.id)}" title="${this._esc(this._t("panel.wish_delete"))}"><ha-icon icon="mdi:delete-outline"></ha-icon></button>
+                    </div>
+                  </div></td>
+                  <td class="tm-wl-progress">${this._wishBar(w)}</td>
+                  <td class="tm-numeric">${this._fmtNum(w.saved)}</td>
+                  <td class="tm-numeric">${this._fmtNum(w.pledged)}</td>
+                  <td>${status}</td>
+                </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>`;
+
+    const pledgesHtml = pledges.length === 0 ? `<p class="tm-meta">${this._t("panel.wish_none_pledges")}</p>` : `
+      <div class="tm-table-wrap">
+        <table class="tm-table">
+          <thead><tr>
+            <th class="tm-col-sticky">${this._t("panel.wish_col_from")}</th><th>${this._t("panel.wish_col_to")}</th><th>${this._t("panel.wish_col_amount")}</th>
+            <th>${this._t("panel.wish_col_message")}</th><th>${this._t("panel.wish_col_date")}</th>
+          </tr></thead>
+          <tbody>
+            ${pledges.map(p => `
+              <tr class="tm-row">
+                <td class="tm-col-sticky tm-cell-wrap"><div class="tm-name-cell tm-name-cell-icon">
+                  <div class="tm-name-main"><strong>${this._esc(p.name)}</strong></div>
+                  ${p.wish.status === "active" || p.wish.status === "redeem_requested"
+                    ? `<div class="tm-name-actions"><button type="button" class="tm-icon-btn" data-act="wish-unpledge" data-id="${this._esc(p.wish.id)}" data-pledge="${this._esc(p.id)}" title="${this._esc(this._t("panel.wish_unpledge"))}"><ha-icon icon="mdi:delete-outline"></ha-icon></button></div>`
+                    : ""}
+                </div></td>
+                <td>${who(p.wish)} · ${this._esc(p.wish.name)}</td>
+                <td class="tm-numeric tm-wl-gold">+${this._fmtNum(p.points)}</td>
+                <td class="tm-meta">${this._esc(p.message || "—")}</td>
+                <td class="tm-meta">${this._esc(this._timeAgo(p.created_at))}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+
+    const historyHtml = history.length === 0 ? `<p class="tm-meta">${this._t("panel.wish_none_history")}</p>` : `
+      <div class="tm-table-wrap">
+        <table class="tm-table">
+          <tbody>
+            ${history.map(w => `
+              <tr class="tm-row">
+                <td class="tm-col-sticky tm-cell-wrap"><div class="tm-name-cell tm-name-cell-icon">
+                  <div class="tm-name-main tm-wl-cell">${this._wishThumb(w, 32)}<div><strong>${this._esc(w.name)}</strong><div class="tm-meta">${who(w)}</div></div></div>
+                  <div class="tm-name-actions"><button type="button" class="tm-icon-btn" data-act="wish-delete" data-id="${this._esc(w.id)}" title="${this._esc(this._t("panel.wish_delete"))}"><ha-icon icon="mdi:delete-outline"></ha-icon></button></div>
+                </div></td>
+                <td>${w.status === "redeemed"
+                  ? `<span class="tm-pill tm-pill-success">${this._t("panel.wish_status_redeemed")}</span>`
+                  : `<span class="tm-pill tm-pill-danger">${this._t("panel.wish_status_declined")}</span>${w.decline_reason ? ` <span class="tm-meta">${this._esc(w.decline_reason)}</span>` : ""}`}</td>
+                <td class="tm-numeric">${this._fmtNum(w.target)}</td>
+                <td class="tm-meta">${this._esc(this._timeAgo(w.redeemed_at || w.declined_at || w.created_at))}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+
+    return `
+      <div class="tm-toolbar">
+        <h2 class="tm-toolbar-title">${this._t("panel.tab_wishlists")} <span class="tm-toolbar-count">${active.length + pending.length}</span></h2>
+        ${chips}
+      </div>
+      <div class="tm-card">
+        <h3 class="tm-section-title">${this._t("panel.wish_section_pending")}
+          ${pending.length ? `<span class="tm-pill tm-pill-warn">${pending.length}</span>` : ""}</h3>
+        <p class="tm-meta tm-wl-intro">${this._t("panel.wish_section_pending_hint")}</p>
+        <div class="tm-approval-list">${pendingHtml}</div>
+      </div>
+      <div class="tm-card">
+        <h3 class="tm-section-title">${this._t("panel.wish_section_active")}</h3>
+        ${activeHtml}
+      </div>
+      <div class="tm-card">
+        <h3 class="tm-section-title">${this._t("panel.wish_section_pledges")}</h3>
+        <p class="tm-meta tm-wl-intro">${this._t("panel.wish_section_pledges_hint")}</p>
+        ${pledgesHtml}
+      </div>
+      <div class="tm-card">
+        <h3 class="tm-section-title">${this._t("panel.wish_section_history")}</h3>
+        ${historyHtml}
+      </div>
+    `;
+  }
+
+  _openWishPledge(wishId) {
+    const w = (this._state.wishes || []).find(x => x.id === wishId);
+    if (!w) return;
+    const remaining = this._num(w.remaining);
+    this._openDialog({ kind: "wish-pledge", data: { wish_id: w.id, name: "", points: Math.min(20, remaining), message: "" } });
+  }
+
+  _renderWishPledgeDialog() {
+    const d = this._dialog.data;
+    const w = (this._state.wishes || []).find(x => x.id === d.wish_id);
+    if (!w) return "";
+    const child = (this._state.children || []).find(c => c.id === w.child_id) || {};
+    const remaining = this._num(w.remaining);
+    // Quick picks: names already used for pledges, most recent first.
+    const names = [...new Set((this._state.wishes || [])
+      .flatMap(x => x.pledges || [])
+      .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+      .map(p => p.name).filter(Boolean))].slice(0, 6);
+    const amount = Math.max(0, Math.min(this._num(d.points), remaining));
+    const target = this._num(w.target);
+    const pct = (n) => (target > 0 ? Math.max(0, Math.min(100, (n / target) * 100)) : 0);
+    const body = `
+      ${this._field(this._t("panel.wish_pledge_who"), "name", d.name)}
+      ${names.length ? `<div class="tm-chip-row tm-wl-quick">${names.map(n => `<button type="button" class="tm-chip-btn ${d.name === n ? "tm-chip-on" : ""}" data-act="wish-pledge-who" data-name="${this._esc(n)}">${this._esc(n)}</button>`).join("")}</div>` : ""}
+      ${this._field(this._t("panel.wish_pledge_amount"), "points", d.points, "number",
+        this._esc(this._t("panel.wish_pledge_amount_hint", { points: this._fmtNum(remaining) })))}
+      <div class="tm-chip-row tm-wl-quick">
+        ${[10, 20, 50].filter(n => n < remaining).map(n => `<button type="button" class="tm-chip-btn ${amount === n ? "tm-chip-on" : ""}" data-act="wish-pledge-amt" data-points="${n}">${n}</button>`).join("")}
+        <button type="button" class="tm-chip-btn ${amount === remaining ? "tm-chip-on" : ""}" data-act="wish-pledge-amt" data-points="${remaining}">${this._t("panel.wish_pledge_finish", { points: this._fmtNum(remaining) })}</button>
+      </div>
+      ${this._field(this._t("panel.wish_pledge_message", { name: child.name || "" }), "message", d.message)}
+      <div class="tm-wl-split tm-wl-split-lg">
+        <i class="tm-wl-me" style="width:${pct(this._num(w.saved))}%"></i>
+        <i class="tm-wl-fam" style="width:${pct(this._num(w.pledged))}%"></i>
+        <i class="tm-wl-new" style="width:${pct(amount)}%"></i>
+      </div>
+      <p class="tm-meta">${this._ltrNums(this._t("panel.wish_pledge_preview", { total: this._fmtNum(Math.min(target, this._num(w.saved) + this._num(w.pledged) + amount)), target: this._fmtNum(target) }))}</p>`;
+    return this._dialogShell(
+      this._t("panel.wish_pledge_title", { child: child.name || "", wish: w.name }),
+      body,
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="save-wish-pledge">${this._mdi("mdi:heart-outline")} ${this._t("panel.wish_pledge_add")}</button>`
+    );
+  }
+
+  _renderWishDeclineDialog() {
+    const d = this._dialog.data;
+    const w = (this._state.wishes || []).find(x => x.id === d.wish_id);
+    if (!w) return "";
+    return this._dialogShell(
+      this._t("panel.wish_decline_title", { wish: w.name }),
+      this._field(this._t("panel.wish_decline_reason"), "reason", d.reason, "text", this._esc(this._t("panel.wish_decline_reason_hint"))),
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-danger" data-act="save-wish-decline">${this._t("panel.wish_decline")}</button>`
+    );
+  }
+
+  async _doWishService(service, data, okKey, confirmKey) {
+    if (confirmKey && !confirm(this._t(confirmKey))) return false;
+    const { ok, err } = await this._callService(service, data);
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return false; }
+    await this._fetchState();
+    this._showToast("ok", this._t(okKey));
+    return true;
+  }
+
+  async _doApproveWish(wishId) {
+    const w = (this._state.wishes || []).find(x => x.id === wishId);
+    if (!w) return;
+    const typed = (this._wishTargets || {})[wishId];
+    const target = typed != null && typed !== "" ? Number(typed) : this._num(w.target);
+    if (!Number.isInteger(target) || target < 1 || target > 100000) {
+      this._showToast("err", this._t("panel.wish_err_target"));
+      return;
+    }
+    if (await this._doWishService("approve_wish", { wish_id: wishId, target }, "panel.wish_toast_approved")) {
+      if (this._wishTargets) delete this._wishTargets[wishId];
+    }
+  }
+
+  async _doDeclineWish() {
+    const d = this._dialog.data;
+    const reason = String(d.reason || "").trim();
+    const data = reason ? { wish_id: d.wish_id, reason } : { wish_id: d.wish_id };
+    if (await this._doWishService("decline_wish", data, "panel.wish_toast_declined")) this._closeDialog(true);
+  }
+
+  async _doPledgeWish() {
+    const d = this._dialog.data;
+    const name = String(d.name || "").trim();
+    const points = Number(d.points);
+    if (!name) { this._showToast("err", this._t("panel.wish_err_who")); return; }
+    if (!Number.isInteger(points) || points < 1) { this._showToast("err", this._t("panel.wish_err_amount")); return; }
+    const data = { wish_id: d.wish_id, name, points };
+    const message = String(d.message || "").trim();
+    if (message) data.message = message;
+    if (await this._doWishService("pledge_to_wish", data, "panel.wish_toast_pledged")) this._closeDialog(true);
   }
 
   // -- Quests tab --------------------------------------------------------
@@ -3682,6 +7004,678 @@ class TaskMatePanel extends HTMLElement {
     `;
   }
 
+  // -- Bounties tab (#931) ----------------------------------------------
+  // One-off jobs any eligible child can claim. Active = open + claimed;
+  // Waiting approval = submitted, and the same completion also sits in the
+  // Activity queue and the approvals card; History = completed + expired.
+  _bountyLists() {
+    const all = this._state.bounties || [];
+    const closedDesc = (a, b) => String(b.closed_at || "").localeCompare(String(a.closed_at || ""));
+    return {
+      active: all.filter(b => b.status === "open" || b.status === "claimed"),
+      pending: all.filter(b => b.status === "pending"),
+      history: all.filter(b => b.status === "completed" || b.status === "expired").sort(closedDesc),
+    };
+  }
+
+  _bountyDur(ms) {
+    const sec = Math.max(0, Math.round(ms / 1000));
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (d) return this._t("bounty.dur_days", { d, h });
+    if (h) return this._t("bounty.dur_hours", { h, m: String(m).padStart(2, "0") });
+    return this._t("bounty.dur_minutes", { m, s: String(s).padStart(2, "0") });
+  }
+
+  _renderBountiesTab() {
+    const lists = this._bountyLists();
+    const all = this._state.bounties || [];
+    const sub = this._bountySubTab || "active";
+    const rows = lists[sub] || [];
+    const childById = Object.fromEntries((this._state.children || []).map(c => [c.id, c]));
+    const tabs = [
+      { id: "active", label: this._t("panel.bounty_tab_active", { count: lists.active.length }) },
+      { id: "pending", label: this._t("panel.bounty_tab_pending", { count: lists.pending.length }) },
+      { id: "history", label: this._t("panel.bounty_tab_history", { count: lists.history.length }) },
+    ];
+    return `
+      <div class="tm-toolbar">
+        <h2 class="tm-toolbar-title">${this._t("panel.tab_bounties")} <span class="tm-toolbar-count">${lists.active.length + lists.pending.length}</span></h2>
+        <button type="button" class="tm-btn tm-btn-raised" data-act="add-bounty">${this._t("panel.bounty_post_btn")}</button>
+      </div>
+      ${all.length === 0 ? this._emptyState("🏁", this._t("panel.bounty_empty_title"), this._t("panel.bounty_empty_copy"), "add-bounty", this._t("panel.bounty_post_btn")) : `
+        <div class="tm-chip-row" style="margin-bottom:14px">
+          ${tabs.map(t => `<button type="button" class="tm-chip-btn ${t.id === sub ? "tm-chip-on" : ""}" data-act="bounty-subtab" data-id="${t.id}">${this._esc(t.label)}</button>`).join("")}
+        </div>
+        <div class="tm-table-wrap">
+          <table class="tm-table">
+            <thead><tr>
+              <th class="tm-col-sticky">${this._t("panel.bounty_col_bounty")}</th><th>${this._t("panel.bounty_col_points")}</th><th>${this._t("panel.bounty_col_eligible")}</th><th>${this._t("panel.bounty_col_status")}</th><th>${this._t("panel.bounty_col_expires")}</th>
+            </tr></thead>
+            <tbody>
+              ${rows.length === 0
+                ? `<tr><td colspan="5" class="tm-meta" style="text-align:center;padding:26px">${this._t("panel.bounty_nothing")}</td></tr>`
+                : rows.map(b => this._renderBountyRow(b, childById)).join("")}
+            </tbody>
+          </table>
+        </div>
+      `}
+    `;
+  }
+
+  _renderBountyRow(b, childById) {
+    const now = Date.now();
+    const name = (id) => (childById[id] && childById[id].name) || "?";
+    const eligible = (b.eligible_child_ids || []).length
+      ? this._esc(b.eligible_child_ids.map(name).join(", "))
+      : `<span class="tm-text-muted">${this._t("panel.bounty_all_children")}</span>`;
+    const meta = [this._t("panel.bounty_lock_meta", { hours: b.claim_hours })];
+    if (b.require_photo) meta.push(this._t("panel.bounty_photo_meta"));
+    const left = (iso) => this._bountyDur(Date.parse(iso || "") - now);
+    let status = "";
+    if (b.status === "open") {
+      status = `<span class="tm-pill tm-pill-accent">${this._t("panel.bounty_status_open")}</span>`;
+    } else if (b.status === "claimed") {
+      status = `<span class="tm-pill tm-pill-warn">${this._t("panel.bounty_status_claimed")}</span>
+        <div class="tm-meta">${this._t("panel.bounty_claimed_meta", { name: this._esc(name(b.claimed_by)), time: left(b.claim_until) })}</div>`;
+    } else if (b.status === "pending") {
+      const comp = (this._state.completions || []).find(c => c.id === b.completion_id);
+      status = `<span class="tm-pill tm-pill-warn">${this._t("panel.bounty_status_pending")}</span>
+        <div class="tm-meta">${this._esc(name(b.claimed_by))}${comp ? ` · ${this._timeAgo(comp.completed_at)}` : ""}</div>`;
+    } else if (b.status === "completed") {
+      status = `<span class="tm-pill tm-pill-success">${this._t("panel.bounty_status_completed")}</span>
+        <div class="tm-meta">${this._t("panel.bounty_completed_meta", { name: this._esc(name(b.claimed_by)), points: this._num(b.points_awarded || b.points) })}</div>`;
+    } else if (b.status === "expired") {
+      status = `<span class="tm-pill tm-pill-muted">${this._t("panel.bounty_status_expired")}</span>
+        <div class="tm-meta">${this._t(b.lapse_count > 0 ? "panel.bounty_expired_lapsed_meta" : b.claim_count > 0 ? "panel.bounty_expired_unfinished_meta" : "panel.bounty_expired_meta", { date: b.closed_at ? this._esc(new Date(b.closed_at).toLocaleDateString([], { day: "numeric", month: "short" })) : "" })}</div>`;
+    }
+    if (b.lapse_count > 0) status += `<div class="tm-meta">${this._t("panel.bounty_lapsed_meta", { count: b.lapse_count })}</div>`;
+    const expires = (b.status === "open" || b.status === "claimed")
+      ? (b.expires_at ? this._esc(left(b.expires_at)) : this._t("panel.bounty_no_expiry"))
+      : "—";
+    const id = this._esc(b.id);
+    let actions;
+    if (b.status === "pending" && b.completion_id) {
+      const cid = this._esc(b.completion_id);
+      actions = `${this._ratingOn() ? this._ratingPicker(b.completion_id) : ""}
+        <button type="button" class="tm-btn tm-btn-sm" data-act="reject-chore" data-id="${cid}">${this._t("panel.activity_reject")}</button>
+        <button type="button" class="tm-btn tm-btn-raised tm-btn-sm" data-act="approve-chore" data-id="${cid}">${this._t("panel.activity_approve")}</button>`;
+    } else if (b.status === "claimed") {
+      actions = `<button type="button" class="tm-btn tm-btn-sm" data-act="release-bounty" data-id="${id}">${this._t("panel.bounty_release")}</button>
+        <button type="button" class="tm-icon-btn" data-act="edit-bounty" data-id="${id}" title="${this._t("panel.btn_edit")}">✏</button>`;
+    } else if (b.status === "open") {
+      actions = `<button type="button" class="tm-icon-btn" data-act="edit-bounty" data-id="${id}" title="${this._t("panel.btn_edit")}">✏</button>
+        <button type="button" class="tm-icon-btn" data-act="delete-bounty" data-id="${id}" title="${this._t("panel.bounty_cancel")}"><ha-icon icon="mdi:trash-can-outline"></ha-icon></button>`;
+    } else {
+      actions = `<button type="button" class="tm-icon-btn" data-act="delete-bounty" data-id="${id}" title="${this._t("panel.btn_delete")}"><ha-icon icon="mdi:trash-can-outline"></ha-icon></button>`;
+    }
+    return `
+      <tr class="tm-row">
+        <td class="tm-col-sticky tm-cell-wrap"><div class="tm-name-cell tm-name-cell-wrap">
+          <div class="tm-name-main tm-bounty-cell">
+            <span class="tm-avatar tm-bounty-ic">${this._mdi(b.icon || "mdi:flag-outline")}</span>
+            <div><strong>${this._esc(b.title)}</strong><div class="tm-meta">${this._esc(meta.join(" · "))}</div></div>
+          </div>
+          <div class="tm-name-actions tm-bounty-actions">${actions}</div>
+        </div></td>
+        <td><strong class="tm-numeric">${this._num(b.points)}</strong></td>
+        <td>${eligible}</td>
+        <td>${status}</td>
+        <td class="tm-meta">${expires}</td>
+      </tr>`;
+  }
+
+  _openBountyDialog(id) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const localInput = (iso) => {
+      const d = new Date(iso);
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    if (id) {
+      const b = (this._state.bounties || []).find(x => x.id === id);
+      if (!b) return;
+      this._openDialog({ kind: "bounty", mode: "edit", data: {
+        id: b.id, status: b.status, title: b.title, description: b.description || "",
+        points: b.points, icon: b.icon || "mdi:flag-outline", claim_hours: b.claim_hours,
+        eligible_child_ids: [...(b.eligible_child_ids || [])],
+        require_photo: !!b.require_photo, notify_children: b.notify_children !== false,
+        exp_mode: b.expires_at ? "pick" : "none",
+        exp_pick: b.expires_at ? localInput(b.expires_at) : "",
+        exp_pick_orig: b.expires_at ? localInput(b.expires_at) : "",
+        exp_dirty: false,
+      } });
+    } else {
+      this._openDialog({ kind: "bounty", mode: "add", data: {
+        title: "", description: "", points: 50, icon: "mdi:car-wash", claim_hours: 2,
+        eligible_child_ids: [], require_photo: false, notify_children: true,
+        exp_mode: "24h", exp_pick: "", exp_dirty: true,
+      } });
+    }
+  }
+
+  /** The dialog's expiry choice as an ISO instant, or null for none. */
+  _bountyExpiryIso(d) {
+    const now = new Date();
+    const at = (base, hours) => { const x = new Date(base); x.setHours(hours, 0, 0, 0); return x; };
+    let when = null;
+    if (d.exp_mode === "tonight") {
+      when = at(now, 20);
+      if (when <= now) when.setDate(when.getDate() + 1);
+    } else if (d.exp_mode === "24h") {
+      when = new Date(now.getTime() + 24 * 3600e3);
+    } else if (d.exp_mode === "weekend") {
+      when = at(now, 20);
+      when.setDate(when.getDate() + ((7 - when.getDay()) % 7));
+      if (when <= now) when.setDate(when.getDate() + 7);
+    } else if (d.exp_mode === "pick") {
+      when = d.exp_pick ? new Date(d.exp_pick) : null;
+      if (when && Number.isNaN(when.getTime())) when = null;
+    }
+    return when ? when.toISOString() : null;
+  }
+
+  async _doSaveBounty() {
+    this._syncIconPickers();
+    const d = this._dialog.data;
+    const wasAdd = this._dialog.mode === "add";
+    const locked = !wasAdd && d.status !== "open";
+    if (!d.title || !String(d.title).trim()) { this._showToast("err", this._t("panel.bounty_title_required")); return; }
+    const expires = this._bountyExpiryIso(d);
+    // Typing a new date into the picker counts as touching the expiry too.
+    if (d.exp_mode === "pick" && d.exp_pick !== d.exp_pick_orig) d.exp_dirty = true;
+    if (d.exp_dirty && d.exp_mode === "pick" && !expires) { this._showToast("err", this._t("panel.bounty_expiry_past")); return; }
+    if (d.exp_dirty && expires && Date.parse(expires) <= Date.now()) { this._showToast("err", this._t("panel.bounty_expiry_past")); return; }
+    const points = Math.max(1, Math.round(Number(d.points) || 0));
+    let payload;
+    if (locked) {
+      payload = { type: "taskmate/bounty_update", bounty_id: d.id, points };
+    } else {
+      payload = {
+        type: wasAdd ? "taskmate/bounty_post" : "taskmate/bounty_update",
+        ...(wasAdd ? {} : { bounty_id: d.id }),
+        title: String(d.title).trim(),
+        description: d.description || "",
+        points,
+        icon: d.icon || "mdi:flag-outline",
+        claim_hours: Math.min(48, Math.max(1, Math.round(Number(d.claim_hours) || 2))),
+        eligible_child_ids: d.eligible_child_ids || [],
+        require_photo: !!d.require_photo,
+        notify_children: !!d.notify_children,
+      };
+    }
+    if (d.exp_dirty) payload.expires_at = expires;
+    const { ok, err } = await this._callWS(payload);
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return; }
+    this._closeDialog(true);
+    await this._fetchState();
+    this._showToast("ok", wasAdd ? this._t("panel.toast_bounty_posted") : this._t("panel.toast_bounty_updated"));
+  }
+
+  async _doReleaseBounty(id) {
+    const b = (this._state.bounties || []).find(x => x.id === id);
+    if (!b || !confirm(this._t("panel.bounty_release_confirm", { title: b.title }))) return;
+    const { ok, err } = await this._callWS({ type: "taskmate/bounty_release", bounty_id: id });
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return; }
+    await this._fetchState();
+    this._showToast("ok", this._t("panel.toast_bounty_released"));
+  }
+
+  async _doRemoveBounty(id) {
+    const b = (this._state.bounties || []).find(x => x.id === id);
+    if (!b || !confirm(this._t("panel.bounty_remove_confirm", { title: b.title }))) return;
+    const { ok, err } = await this._callWS({ type: "taskmate/bounty_remove", bounty_id: id });
+    if (!ok) { this._showToast("err", this._t("panel.toast_delete_failed", { error: err })); return; }
+    await this._fetchState();
+    this._showToast("ok", this._t("panel.toast_bounty_removed"));
+  }
+
+  _bountyDialogSet(field, value) {
+    if (!this._dialog || !this._dialog.data) return;
+    this._syncIconPickers();
+    this._dialog.data[field] = value;
+    if (field === "exp_mode") this._dialog.data.exp_dirty = true;
+    const body = this.querySelector(".tm-dialog-body");
+    const scrollY = body ? body.scrollTop : 0;
+    this._render();
+    const b = this.querySelector(".tm-dialog-body");
+    if (b) b.scrollTop = scrollY;
+  }
+
+  _renderBountyDialog() {
+    const d = this._dialog.data;
+    const children = this._state.children || [];
+    const locked = this._dialog.mode === "edit" && d.status !== "open";
+    const dis = locked ? " disabled" : "";
+    const chip = (act, id, on, label, extra = "") =>
+      `<button type="button" class="tm-chip-btn ${on ? "tm-chip-on" : ""}" data-act="${act}" data-id="${this._esc(id)}"${extra}>${label}</button>`;
+    const expChips = [
+      ["none", this._t("panel.bounty_exp_none")],
+      ["tonight", this._t("panel.bounty_exp_tonight")],
+      ["24h", this._t("panel.bounty_exp_24h")],
+      ["weekend", this._t("panel.bounty_exp_weekend")],
+      ["pick", this._t("panel.bounty_exp_pick")],
+    ];
+    const eligible = d.eligible_child_ids || [];
+    return this._dialogShell(this._dialog.mode === "add" ? this._t("panel.bounty_dialog_post") : this._t("panel.bounty_dialog_edit"),
+      [
+        locked ? `<p class="tm-meta tm-bounty-note">${this._t("panel.bounty_claimed_lock_note")}</p>` : "",
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.bounty_title_label")}</span>
+          <input class="tm-input" type="text" data-field="title" maxlength="120" placeholder="${this._esc(this._t("panel.bounty_title_placeholder"))}" value="${this._esc(d.title || "")}"${dis}>
+        </div>`,
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.bounty_desc_label")}</span>
+          <input class="tm-input" type="text" data-field="description" maxlength="500" value="${this._esc(d.description || "")}"${dis}>
+        </div>`,
+        `<div class="tm-field-row">
+          <div class="tm-field">
+            <span class="tm-field-label">${this._t("panel.bounty_points_label")}</span>
+            <input class="tm-input" type="number" min="1" data-field="points" value="${this._esc(d.points ?? "")}">
+            <div class="tm-chip-row" style="margin-top:8px">
+              ${[10, 25, 50, 100].map(n => chip("bounty-points", n, Number(d.points) === n, String(n))).join("")}
+            </div>
+          </div>
+          <div class="tm-field">
+            <span class="tm-field-label">${this._t("panel.bounty_lock_label")}</span>
+            <input class="tm-input" type="number" min="1" max="48" data-field="claim_hours" value="${this._esc(d.claim_hours ?? 2)}"${dis}>
+            <span class="tm-field-hint">${this._t("panel.bounty_lock_hint")}</span>
+          </div>
+        </div>`,
+        locked ? "" : `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.bounty_icon_label")}</span>
+          <div class="tm-chip-row">
+            ${BOUNTY_ICONS.map(ic => chip("bounty-icon", ic, d.icon === ic, `<ha-icon icon="${ic}"></ha-icon>`, ` title="${this._esc(ic)}"`)).join("")}
+          </div>
+        </div>
+        ${this._iconPickerField("", "icon", d.icon)}`,
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.bounty_expires_label")}</span>
+          <div class="tm-chip-row">${expChips.map(([k, l]) => chip("bounty-exp", k, d.exp_mode === k, this._esc(l))).join("")}</div>
+          ${d.exp_mode === "pick" ? `<input class="tm-input" type="datetime-local" data-field="exp_pick" style="margin-top:8px;max-width:260px" value="${this._esc(d.exp_pick || "")}">` : ""}
+        </div>`,
+        locked ? "" : `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.bounty_who_label")}</span>
+          <div class="tm-chip-row">
+            ${chip("bounty-el-all", "", eligible.length === 0, this._t("panel.bounty_all_children"))}
+            ${children.map(c => chip("toggle-bounty-el", c.id, eligible.includes(c.id), this._esc(c.name))).join("")}
+          </div>
+        </div>`,
+        locked ? "" : this._switch(this._t("panel.bounty_photo_label"), "require_photo", !!d.require_photo, this._t("panel.bounty_photo_hint")),
+        locked || this._dialog.mode !== "add" ? "" : this._switch(this._t("panel.bounty_notify_label"), "notify_children", d.notify_children !== false, this._t("panel.bounty_notify_hint")),
+      ].join(""),
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="save-bounty">${this._dialog.mode === "add" ? this._t("panel.bounty_post_save") : this._t("panel.btn_save")}</button>`
+    );
+  }
+
+  // -- Auctions tab (#982) ----------------------------------------------
+  // Reverse auctions on one occurrence of a chore. Live = bidding open, with
+  // the sealed bids (parents may see the amounts); Closed = settled or
+  // cancelled, with the winner and how the won chore itself is going.
+  _auctionable(c) {
+    return !!c && c.enabled !== false
+      && (c.assignment_mode || "everyone") !== "unassigned"
+      && c.task_type !== "timed"
+      && !c.open_ended
+      && !(Number(c.team_size) >= 2);
+  }
+
+  _auctionDate(iso, opts = { weekday: "short", day: "numeric", month: "short" }) {
+    const d = new Date(`${iso}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? String(iso || "") : d.toLocaleDateString(this._hass?.locale?.language, opts);
+  }
+
+  _auctionWhen(iso) {
+    const d = new Date(iso || "");
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleString(this._hass?.locale?.language, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  }
+
+  _renderAuctionsTab() {
+    const all = this._state.auctions || [];
+    const live = all.filter(a => a.status === "open");
+    const closed = all.filter(a => a.status !== "open")
+      .sort((a, b) => String(b.closed_at || "").localeCompare(String(a.closed_at || "")));
+    const sub = this._auctionSubTab || "live";
+    const reveal = this._auctionReveal !== false;
+    const monthAgo = Date.now() - 30 * 86400e3;
+    const recent = closed.filter(a => a.status === "closed" && Date.parse(a.closed_at || "") >= monthAgo);
+    const childById = Object.fromEntries((this._state.children || []).map(c => [c.id, c]));
+    const rows = sub === "live" ? live : closed;
+    const heads = sub === "live"
+      ? ["col_chore", "col_max", "col_who", "col_bids", "col_closes"]
+      : ["col_chore", "col_max", "col_bids", "col_result", "col_status"];
+    return `
+      <div class="tm-toolbar">
+        <div class="tm-auc-head">
+          <h2 class="tm-toolbar-title">${this._t("panel.tab_auctions")} <span class="tm-toolbar-count">${live.length}</span></h2>
+          <div class="tm-meta">${this._t("panel.auction_page_sub")}</div>
+        </div>
+        <button type="button" class="tm-btn tm-btn-raised" data-act="add-auction"><ha-icon icon="mdi:gavel"></ha-icon>${this._t("panel.auction_start_btn")}</button>
+      </div>
+      ${all.length === 0 ? this._emptyState("🔨", this._t("panel.auction_empty_title"), this._t("panel.auction_empty_copy"), "add-auction", this._t("panel.auction_start_btn")) : `
+        <div class="tm-stats-row tm-auc-stats">
+          <div class="tm-stat"><div class="tm-stat-value">${this._fmtNum(live.length)}</div><div class="tm-stat-label">${this._t("panel.auction_stat_live")}</div></div>
+          <div class="tm-stat"><div class="tm-stat-value">${this._fmtNum(live.reduce((n, a) => n + (a.bids || []).length, 0))}</div><div class="tm-stat-label">${this._t("panel.auction_stat_bids")}</div></div>
+          <div class="tm-stat"><div class="tm-stat-value">${this._ltrNums(`${this._fmtNum(recent.filter(a => a.winner_id).length)} / ${this._fmtNum(recent.length)}`)}</div><div class="tm-stat-label">${this._t("panel.auction_stat_won")}</div></div>
+        </div>
+        <div class="tm-auc-bar">
+          <div class="tm-chip-row">
+            <button type="button" class="tm-chip-btn ${sub === "live" ? "tm-chip-on" : ""}" data-act="auction-subtab" data-id="live">${this._esc(this._t("panel.auction_tab_live", { count: live.length }))}</button>
+            <button type="button" class="tm-chip-btn ${sub === "closed" ? "tm-chip-on" : ""}" data-act="auction-subtab" data-id="closed">${this._esc(this._t("panel.auction_tab_closed", { count: closed.length }))}</button>
+          </div>
+          ${sub === "live" ? `
+            <label class="tm-auc-reveal">
+              <span class="tm-meta">${this._t("panel.auction_show_amounts")}</span>
+              <ha-switch data-local="auction-reveal" ${reveal ? "checked" : ""}></ha-switch>
+            </label>` : ""}
+        </div>
+        <div class="tm-table-wrap">
+          <table class="tm-table">
+            <thead><tr>${heads.map((h, i) => `<th class="${i === 0 ? "tm-col-sticky" : ""}">${this._t(`panel.auction_${h}`)}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${rows.length === 0
+                ? `<tr><td colspan="5" class="tm-meta" style="text-align:center;padding:26px">${this._t("panel.auction_nothing")}</td></tr>`
+                : rows.map(a => this._renderAuctionRow(a, childById, reveal)).join("")}
+            </tbody>
+          </table>
+        </div>
+      `}
+    `;
+  }
+
+  _auctionBidChips(a, childById, reveal) {
+    const bids = a.bids || [];
+    if (!bids.length) return `<span class="tm-text-muted">${this._t(a.status === "open" ? "panel.auction_no_bids_yet" : "panel.auction_no_bids")}</span>`;
+    const show = reveal || a.status !== "open";
+    return bids.map((b, i) => {
+      const child = childById[b.child_id];
+      return `<span class="tm-auc-chip" title="${this._esc(child ? child.name : "?")}">
+        ${child ? this._childAvatar(child) : ""}
+        ${show ? `<b>${this._num(b.points)} ★</b>` : `<span class="tm-text-muted">${this._t("panel.auction_sealed")}</span>`}
+        ${i === 0 && a.status === "open" && show ? `<span class="tm-meta">· ${this._t("panel.auction_leading")}</span>` : ""}
+      </span>`;
+    }).join("");
+  }
+
+  _renderAuctionRow(a, childById, reveal) {
+    const id = this._esc(a.id);
+    const chore = `
+      <div class="tm-name-main tm-bounty-cell">
+        <span class="tm-avatar tm-auc-ic">${this._mdi(a.icon || "mdi:gavel")}</span>
+        <div><strong>${this._esc(a.chore_name)}</strong><div class="tm-meta">${this._esc(this._t("panel.auction_normally", { date: this._auctionDate(a.occurrence), points: this._num(a.normal_points) }))}</div></div>
+      </div>`;
+    const max = `<strong class="tm-numeric tm-auc-gold">${this._num(a.max_points)} ★</strong>${a.min_points > 1 ? `<div class="tm-meta">${this._t("panel.auction_min_meta", { points: this._num(a.min_points) })}</div>` : ""}`;
+    if (a.status === "open") {
+      const left = Date.parse(a.closes_at || "") - Date.now();
+      const who = (a.eligible_child_ids || []).map(cid => childById[cid]).filter(Boolean)
+        .map(c => this._childAvatar(c)).join("");
+      return `
+        <tr class="tm-row">
+          <td class="tm-col-sticky tm-cell-wrap"><div class="tm-name-cell tm-name-cell-wrap">${chore}
+            <div class="tm-name-actions tm-bounty-actions">
+              <button type="button" class="tm-btn tm-btn-sm" data-act="auction-close-now" data-id="${id}">${this._t("panel.auction_close_now")}</button>
+              <button type="button" class="tm-icon-btn" data-act="auction-cancel" data-id="${id}" title="${this._t("panel.auction_cancel")}"><ha-icon icon="mdi:trash-can-outline"></ha-icon></button>
+            </div></div></td>
+          <td>${max}</td>
+          <td><span class="tm-auc-stack">${who}</span></td>
+          <td>${this._auctionBidChips(a, childById, reveal)}</td>
+          <td><span class="tm-auc-cdown"><ha-icon icon="mdi:timer-sand"></ha-icon>${this._esc(this._bountyDur(left))}</span><div class="tm-meta">${this._esc(this._auctionWhen(a.closes_at))}</div></td>
+        </tr>`;
+    }
+    const winner = a.winner_id && childById[a.winner_id];
+    let result;
+    let status;
+    let actions = "";
+    const today = new Date();
+    const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    if (a.status === "cancelled") {
+      result = `<span class="tm-pill tm-pill-muted">${this._t("panel.auction_status_cancelled")}</span>`;
+      status = `<span class="tm-pill tm-pill-muted">${this._t("panel.auction_status_normal")}</span>`;
+    } else if (a.winner_id) {
+      result = `<div class="tm-auc-win">${winner ? this._childAvatar(winner) : ""}<div><strong>${this._esc(winner ? winner.name : "?")}</strong> ${this._t("panel.auction_won_at", { points: `<strong class="tm-auc-gold">${this._num(a.price)} ★</strong>` })}
+        <div class="tm-meta">${this._esc(this._t("panel.auction_assigned_for", { date: this._auctionDate(a.occurrence) }))}</div></div></div>`;
+      const st = a.chore_status || "todo";
+      status = st === "done"
+        ? `<span class="tm-pill tm-pill-success">${this._t("panel.auction_status_done", { points: this._num(a.points_awarded) })}</span>`
+        : st === "pending" ? `<span class="tm-pill tm-pill-warn">${this._t("panel.auction_status_pending")}</span>`
+          : st === "missed" ? `<span class="tm-pill tm-pill-muted">${this._t("panel.auction_status_missed")}</span>`
+            : `<span class="tm-pill tm-pill-accent">${this._t("panel.auction_status_todo")}</span>`;
+      if (a.occurrence >= todayIso && st !== "done" && st !== "pending") {
+        actions = `<button type="button" class="tm-icon-btn" data-act="auction-cancel" data-id="${id}" title="${this._t("panel.auction_cancel")}"><ha-icon icon="mdi:trash-can-outline"></ha-icon></button>`;
+      }
+    } else {
+      result = `<span class="tm-pill tm-pill-muted">${this._t("panel.auction_no_bids")}</span><div class="tm-meta">${this._t("panel.auction_fallback")}</div>`;
+      status = `<span class="tm-pill tm-pill-muted">${this._t("panel.auction_status_normal")}</span>`;
+      if (a.occurrence > todayIso) {
+        actions = `<button type="button" class="tm-btn tm-btn-sm" data-act="auction-reopen" data-id="${id}"><ha-icon icon="mdi:replay"></ha-icon>${this._t("panel.auction_reopen")}</button>`;
+      }
+    }
+    // Finished (#999): a parent can clear it off the list. A live one keeps
+    // its Cancel above, which tells the bidders.
+    if (a.deletable) {
+      actions += `<button type="button" class="tm-icon-btn" data-act="auction-delete" data-id="${id}" title="${this._t("panel.btn_delete")}"><ha-icon icon="mdi:trash-can-outline"></ha-icon></button>`;
+    }
+    return `
+      <tr class="tm-row">
+        <td class="tm-col-sticky tm-cell-wrap"><div class="tm-name-cell tm-name-cell-wrap">${chore}
+          <div class="tm-name-actions tm-bounty-actions">${actions}</div></div></td>
+        <td>${max}</td>
+        <td>${this._auctionBidChips(a, childById, true)}</td>
+        <td>${result}</td>
+        <td>${status}</td>
+      </tr>`;
+  }
+
+  /** Open the start sheet, optionally for a chore or re-opening a no-bid auction. */
+  _openAuctionDialog({ choreId = "", fromId = "" } = {}) {
+    const chores = (this._state.chores || []).filter(c => this._auctionable(c));
+    const from = fromId ? (this._state.auctions || []).find(a => a.id === fromId) : null;
+    const chore_id = (from && from.chore_id) || choreId || (chores[0] && chores[0].id) || "";
+    this._openDialog({ kind: "auction", mode: "add", data: {
+      chore_id, occurrences: [], occurrence: from ? from.occurrence : "", pool: [], eligible_child_ids: [],
+      normal_points: 0, max_points: from ? Math.ceil(from.max_points * 1.5) : 0, reopen: !!from,
+      min_on: false, min_points: 1, close_mode: "", close_pick: "", notify_children: true, loading: !!chore_id, refusal: "",
+    } });
+    if (chore_id) this._auctionPickChore(chore_id);
+  }
+
+  async _auctionPickChore(choreId) {
+    if (!this._dialog || this._dialog.kind !== "auction") return;
+    const d = this._dialog.data;
+    d.chore_id = choreId;
+    d.loading = true;
+    this._render();
+    const { ok, res, err } = await this._callWS({ type: "taskmate/auctions/occurrences", chore_id: choreId });
+    if (!this._dialog || this._dialog.kind !== "auction" || this._dialog.data.chore_id !== choreId) return;
+    d.loading = false;
+    if (!ok) { d.occurrences = []; d.refusal = err; this._render(); return; }
+    d.occurrences = res.occurrences || [];
+    d.refusal = res.refusal || "";
+    if (!d.occurrences.includes(d.occurrence)) d.occurrence = d.occurrences[0] || "";
+    d.pool = res.pool || [];
+    d.eligible_child_ids = [...d.pool];
+    d.normal_points = Number(res.normal_points) || 0;
+    if (!d.reopen || !d.max_points) d.max_points = Math.max(1, d.normal_points * 2);
+    d.reopen = false;
+    d.close_mode = this._auctionDefaultClose(d);
+    this._dialogInitialHash = this._hashDialog();
+    this._render();
+  }
+
+  /** A preset's closing instant (Date), or null when it can't be used. */
+  _auctionCloseAt(d, mode) {
+    if (!d.occurrence) return null;
+    const now = new Date();
+    const dayStart = new Date(`${d.occurrence}T00:00:00`);
+    let when = null;
+    if (mode === "tonight") { when = new Date(now); when.setHours(19, 0, 0, 0); }
+    else if (mode === "tomorrow") { when = new Date(now); when.setDate(when.getDate() + 1); when.setHours(8, 0, 0, 0); }
+    else if (mode === "daybefore") { when = new Date(dayStart); when.setDate(when.getDate() - 1); when.setHours(18, 0, 0, 0); }
+    else if (mode === "pick") { when = d.close_pick ? new Date(d.close_pick) : null; }
+    if (!when || Number.isNaN(when.getTime())) return null;
+    if (when <= now || when > dayStart) return null;
+    return when;
+  }
+
+  _auctionDefaultClose(d) {
+    return ["tonight", "tomorrow", "daybefore"].find(m => this._auctionCloseAt(d, m)) || "pick";
+  }
+
+  _auctionDialogSet(field, value) {
+    if (!this._dialog || this._dialog.kind !== "auction") return;
+    const d = this._dialog.data;
+    if (field === "max_step") d.max_points = Math.max(1, (Number(d.max_points) || 0) + value);
+    else d[field] = value;
+    const body = this.querySelector(".tm-dialog-body");
+    const scrollY = body ? body.scrollTop : 0;
+    this._render();
+    const b = this.querySelector(".tm-dialog-body");
+    if (b) b.scrollTop = scrollY;
+  }
+
+  _renderAuctionDialog() {
+    const d = this._dialog.data;
+    const children = this._state.children || [];
+    const chores = (this._state.chores || []).filter(c => this._auctionable(c) || c.id === d.chore_id)
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const chip = (act, id, on, label, extra = "") =>
+      `<button type="button" class="tm-chip-btn ${on ? "tm-chip-on" : ""}" data-act="${act}" data-id="${this._esc(id)}"${extra}>${label}</button>`;
+    const section = (key, parts) => `
+      <section class="tm-drawer-sec">
+        <h3 class="tm-drawer-sec-h">${this._t(`panel.auction_sec_${key}`)}</h3>
+        ${parts.join("")}
+      </section>`;
+    const normal = this._num(d.normal_points);
+    const multiples = [1, 1.5, 2, 3].map(m => [m, Math.max(1, Math.round(normal * m))]);
+    const closeChips = [
+      ["tonight", this._t("panel.auction_close_tonight")],
+      ["tomorrow", this._t("panel.auction_close_tomorrow")],
+      ["daybefore", this._t("panel.auction_close_daybefore")],
+      ["pick", this._t("panel.auction_close_pick")],
+    ];
+    const occurrences = d.loading
+      ? `<div class="tm-meta">${this._t("panel.auction_loading")}</div>`
+      : d.refusal
+        ? `<div class="tm-meta tm-auc-warn">${this._esc(d.refusal)}</div>`
+        : d.occurrences.length
+          ? `<div class="tm-chip-row tm-auc-chips">${d.occurrences.map(o => chip("auction-occ", o, d.occurrence === o, `<ha-icon icon="mdi:calendar-blank-outline"></ha-icon>${this._esc(this._auctionDate(o))}`)).join("")}</div>`
+          : `<div class="tm-meta tm-auc-warn">${this._t("panel.auction_no_occurrences")}</div>`;
+    const body = chores.length === 0 ? `<p class="tm-meta">${this._t("panel.auction_no_chores")}</p>` : [
+      section("chore", [
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.auction_chore_label")}</span>
+          <select class="tm-input" data-role="auction-chore">
+            ${chores.map(c => `<option value="${this._esc(c.id)}" ${c.id === d.chore_id ? "selected" : ""}>${this._esc(c.name)}</option>`).join("")}
+          </select>
+        </div>`,
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.auction_which_label")}</span>
+          ${occurrences}
+          <span class="tm-field-hint">${this._t("panel.auction_which_hint")}</span>
+        </div>`,
+      ]),
+      section("price", [
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.auction_max_label")}</span>
+          <div class="tm-auc-steprow">
+            <div class="tm-auc-stepper">
+              <button type="button" data-act="auction-max-step" data-id="-1" aria-label="−">−</button>
+              <span>${this._num(d.max_points)} ★</span>
+              <button type="button" data-act="auction-max-step" data-id="1" aria-label="+">+</button>
+            </div>
+            <span class="tm-meta">${this._t("panel.auction_normally_worth", { points: normal })}</span>
+          </div>
+          <div class="tm-chip-row" style="margin-top:8px">
+            ${multiples.map(([m, n]) => chip("auction-max-set", n, Number(d.max_points) === n, `${m}× · ${n}`)).join("")}
+          </div>
+          <span class="tm-field-hint">${this._t("panel.auction_max_hint")}</span>
+        </div>`,
+        this._switch(this._t("panel.auction_min_label"), "min_on", !!d.min_on, this._t("panel.auction_min_hint"), true),
+        d.min_on ? `<div class="tm-field"><input class="tm-input" type="number" min="1" data-field="min_points" style="max-width:140px" value="${this._esc(d.min_points ?? 1)}"></div>` : "",
+      ]),
+      section("bidding", [
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.auction_closes_label")}</span>
+          <div class="tm-chip-row">${closeChips.map(([k, l]) => chip("auction-close-at", k, d.close_mode === k, this._esc(l), k !== "pick" && !this._auctionCloseAt(d, k) ? " disabled" : "")).join("")}</div>
+          ${d.close_mode === "pick" ? `<input class="tm-input" type="datetime-local" data-field="close_pick" style="margin-top:8px;max-width:260px" value="${this._esc(d.close_pick || "")}">` : ""}
+          <span class="tm-field-hint">${this._t("panel.auction_close_hint")}</span>
+        </div>`,
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.auction_who_label")}</span>
+          <div class="tm-chip-row tm-auc-chips">
+            ${children.filter(c => (d.pool || []).includes(c.id)).map(c => chip("toggle-auction-el", c.id, (d.eligible_child_ids || []).includes(c.id), `${this._childAvatar(c)}${this._esc(c.name)}`)).join("")}
+          </div>
+        </div>`,
+        `<div class="tm-field">
+          <span class="tm-field-label">${this._t("panel.auction_nobid_label")}</span>
+          <span class="tm-field-hint">${this._t("panel.auction_nobid_copy")}</span>
+        </div>`,
+        this._switch(this._t("panel.auction_notify_label"), "notify_children", d.notify_children !== false, this._t("panel.auction_notify_hint")),
+      ]),
+    ].join("");
+    return this._dialogShell(this._t("panel.auction_dialog_title"), body,
+      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="save-auction" ${d.loading || !d.occurrence ? "disabled" : ""}><ha-icon icon="mdi:gavel"></ha-icon>${this._t("panel.auction_start_save")}</button>`,
+      { drawer: true });
+  }
+
+  async _doSaveAuction() {
+    const d = this._dialog && this._dialog.data;
+    if (!d) return;
+    if (!d.occurrence) { this._showToast("err", this._t("panel.auction_err_occurrence")); return; }
+    const closes = this._auctionCloseAt(d, d.close_mode);
+    if (!closes) { this._showToast("err", this._t("panel.auction_err_close")); return; }
+    const eligible = d.eligible_child_ids || [];
+    if (!eligible.length) { this._showToast("err", this._t("panel.auction_err_who")); return; }
+    const max = Math.max(1, Math.round(Number(d.max_points) || 0));
+    const min = d.min_on ? Math.max(1, Math.round(Number(d.min_points) || 1)) : 1;
+    if (min > max) { this._showToast("err", this._t("panel.auction_err_min")); return; }
+    const { ok, err } = await this._callWS({
+      type: "taskmate/auctions/start",
+      chore_id: d.chore_id,
+      occurrence: d.occurrence,
+      max_points: max,
+      min_points: min,
+      closes_at: closes.toISOString(),
+      eligible_child_ids: eligible,
+      notify_children: d.notify_children !== false,
+    });
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return; }
+    this._closeDialog(true);
+    this._auctionSubTab = "live";
+    await this._fetchState();
+    this._showToast("ok", this._t("panel.toast_auction_started"));
+  }
+
+  async _doCloseAuction(id) {
+    const a = (this._state.auctions || []).find(x => x.id === id);
+    if (!a || !confirm(this._t("panel.auction_close_confirm", { chore: a.chore_name }))) return;
+    const { ok, err } = await this._callWS({ type: "taskmate/auctions/close", auction_id: id });
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return; }
+    await this._fetchState();
+    this._showToast("ok", this._t("panel.toast_auction_closed"));
+  }
+
+  async _doCancelAuction(id) {
+    const a = (this._state.auctions || []).find(x => x.id === id);
+    if (!a || !confirm(this._t("panel.auction_cancel_confirm", { chore: a.chore_name }))) return;
+    const { ok, err } = await this._callWS({ type: "taskmate/auctions/cancel", auction_id: id });
+    if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", { error: err })); return; }
+    await this._fetchState();
+    this._showToast("ok", this._t("panel.toast_auction_cancelled"));
+  }
+
+  async _doDeleteAuction(id) {
+    const a = (this._state.auctions || []).find(x => x.id === id);
+    if (!a || !confirm(this._t("panel.auction_delete_confirm", { chore: a.chore_name }))) return;
+    const { ok, err } = await this._callWS({ type: "taskmate/auctions/delete", auction_id: id });
+    if (!ok) { this._showToast("err", this._t("panel.toast_delete_failed", { error: err })); return; }
+    await this._fetchState();
+    this._showToast("ok", this._t("panel.toast_auction_deleted"));
+  }
+
   // -- Badges tab --------------------------------------------------------
   _renderBadgesTab() {
     const allBadges = this._state.badges || [];
@@ -3714,7 +7708,9 @@ class TaskMatePanel extends HTMLElement {
   _criteriaLabel(criteria, combinator = "AND") {
     if (!criteria || !criteria.length) return this._t("badge.manual_award_only");
     const joinKey = combinator === "OR" ? "badge.criteria_or" : "badge.criteria_and";
-    return criteria.map(c => `${this._t("badge.criteria_" + c.metric)} ${this._esc(c.operator)} ${this._num(c.value)}`).join(` ${this._t(joinKey)} `);
+    // Plain text: both callers escape the whole label, so escaping the
+    // operator here too rendered ">=" as a literal "&gt;=" (#972).
+    return criteria.map(c => `${this._t("badge.criteria_" + c.metric)} ${c.operator} ${this._num(c.value)}`).join(` ${this._t(joinKey)} `);
   }
 
   _badgeName(b) {
@@ -3743,8 +7739,8 @@ class TaskMatePanel extends HTMLElement {
               <tr class="tm-row tm-badge-row ${this._tierClass(b.tier)}">
                 <td>
                   <div class="tm-badge-icon-sm">${this._mdi(b.icon)}</div>
-                  <span style="margin-left:8px"><strong>${this._esc(this._badgeName(b))}</strong>
-                  <span class="tm-pill" style="background:var(--tm-surface-2);font-size:10px;margin-left:4px">${this._t("panel.badge_builtin_pill")}</span></span>
+                  <span style="margin-inline-start:8px"><strong>${this._esc(this._ltrNums(this._badgeName(b)))}</strong>
+                  <span class="tm-pill" style="background:var(--tm-surface-2);font-size:10px;margin-inline-start:4px">${this._t("panel.badge_builtin_pill")}</span></span>
                   ${this._badgeDesc(b) ? `<div class="tm-meta">${this._esc(this._badgeDesc(b))}</div>` : ""}
                 </td>
                 <td><span class="tm-badge-tier-label">${this._t("badge.tier_" + (b.tier || "bronze"))}</span></td>
@@ -3785,7 +7781,7 @@ class TaskMatePanel extends HTMLElement {
               <tr class="tm-row tm-badge-row ${this._tierClass(b.tier)}">
                 <td>
                   <div class="tm-badge-icon-sm">${this._mdi(b.icon || "mdi:medal")}</div>
-                  <span style="margin-left:8px"><strong>${this._esc(b.name)}</strong></span>
+                  <span style="margin-inline-start:8px"><strong>${this._esc(b.name)}</strong></span>
                   ${b.description ? `<div class="tm-meta">${this._esc(b.description)}</div>` : ""}
                 </td>
                 <td><span class="tm-badge-tier-label">${this._t("badge.tier_" + (b.tier || "bronze"))}</span></td>
@@ -3835,7 +7831,7 @@ class TaskMatePanel extends HTMLElement {
                 <tr class="tm-row tm-badge-row ${tierCls}">
                   <td>
                     <div class="tm-badge-icon-sm">${this._mdi(badge.icon || "mdi:medal")}</div>
-                    <span style="margin-left:8px"><strong>${this._esc(this._badgeName(badge) || a.badge_id)}</strong></span>
+                    <span style="margin-inline-start:8px"><strong>${this._esc(this._ltrNums(this._badgeName(badge) || a.badge_id))}</strong></span>
                   </td>
                   <td><strong style="color:var(--tm-accent)">${this._esc(child.name || a.child_id)}</strong></td>
                   <td class="tm-meta">${this._esc(when)}</td>
@@ -4223,7 +8219,7 @@ class TaskMatePanel extends HTMLElement {
     return `
       <div class="tm-toolbar">
         <h2 class="tm-toolbar-title">${this._esc(tpl.name)}</h2>
-        <span class="tm-pill ${tpl.builtin ? "tm-pill-accent" : "tm-pill-success"}" style="margin-left:8px">${tpl.builtin ? this._t("panel.template_builtin") : this._t("panel.template_custom")}</span>
+        <span class="tm-pill ${tpl.builtin ? "tm-pill-accent" : "tm-pill-success"}" style="margin-inline-start:8px">${tpl.builtin ? this._t("panel.template_builtin") : this._t("panel.template_custom")}</span>
         <span style="flex:1"></span>
         <button type="button" class="tm-btn" data-act="tpl-back">${this._t("panel.btn_back")}</button>
       </div>
@@ -4312,7 +8308,7 @@ class TaskMatePanel extends HTMLElement {
                 <label class="tm-tpl-check-row">
                   <input type="checkbox" data-tpl-chore-check="${this._esc(c.id)}">
                   <span>${this._esc(c.name)}</span>
-                  <span class="tm-text-muted" style="margin-left:auto">${this._t("panel.pts_display", {count: c.points})}</span>
+                  <span class="tm-text-muted" style="margin-inline-start:auto">${this._t("panel.pts_display", {count: c.points})}</span>
                 </label>
               `).join("")}
             </div>
@@ -4489,7 +8485,7 @@ class TaskMatePanel extends HTMLElement {
           <h3>${this._t("panel.settings_sounds_title")}</h3>
           <p class="tm-meta">${this._t("panel.settings_sounds_hint")}</p>
         </div></div>
-        <div class="tm-section-body">
+        <div class="tm-section-body tm-section-pad">
           ${list.length ? `
             <div class="tm-sound-list">
               ${list.map(s => `
@@ -4529,6 +8525,7 @@ class TaskMatePanel extends HTMLElement {
         <h2 class="tm-toolbar-title">${this._t("panel.settings_title")}</h2>
       </div>
       <div class="tm-settings">
+        ${this._wizardSettingsSection()}
         <div class="tm-section">
           <div class="tm-section-head">
             <div>
@@ -4548,7 +8545,7 @@ class TaskMatePanel extends HTMLElement {
             <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_card_design_label")}<small>${this._t("panel.settings_card_design_hint")}</small></div>
               <select class="tm-select" data-setting="card_design">
-                ${["classic","playroom","console","cleanpro"].map(v => `<option value="${v}" ${v === (s.card_design || "classic") ? "selected" : ""}>${this._esc(this._t("common.design." + v))}</option>`).join("")}
+                ${["classic","playroom","console","cleanpro","accessible","graphite"].map(v => `<option value="${v}" ${v === (s.card_design || "classic") ? "selected" : ""}>${this._esc(this._t("common.design." + v))}</option>`).join("")}
               </select>
             </div>
             <div class="tm-setting-row">
@@ -4567,14 +8564,18 @@ class TaskMatePanel extends HTMLElement {
           </div></div>
           <div class="tm-section-body">
             ${(this._haUsers || []).filter(u => !u.is_admin).map(u => `
-              <label class="tm-setting-row tm-role-row">
+              <div class="tm-setting-row">
                 <div class="tm-setting-label">${this._esc(u.name)}</div>
-                <input type="checkbox" class="tm-role-check" data-parent-user="${this._esc(u.id)}" ${(s.parent_user_ids || []).includes(u.id) ? "checked" : ""}>
-              </label>`).join("")
-              || `<p class="tm-meta">${this._t("panel.settings_parents_empty")}</p>`}
+                <ha-switch data-parent-user="${this._esc(u.id)}" aria-label="${this._esc(u.name)}" ${(s.parent_user_ids || []).includes(u.id) ? "checked" : ""}></ha-switch>
+              </div>`).join("")
+              || `<div class="tm-section-pad"><p class="tm-meta">${this._t("panel.settings_parents_empty")}</p></div>`}
             <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_require_linked_child_label")}<small>${this._t("panel.settings_require_linked_child_hint")}</small></div>
               <ha-switch data-setting="require_linked_child" ${s.require_linked_child ? "checked" : ""}></ha-switch>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_chore_undo_label")}<small>${this._t("panel.settings_chore_undo_hint")}</small></div>
+              <input type="number" class="tm-input" min="0" max="3600" step="1" data-setting="chore_undo_seconds" aria-label="${this._esc(this._t("panel.settings_chore_undo_label"))}" value="${this._num(s.chore_undo_seconds, 0)}">
             </div>
           </div>
         </div>
@@ -4597,8 +8598,24 @@ class TaskMatePanel extends HTMLElement {
               <ha-switch data-setting="streak_requires_all_chores" ${s.streak_requires_all_chores ? "checked" : ""}></ha-switch>
             </div>
             <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_streak_freeze_max_label")}<small>${this._t("panel.settings_streak_freeze_max_hint")}</small></div>
+              <input type="number" class="tm-input" min="0" max="10" data-setting="streak_freeze_max" value="${this._num(s.streak_freeze_max, 2)}">
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_streak_freeze_earn_label")}<small>${this._t("panel.settings_streak_freeze_earn_hint")}</small></div>
+              <input type="number" class="tm-input" min="0" max="365" data-setting="streak_freeze_earn_every" value="${this._num(s.streak_freeze_earn_every, 7)}">
+            </div>
+            <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_weekend_multiplier_label")}<small>${this._t("panel.settings_weekend_multiplier_hint")}</small></div>
               <input type="number" class="tm-input" step="0.1" min="1" max="5" data-setting="weekend_multiplier" value="${this._num(s.weekend_multiplier, 1.0)}">
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_birthday_multiplier_label")}<small>${this._t("panel.settings_birthday_multiplier_hint")}</small></div>
+              <input type="number" class="tm-input" step="0.5" min="1" max="5" data-setting="birthday_points_multiplier" value="${this._num(s.birthday_points_multiplier, 2)}">
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_birthday_chores_off_label")}<small>${this._t("panel.settings_birthday_chores_off_hint")}</small></div>
+              <ha-switch data-setting="birthday_chores_off" ${s.birthday_chores_off ? "checked" : ""}></ha-switch>
             </div>
             <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_difficulty_multipliers_label")}<small>${this._t("panel.settings_difficulty_multipliers_hint")}</small></div>
@@ -4606,6 +8623,18 @@ class TaskMatePanel extends HTMLElement {
                 <label>${this._t("panel.difficulty_easy")}<input type="number" class="tm-input" step="0.1" min="0" max="10" data-setting="difficulty_multiplier_easy" value="${this._num(s.difficulty_multiplier_easy, 0.5)}"></label>
                 <label>${this._t("panel.difficulty_medium")}<input type="number" class="tm-input" step="0.1" min="0" max="10" data-setting="difficulty_multiplier_medium" value="${this._num(s.difficulty_multiplier_medium, 1.0)}"></label>
                 <label>${this._t("panel.difficulty_hard")}<input type="number" class="tm-input" step="0.1" min="0" max="10" data-setting="difficulty_multiplier_hard" value="${this._num(s.difficulty_multiplier_hard, 2.0)}"></label>
+              </div>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_quality_rating_label")}<small>${this._t("panel.settings_quality_rating_hint")}</small></div>
+              <ha-switch data-setting="quality_rating_enabled" ${s.quality_rating_enabled ? "checked" : ""}></ha-switch>
+            </div>
+            <div class="tm-setting-row">
+              <div class="tm-setting-label">${this._t("panel.settings_quality_rating_multipliers_label")}<small>${this._t("panel.settings_quality_rating_multipliers_hint")}</small></div>
+              <div class="tm-difficulty-mults">
+                <label>★<input type="number" class="tm-input" step="0.05" min="0" max="5" data-setting="quality_rating_multiplier_1" value="${this._num(s.quality_rating_multiplier_1, 0.75)}"></label>
+                <label>★★<input type="number" class="tm-input" step="0.05" min="0" max="5" data-setting="quality_rating_multiplier_2" value="${this._num(s.quality_rating_multiplier_2, 1.0)}"></label>
+                <label>★★★<input type="number" class="tm-input" step="0.05" min="0" max="5" data-setting="quality_rating_multiplier_3" value="${this._num(s.quality_rating_multiplier_3, 1.25)}"></label>
               </div>
             </div>
             <div class="tm-setting-row">
@@ -4714,6 +8743,8 @@ class TaskMatePanel extends HTMLElement {
 
         ${this._renderVacationSection()}
 
+        ${this._renderInspectionsSection()}
+
         <div class="tm-section">
           <div class="tm-section-head"><div><h3>${this._t("panel.settings_bonuses_title")}</h3></div></div>
           <div class="tm-section-body">
@@ -4780,6 +8811,8 @@ class TaskMatePanel extends HTMLElement {
           </div>
         </div>
 
+        ${this._renderRecapsSection()}
+
         <div class="tm-section">
           <div class="tm-section-head"><div><h3>${this._t("panel.settings_show_ids_label")}</h3><p class="tm-meta">${this._t("panel.settings_show_ids_hint")}</p></div></div>
           <div class="tm-section-body">
@@ -4839,16 +8872,18 @@ class TaskMatePanel extends HTMLElement {
               <input type="text" class="tm-input" maxlength="8" data-setting="allowance_currency" value="${this._esc(s.allowance_currency || "")}" placeholder="£">
             </div>
             ${(this._state.allowance_payouts || []).length ? `
-              <h4 style="margin:12px 0 4px">${this._t("panel.allowance_ledger")}</h4>
+              <div class="tm-section-pad">
+              <h4 class="tm-subhead">${this._t("panel.allowance_ledger")}</h4>
               <div class="tm-table-wrap"><table class="tm-table"><tbody>
                 ${(this._state.allowance_payouts || []).slice(0, 10).map(p => `
                   <tr>
                     <td>${this._esc((p.date || "").slice(0, 10))}</td>
                     <td>${this._esc(p.child_name || "")}</td>
-                    <td style="text-align:right">${this._num(p.points)} → ${this._esc(p.currency || "")}${this._esc(String(p.amount))}</td>
+                    <td style="text-align:end">${this._num(p.points)} ${this.getAttribute?.("dir") === "rtl" ? "←" : "→"} ${this._esc(p.currency || "")}${this._esc(String(p.amount))}</td>
                   </tr>
                 `).join("")}
               </tbody></table></div>
+              </div>
             ` : ""}
           </div>
         </div>
@@ -4923,7 +8958,7 @@ class TaskMatePanel extends HTMLElement {
             ${ns.recipients.children.map(c => {
               const cid = c.id.replace(/^child:/, "");
               return `
-              <div class="tm-row" data-quiet-row style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
+              <div class="tm-notif-recipient" data-quiet-row style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
                 <div style="flex:1;min-width:120px"><strong>${this._esc(c.name)}</strong></div>
                 <select class="tm-notif-select" data-act="notif-set-child-notify" data-child-id="${this._esc(cid)}">
                   ${optTags(c.notify_service)}
@@ -4941,7 +8976,7 @@ class TaskMatePanel extends HTMLElement {
           <div>
             <h4>${this._t("panel.notif_recipients_parents")}</h4>
             ${ns.recipients.parents.map(p => `
-              <div class="tm-row" style="display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
+              <div class="tm-notif-recipient" style="display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--tm-border,#3a3a3a)">
                 <input type="text" value="${this._esc(p.name)}" data-act="notif-rename-parent" data-parent-id="${this._esc(p.id)}" style="flex:1;min-width:60px;background:transparent;border:none;color:inherit;font-size:14px;font-weight:500">
                 <select class="tm-notif-select" data-act="notif-set-parent-notify" data-parent-id="${this._esc(p.id)}">
                   ${optTags(p.notify_service)}
@@ -5015,6 +9050,15 @@ class TaskMatePanel extends HTMLElement {
                   ${this._t("panel.notif_escalation_minutes_suffix")}
                 </div>
               ` : ""}
+              ${t.id === "presence_arrival" ? `
+                <div class="tm-meta" style="margin-top:6px;display:flex;align-items:center;gap:8px">
+                  ${this._t("panel.notif_presence_min_away_label")}
+                  <span style="display:inline-flex;align-items:center;gap:8px;white-space:nowrap">
+                    <input type="number" min="0" max="1440" class="tm-notif-time-input" value="${this._esc(String(settings.presence_arrival_min_away ?? 30))}" data-act="notif-set-presence-arrival" style="display:inline;margin:0;width:70px">
+                    ${this._t("panel.notif_escalation_minutes_suffix")}
+                  </span>
+                </div>
+              ` : ""}
               ${t.id === "mandatory_parent_alert" ? `
                 <div class="tm-meta" style="margin-top:6px;display:flex;align-items:center;gap:8px">
                   ${this._t("panel.notif_escalation_parent_label")}
@@ -5024,7 +9068,7 @@ class TaskMatePanel extends HTMLElement {
               ` : ""}
               <div style="margin-top:6px">
                 <button type="button" class="tm-btn" data-act="notif-send-test" data-type-id="${this._esc(t.id)}" style="padding:2px 10px;font-size:12px">
-                  <ha-icon icon="mdi:send" style="--mdc-icon-size:14px"></ha-icon> ${this._t("panel.notif_send_test")}
+                  <ha-icon class="tm-rtl-flip" icon="mdi:send" style="--mdc-icon-size:14px"></ha-icon> ${this._t("panel.notif_send_test")}
                 </button>
               </div>
               <div style="margin-top:6px;display:flex;align-items:center;gap:8px">
@@ -5057,7 +9101,7 @@ class TaskMatePanel extends HTMLElement {
       <td class="tm-notif-matrix-cell">
         <input type="checkbox" class="tm-notif-switch" data-act="notif-set-route" data-type-id="${this._esc(t.id)}" data-recipient-id="${this._esc(r.id)}" data-time="${this._esc(route.time || "")}" ${route.enabled ? "checked" : ""} ${c.master_enabled ? "" : "disabled"}>
         ${t.per_recipient_time ? `
-          <input type="time" class="tm-notif-time-input" data-act="notif-set-route-time" data-type-id="${this._esc(t.id)}" data-recipient-id="${this._esc(r.id)}" value="${this._esc(route.time || "20:00")}" ${(c.master_enabled && route.enabled) ? "" : "disabled"}>
+          <input type="time" class="tm-notif-time-input" data-act="notif-set-route-time" data-type-id="${this._esc(t.id)}" data-recipient-id="${this._esc(r.id)}" value="${this._esc(route.time || (t.id === "birthday" ? "08:00" : "20:00"))}" ${(c.master_enabled && route.enabled) ? "" : "disabled"}>
         ` : ""}
       </td>
     `;
@@ -5429,6 +9473,8 @@ class TaskMatePanel extends HTMLElement {
     if (this._dialog.kind === "quest")        return this._renderQuestDialog();
     if (this._dialog.kind === "avatar-catalog") return this._renderAvatarCatalogDialog();
     if (this._dialog.kind === "challenge")    return this._renderChallengeDialog();
+    if (this._dialog.kind === "bounty")       return this._renderBountyDialog();
+    if (this._dialog.kind === "auction")      return this._renderAuctionDialog();
     if (this._dialog.kind === "apply-penalty") return this._renderApplyDialog("penalty");
     if (this._dialog.kind === "apply-bonus")   return this._renderApplyDialog("bonus");
     if (this._dialog.kind === "bulk-chore")    return this._renderBulkChoreDialog();
@@ -5436,6 +9482,13 @@ class TaskMatePanel extends HTMLElement {
     if (this._dialog.kind === "create-template" || this._dialog.kind === "edit-template") return this._renderCreateEditTemplateDialog();
     if (this._dialog.kind === "badge")       return this._renderBadgeDialog();
     if (this._dialog.kind === "award-badge") return this._renderAwardDialog();
+    if (this._dialog.kind === "wish-pledge")  return this._renderWishPledgeDialog();
+    if (this._dialog.kind === "wish-decline") return this._renderWishDeclineDialog();
+    if (this._dialog.kind === "reject")       return this._renderRejectDialog();
+    if (this._dialog.kind === "wizard-confirm") return this._renderWizardConfirmDialog();
+    if (this._dialog.kind === "insp-start")   return this._renderInspectionStartDialog();
+    if (this._dialog.kind === "insp-pass")    return this._renderInspectionPassDialog();
+    if (this._dialog.kind === "insp-fail")    return this._renderInspectionFailDialog();
     return "";
   }
 
@@ -5501,6 +9554,12 @@ class TaskMatePanel extends HTMLElement {
       [
         this._field(this._t("panel.child_name_label"), "name", d.name, "text", this._t("panel.child_name_placeholder")),
         this._iconPickerField(this._t("panel.child_avatar_label"), "avatar", d.avatar),
+        this._field(this._t("panel.child_birthday_label"), "birthday", d.birthday, "text",
+          this._esc(this._t("panel.child_birthday_hint"))),
+        // Setup wizard age group (#980): only steers chore suggestions.
+        this._select(this._t("panel.child_age_group_label"), "age_group", d.age_group || "",
+          [{ v: "", l: this._t("panel.child_age_group_none") }].concat(WZ_AGE_GROUPS.map(([id]) => ({ v: id, l: this._t(`wizard.age_group.${id}`) }))),
+          this._esc(this._t("panel.child_age_group_hint"))),
         this._entityPickerField(this._t("panel.child_availability_label"), "availability_entity", d.availability_entity, ["binary_sensor", "sensor", "input_boolean", "person"],
           this._t("panel.child_availability_hint")),
         hasAvail ? this._switch(this._t("panel.child_invert_label"), "availability_inverted", d.availability_inverted,
@@ -5509,6 +9568,8 @@ class TaskMatePanel extends HTMLElement {
           this._t("panel.child_unavailability_hint")),
         hasAway ? this._switch(this._t("panel.child_pause_streak_label"), "pause_streak_when_unavailable", d.pause_streak_when_unavailable,
           this._t("panel.child_pause_streak_hint")) : "",
+        this._entityPickerField(this._t("panel.child_presence_label"), "presence_entity", d.presence_entity, ["person", "device_tracker"],
+          this._t("panel.child_presence_hint")),
         this._select(
           this._t("panel.child_link_user_label"), "linked_user_id", d.linked_user_id || "",
           [{ v: "", l: this._t("panel.child_link_user_none") }].concat(
@@ -5517,10 +9578,26 @@ class TaskMatePanel extends HTMLElement {
           this._t("panel.child_link_user_hint")),
         this._entityPickerField(this._t("panel.child_picture_entity_label"), "picture_entity", d.picture_entity,
           ["person"], this._t("panel.child_picture_entity_hint")),
+        this._kioskPinField(d),
       ].join(""),
       `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
        <button type="button" class="tm-btn tm-btn-raised" data-act="save-child">${this._t("panel.btn_save")}</button>`
     );
+  }
+
+  /** Kiosk PIN (#930): a masked 4-digit input, plus "remove" once one is set. */
+  _kioskPinField(d) {
+    const clearing = !!(d.has_kiosk_pin && d.kiosk_pin_clear);
+    return `
+      <div class="tm-field">
+        <span class="tm-field-label">${this._esc(this._t("panel.child_kiosk_pin_label"))}</span>
+        <input class="tm-input" data-field="kiosk_pin" type="password" inputmode="numeric" pattern="[0-9]*"
+               maxlength="4" autocomplete="new-password" value="${this._esc(d.kiosk_pin || "")}"
+               placeholder="${d.has_kiosk_pin ? "••••" : ""}" ${clearing ? "disabled" : ""}>
+        <span class="tm-field-hint">${this._esc(this._t("panel.child_kiosk_pin_hint"))}${d.has_kiosk_pin
+          ? " " + this._esc(this._t("panel.child_kiosk_pin_set")) : ""}</span>
+      </div>
+      ${d.has_kiosk_pin ? this._switch(this._t("panel.child_kiosk_pin_remove"), "kiosk_pin_clear", d.kiosk_pin_clear, "", true) : ""}`;
   }
 
   _renderChoreDialog() {
@@ -5538,183 +9615,248 @@ class TaskMatePanel extends HTMLElement {
 
     const isTimedTask = d.task_type === "timed";
 
+    // Fields grouped under headings, opened as a side panel (#968).
+    const section = (key, parts) => `
+      <section class="tm-drawer-sec">
+        <h3 class="tm-drawer-sec-h">${this._t(`panel.chore_sec_${key}`)}</h3>
+        ${parts.join("")}
+      </section>`;
+
     return this._dialogShell(this._dialog.mode === "add" ? this._t("panel.dialog_add_chore") : this._t("panel.dialog_edit_chore"),
       [
-        this._field(this._t("panel.chore_name_label"), "name", d.name, "text"),
-        `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_description_label"), "description", d.description, "text")}
-          ${this._iconPickerField(this._t("panel.chore_icon_label"), "icon", d.icon)}
-        ${this._choreImageField(d.image_url || "")}
-        </div>`,
-        this._select(this._t("panel.chore_task_type_label"), "task_type", d.task_type || "standard", [
-          { v: "standard", l: this._t("panel.chore_task_type_standard") },
-          { v: "timed", l: this._t("panel.chore_task_type_timed") },
-        ], "", true),
-        isTimedTask ? `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_points_per_window_label"), "timed_rate_points", d.timed_rate_points || 10, "number")}
-          ${this._field(this._t("panel.chore_window_minutes_label"), "timed_rate_minutes", d.timed_rate_minutes || 5, "number")}
-        </div>
-        <div class="tm-field-row">
-          ${this._field(this._t("panel.chore_daily_cap_label"), "timed_max_daily_minutes", d.timed_max_daily_minutes || 0, "number")}
-          ${this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
-        </div>` : `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_points_label"), "points", d.points, "number")}
-          ${d.assignment_mode === "first_come" ? "" : this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
-        </div>`,
-        this._select(this._t("panel.chore_assignment_mode_label"), "assignment_mode", d.assignment_mode, ASSIGNMENT_MODES,
-          this._t("panel.chore_assignment_mode_hint"), true),
-        !isUnassigned ? (children.length > 0 ? `
-          <div class="tm-field">
-            <span class="tm-field-label">${this._t("panel.chore_assign_label")}</span>
-            <div class="tm-chip-row">
-              ${children.map(c => `
-                <button type="button" class="tm-chip-btn ${(d.assigned_to || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-assigned" data-id="${this._esc(c.id)}">
-                  ${this._esc(c.name)}
-                </button>
-              `).join("")}
-            </div>
-            <span class="tm-field-hint">${this._t("panel.chore_assign_hint")}</span>
-          </div>
-        ` : `<div class="tm-field"><span class="tm-field-hint">${this._t("panel.chore_assign_no_children")}</span></div>`) : "",
-        (this._state.chores || []).filter(x => x.id !== d.id).length > 0 ? `
-          <div class="tm-field">
-            <span class="tm-field-label">${this._t("panel.chore_depends_label")}</span>
-            <div class="tm-chip-row">
-              ${(this._state.chores || []).filter(x => x.id !== d.id).map(c => `
-                <button type="button" class="tm-chip-btn ${(d.depends_on || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-depends" data-id="${this._esc(c.id)}">
-                  ${this._esc(c.name)}
-                </button>
-              `).join("")}
-            </div>
-            <span class="tm-field-hint">${this._t("panel.chore_depends_hint")}</span>
-          </div>
-        ` : "",
-        showRotation && children.length > 0 ? this._select(
-          this._t("panel.chore_rotation_label"), "manual_start_child_id", d.manual_start_child_id,
-          [{ v: "", l: this._t("panel.chore_rotation_no_override") }, ...children.map(c => ({ v: c.id, l: c.name }))],
-          this._t("panel.chore_rotation_hint")
-        ) : "",
-        this._select(this._t("panel.chore_time_category_label"), "time_category", d.time_category, this._timeCategoryOptions()),
-        this._field(this._t("panel.chore_claim_allowance_label"), "claim_allowance_minutes", d.claim_allowance_minutes, "number",
-          this._t("panel.chore_claim_allowance_hint")),
-        this._select(this._t("panel.chore_schedule_mode_label"), "schedule_mode", d.schedule_mode, SCHEDULE_MODES, "", true),
-        showSpecificDays ? `
-          <div class="tm-field">
-            <span class="tm-field-label">${this._t("panel.chore_days_label")}</span>
-            <div class="tm-day-row">
-              ${DAYS.map(day => `
-                <button type="button" class="tm-day-btn ${(d.due_days || []).includes(day.v) ? "tm-day-on" : ""}" data-act="toggle-day" data-day="${day.v}">${this._t(day.lk)}</button>
-              `).join("")}
-            </div>
-          </div>
-        ` : "",
-        showRecurring ? `
-          <div class="tm-field-row">
-            ${this._select(this._t("panel.chore_recurrence_label"), "recurrence", d.recurrence, RECURRENCES)}
-            ${this._field(this._t("panel.chore_recurrence_day_label"), "recurrence_day", d.recurrence_day, "text", this._t("panel.chore_recurrence_day_hint"))}
+        section("basics", [
+          this._field(this._t("panel.chore_name_label"), "name", d.name, "text"),
+          `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_description_label"), "description", d.description, "text")}
+            ${this._iconPickerField(this._t("panel.chore_icon_label"), "icon", d.icon)}
+          ${this._choreImageField(d.image_url || "")}
+          </div>`,
+          this._select(this._t("panel.chore_task_type_label"), "task_type", d.task_type || "standard", [
+            { v: "standard", l: this._t("panel.chore_task_type_standard") },
+            { v: "timed", l: this._t("panel.chore_task_type_timed") },
+          ], "", true),
+          isTimedTask ? `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_points_per_window_label"), "timed_rate_points", d.timed_rate_points || 10, "number")}
+            ${this._field(this._t("panel.chore_window_minutes_label"), "timed_rate_minutes", d.timed_rate_minutes || 5, "number")}
           </div>
           <div class="tm-field-row">
-            ${this._dateField(this._t("panel.chore_recurrence_start_label"), "recurrence_start", d.recurrence_start, this._t("panel.chore_recurrence_start_hint"))}
-            ${this._select(this._t("panel.chore_first_occurrence_label"), "first_occurrence_mode", d.first_occurrence_mode, FIRST_OCCURRENCE)}
-          </div>
-        ` : "",
-        this._soundField(d.completion_sound),
-        this._select(this._t("panel.chore_difficulty_label"), "difficulty", d.difficulty || "medium", [
-          { v: "easy", l: this._t("panel.difficulty_easy") },
-          { v: "medium", l: this._t("panel.difficulty_medium") },
-          { v: "hard", l: this._t("panel.difficulty_hard") },
+            ${this._field(this._t("panel.chore_daily_cap_label"), "timed_max_daily_minutes", d.timed_max_daily_minutes || 0, "number")}
+            ${this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
+          </div>` : `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_points_label"), "points", d.points, "number")}
+            ${d.assignment_mode === "first_come" ? "" : this._field(this._t("panel.chore_daily_limit_label"), "daily_limit", d.daily_limit, "number")}
+          </div>`,
+          this._select(this._t("panel.chore_difficulty_label"), "difficulty", d.difficulty || "medium", [
+            { v: "easy", l: this._t("panel.difficulty_easy") },
+            { v: "medium", l: this._t("panel.difficulty_medium") },
+            { v: "hard", l: this._t("panel.difficulty_hard") },
+          ]),
+          this._soundField(d.completion_sound),
         ]),
-        this._dateField(this._t("panel.chore_expires_label"), "expires_on", d.expires_on, this._t("panel.chore_expires_hint")),
-        `<div class="tm-field-row">
-          ${this._field(this._t("panel.chore_due_time_label"), "due_time", d.due_time, "time", this._t("panel.chore_due_time_hint"))}
-          ${this._field(this._t("panel.chore_early_bonus_label"), "early_bonus", d.early_bonus, "number")}
-          ${this._field(this._t("panel.chore_late_penalty_label"), "late_penalty", d.late_penalty, "number")}
-        </div>`,
-        this._switch(this._t("panel.chore_approval_label"), "requires_approval", d.requires_approval),
-        this._switch(this._t("panel.chore_require_photo_label"), "require_photo", d.require_photo,
-          this._t("panel.chore_require_photo_hint")),
-        this._switch(this._t("panel.chore_require_availability"), "require_availability", d.require_availability,
-          this._t("panel.chore_require_availability_hint")),
-        this._switch(this._t("panel.chore_mandatory_label"), "mandatory", d.mandatory,
-          this._t("panel.chore_mandatory_hint"), true),
-        d.mandatory ? this._field(this._t("panel.chore_mandatory_penalty_label"), "mandatory_penalty_points",
-          d.mandatory_penalty_points, "number", this._t("panel.chore_mandatory_penalty_hint")) : "",
-        memberInGroup ? `
-          <div class="tm-field">
-            <span class="tm-field-hint">${this._t("panel.chore_group_hint", {name: this._esc(memberInGroup.name), policy: memberInGroup.policy})}</span>
-          </div>
-        ` : "",
-        `<details class="tm-advanced" data-section="bonus_subtasks"${this._dialog._openAdvanced?.has("bonus_subtasks") ? " open" : ""}>
-          <summary>${this._t("panel.chore_advanced_bonus_subtasks")}</summary>
-          <div>
-            <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_advanced_bonus_subtasks_hint")}</span>
-            ${(d.bonus_subtasks || []).map((b, idx) => `
-              <div class="tm-field-row" style="align-items:flex-end;gap:6px;margin-bottom:6px">
-                <div class="tm-field" style="flex:2;margin:0"><input class="tm-input" placeholder="${this._t("panel.chore_subtask_name_placeholder")}" value="${this._esc(b.name)}" data-field="bonus_subtasks[${idx}].name"></div>
-                <div class="tm-field" style="flex:0 0 70px;margin:0"><input class="tm-input" type="number" min="0" placeholder="${this._t("panel.chore_subtask_points_placeholder")}" value="${this._num(b.points)}" data-field="bonus_subtasks[${idx}].points"></div>
-                <button type="button" class="tm-btn tm-btn-icon" data-act="remove-bonus-subtask" data-idx="${idx}" title="${this._t("panel.tooltip_remove")}" style="padding:6px 10px">✕</button>
-              </div>
-            `).join("")}
-            <button type="button" class="tm-btn" data-act="add-bonus-subtask" style="margin-top:4px">${this._t("panel.btn_add_bonus_subtask")}</button>
-          </div>
-        </details>`,
-        `<details class="tm-advanced" data-section="visibility"${this._dialog._openAdvanced?.has("visibility") ? " open" : ""}>
-          <summary>${this._t("panel.chore_advanced_visibility")}</summary>
-          <div>
-            ${this._entityPickerField(this._t("panel.chore_vis_entity_label"), "visibility_entity", d.visibility_entity, ["binary_sensor", "sensor", "switch", "input_boolean", "input_select"],
-              this._t("panel.chore_vis_entity_hint"))}
-            <div class="tm-field-row">
-              ${this._select(this._t("panel.chore_vis_operator_label"), "visibility_operator", d.visibility_operator, VISIBILITY_OPS)}
-              ${this._field(this._t("panel.chore_vis_value_label"), "visibility_state", d.visibility_state, "text", this._t("panel.chore_vis_value_hint"))}
-            </div>
+        section("who", [
+          this._select(this._t("panel.chore_assignment_mode_label"), "assignment_mode", d.assignment_mode, ASSIGNMENT_MODES,
+            this._t("panel.chore_assignment_mode_hint"), true),
+          !isUnassigned ? (children.length > 0 ? `
             <div class="tm-field">
-              <span class="tm-field-label">${this._t("panel.chore_calendar_label")}</span>
-              ${calendarEntities.length === 0 ? `<span class="tm-field-hint">${this._t("panel.chore_calendar_no_entities")}</span>` : `
-                <div class="tm-chip-row">
-                  ${calendarEntities.map(cid => `
-                    <button type="button" class="tm-chip-btn ${(d.publish_calendar_entities || []).includes(cid) ? "tm-chip-on" : ""}" data-act="toggle-calendar" data-id="${this._esc(cid)}">
-                      ${this._esc(cid)}
-                    </button>
-                  `).join("")}
-                </div>
-                <span class="tm-field-hint">${this._t("panel.chore_calendar_hint")}</span>
-              `}
+              <span class="tm-field-label">${this._t("panel.chore_assign_label")}</span>
+              <div class="tm-chip-row">
+                ${children.map(c => `
+                  <button type="button" class="tm-chip-btn ${(d.assigned_to || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-assigned" data-id="${this._esc(c.id)}">
+                    ${this._esc(c.name)}
+                  </button>
+                `).join("")}
+              </div>
+              <span class="tm-field-hint">${this._t("panel.chore_assign_hint")}</span>
             </div>
-            ${this._switch(this._t("panel.chore_enabled_label"), "enabled", d.enabled !== false)}
-          </div>
-        </details>`,
-        this._dialog.mode === "edit" ? this._renderScheduledChanges(d) : "",
-        `<details class="tm-advanced" data-section="weather"${this._dialog._openAdvanced?.has("weather") ? " open" : ""}>
-          <summary>${this._t("panel.chore_advanced_weather")}</summary>
-          <div>
-            <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_weather_intro")}</span>
-            ${this._entityPickerField(this._t("panel.chore_weather_entity_label"), "weather_entity", d.weather_entity, ["weather"],
-              this._t("panel.chore_weather_entity_hint"))}
-            ${d.weather_entity ? `
-              <div class="tm-field">
-                <span class="tm-field-label">${this._t("panel.chore_weather_conditions_label")}</span>
-                <div class="tm-chip-row">
-                  ${WEATHER_CONDITIONS.map(w => `
-                    <button type="button" class="tm-chip-btn ${(d.weather_block_conditions || []).includes(w.v) ? "tm-chip-on" : ""}" data-act="toggle-weather-condition" data-id="${w.v}">
-                      <ha-icon icon="${w.icon}" style="--mdc-icon-size:16px;margin-right:4px"></ha-icon>${this._t("weather.condition_" + w.v.replace(/-/g, "_"))}
-                    </button>
-                  `).join("")}
+          ` : `<div class="tm-field"><span class="tm-field-hint">${this._t("panel.chore_assign_no_children")}</span></div>`) : "",
+          showRotation && children.length > 0 ? this._select(
+            this._t("panel.chore_rotation_label"), "manual_start_child_id", d.manual_start_child_id,
+            [{ v: "", l: this._t("panel.chore_rotation_no_override") }, ...children.map(c => ({ v: c.id, l: c.name }))],
+            this._t("panel.chore_rotation_hint")
+          ) : "",
+        ]),
+        section("when", [
+          this._select(this._t("panel.chore_time_category_label"), "time_category", d.time_category, this._timeCategoryOptions()),
+          this._field(this._t("panel.chore_claim_allowance_label"), "claim_allowance_minutes", d.claim_allowance_minutes, "number",
+            this._t("panel.chore_claim_allowance_hint")),
+          this._select(this._t("panel.chore_schedule_mode_label"), "schedule_mode", d.schedule_mode, SCHEDULE_MODES, "", true),
+          showSpecificDays ? `
+            <div class="tm-field">
+              <span class="tm-field-label">${this._t("panel.chore_days_label")}</span>
+              <div class="tm-day-row">
+                ${DAYS.map(day => `
+                  <button type="button" class="tm-day-btn ${(d.due_days || []).includes(day.v) ? "tm-day-on" : ""}" data-act="toggle-day" data-day="${day.v}">${this._t(day.lk)}</button>
+                `).join("")}
+              </div>
+            </div>
+            ${this._field(this._t("panel.chore_weekly_target_label"), "weekly_target", d.weekly_target || 0, "number",
+              this._t("panel.chore_weekly_target_hint"))}
+          ` : "",
+          showRecurring ? `
+            <div class="tm-field-row">
+              ${this._select(this._t("panel.chore_recurrence_label"), "recurrence", d.recurrence, RECURRENCES)}
+              ${this._field(this._t("panel.chore_recurrence_day_label"), "recurrence_day", d.recurrence_day, "text", this._t("panel.chore_recurrence_day_hint"))}
+            </div>
+            <div class="tm-field-row">
+              ${this._dateField(this._t("panel.chore_recurrence_start_label"), "recurrence_start", d.recurrence_start, this._t("panel.chore_recurrence_start_hint"))}
+              ${this._select(this._t("panel.chore_first_occurrence_label"), "first_occurrence_mode", d.first_occurrence_mode, FIRST_OCCURRENCE)}
+            </div>
+          ` : "",
+          this._dateField(this._t("panel.chore_expires_label"), "expires_on", d.expires_on, this._t("panel.chore_expires_hint")),
+          `<div class="tm-field-row">
+            ${this._field(this._t("panel.chore_due_time_label"), "due_time", d.due_time, "time", this._t("panel.chore_due_time_hint"))}
+            ${this._field(this._t("panel.chore_early_bonus_label"), "early_bonus", d.early_bonus, "number")}
+            ${this._field(this._t("panel.chore_late_penalty_label"), "late_penalty", d.late_penalty, "number")}
+          </div>`,
+          (this._state.chores || []).filter(x => x.id !== d.id).length > 0 ? `
+            <div class="tm-field">
+              <span class="tm-field-label">${this._t("panel.chore_depends_label")}</span>
+              <div class="tm-chip-row">
+                ${(this._state.chores || []).filter(x => x.id !== d.id).map(c => `
+                  <button type="button" class="tm-chip-btn ${(d.depends_on || []).includes(c.id) ? "tm-chip-on" : ""}" data-act="toggle-depends" data-id="${this._esc(c.id)}">
+                    ${this._esc(c.name)}
+                  </button>
+                `).join("")}
+              </div>
+              <span class="tm-field-hint">${this._t("panel.chore_depends_hint")}</span>
+            </div>
+          ` : "",
+        ]),
+        section("checking", [
+          this._switch(this._t("panel.chore_approval_label"), "requires_approval", d.requires_approval),
+          this._switch(this._t("panel.chore_require_photo_label"), "require_photo", d.require_photo,
+            this._t("panel.chore_require_photo_hint")),
+          this._switch(this._t("panel.chore_open_ended_label"), "open_ended", d.open_ended,
+            this._t("panel.chore_open_ended_hint")),
+          this._switch(this._t("panel.chore_require_availability"), "require_availability", d.require_availability,
+            this._t("panel.chore_require_availability_hint")),
+          this._switch(this._t("panel.chore_mandatory_label"), "mandatory", d.mandatory,
+            this._t("panel.chore_mandatory_hint"), true),
+          d.mandatory ? this._field(this._t("panel.chore_mandatory_penalty_label"), "mandatory_penalty_points",
+            d.mandatory_penalty_points, "number", this._t("panel.chore_mandatory_penalty_hint")) : "",
+        ]),
+        section("more", [
+          isTimedTask ? "" : this._renderChoreTeamwork(d),
+          memberInGroup ? `
+            <div class="tm-field">
+              <span class="tm-field-hint">${this._t("panel.chore_group_hint", {name: this._esc(memberInGroup.name), policy: memberInGroup.policy})}</span>
+            </div>
+          ` : "",
+          `<details class="tm-advanced" data-section="bonus_subtasks"${this._dialog._openAdvanced?.has("bonus_subtasks") ? " open" : ""}>
+            <summary>${this._t("panel.chore_advanced_bonus_subtasks")}</summary>
+            <div>
+              <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_advanced_bonus_subtasks_hint")}</span>
+              ${(d.bonus_subtasks || []).map((b, idx) => `
+                <div class="tm-field-row" style="align-items:flex-end;gap:6px;margin-bottom:6px">
+                  <div class="tm-field" style="flex:2;margin:0"><input class="tm-input" placeholder="${this._t("panel.chore_subtask_name_placeholder")}" value="${this._esc(b.name)}" data-field="bonus_subtasks[${idx}].name"></div>
+                  <div class="tm-field" style="flex:0 0 70px;margin:0"><input class="tm-input" type="number" min="0" placeholder="${this._t("panel.chore_subtask_points_placeholder")}" value="${this._num(b.points)}" data-field="bonus_subtasks[${idx}].points"></div>
+                  <button type="button" class="tm-btn tm-btn-icon" data-act="remove-bonus-subtask" data-idx="${idx}" title="${this._t("panel.tooltip_remove")}" style="padding:6px 10px">✕</button>
                 </div>
-                <span class="tm-field-hint">${this._t("panel.chore_weather_conditions_hint")}</span>
-              </div>
+              `).join("")}
+              <button type="button" class="tm-btn" data-act="add-bonus-subtask" style="margin-top:4px">${this._t("panel.btn_add_bonus_subtask")}</button>
+            </div>
+          </details>`,
+          this._renderChoreTags(d),
+          `<details class="tm-advanced" data-section="visibility"${this._dialog._openAdvanced?.has("visibility") ? " open" : ""}>
+            <summary>${this._t("panel.chore_advanced_visibility")}</summary>
+            <div>
+              ${this._entityPickerField(this._t("panel.chore_vis_entity_label"), "visibility_entity", d.visibility_entity, ["binary_sensor", "sensor", "switch", "input_boolean", "input_select"],
+                this._t("panel.chore_vis_entity_hint"))}
               <div class="tm-field-row">
-                ${this._field(this._t("panel.chore_weather_temp_min_label"), "weather_temp_min", d.weather_temp_min, "number", this._t("panel.chore_weather_temp_min_hint"))}
-                ${this._field(this._t("panel.chore_weather_temp_max_label"), "weather_temp_max", d.weather_temp_max, "number", this._t("panel.chore_weather_temp_max_hint"))}
+                ${this._select(this._t("panel.chore_vis_operator_label"), "visibility_operator", d.visibility_operator, VISIBILITY_OPS)}
+                ${this._field(this._t("panel.chore_vis_value_label"), "visibility_state", d.visibility_state, "text", this._t("panel.chore_vis_value_hint"))}
               </div>
-              ${this._field(this._t("panel.chore_weather_wind_max_label"), "weather_wind_max", d.weather_wind_max, "number", this._t("panel.chore_weather_wind_max_hint"))}
-              <span class="tm-field-hint">${this._t("panel.chore_weather_failopen_hint")}</span>
-            ` : ""}
-          </div>
-        </details>`,
+              <div class="tm-field">
+                <span class="tm-field-label">${this._t("panel.chore_calendar_label")}</span>
+                ${calendarEntities.length === 0 ? `<span class="tm-field-hint">${this._t("panel.chore_calendar_no_entities")}</span>` : `
+                  <div class="tm-chip-row">
+                    ${calendarEntities.map(cid => `
+                      <button type="button" class="tm-chip-btn ${(d.publish_calendar_entities || []).includes(cid) ? "tm-chip-on" : ""}" data-act="toggle-calendar" data-id="${this._esc(cid)}">
+                        ${this._esc(cid)}
+                      </button>
+                    `).join("")}
+                  </div>
+                  <span class="tm-field-hint">${this._t("panel.chore_calendar_hint")}</span>
+                `}
+              </div>
+              ${this._switch(this._t("panel.chore_enabled_label"), "enabled", d.enabled !== false)}
+            </div>
+          </details>`,
+          this._dialog.mode === "edit" ? this._renderScheduledChanges(d) : "",
+          `<details class="tm-advanced" data-section="weather"${this._dialog._openAdvanced?.has("weather") ? " open" : ""}>
+            <summary>${this._t("panel.chore_advanced_weather")}</summary>
+            <div>
+              <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_weather_intro")}</span>
+              ${this._entityPickerField(this._t("panel.chore_weather_entity_label"), "weather_entity", d.weather_entity, ["weather"],
+                this._t("panel.chore_weather_entity_hint"))}
+              ${d.weather_entity ? `
+                <div class="tm-field">
+                  <span class="tm-field-label">${this._t("panel.chore_weather_conditions_label")}</span>
+                  <div class="tm-chip-row">
+                    ${WEATHER_CONDITIONS.map(w => `
+                      <button type="button" class="tm-chip-btn ${(d.weather_block_conditions || []).includes(w.v) ? "tm-chip-on" : ""}" data-act="toggle-weather-condition" data-id="${w.v}">
+                        <ha-icon icon="${w.icon}" style="--mdc-icon-size:16px;margin-inline-end:4px"></ha-icon>${this._t("weather.condition_" + w.v.replace(/-/g, "_"))}
+                      </button>
+                    `).join("")}
+                  </div>
+                  <span class="tm-field-hint">${this._t("panel.chore_weather_conditions_hint")}</span>
+                </div>
+                <div class="tm-field-row">
+                  ${this._field(this._t("panel.chore_weather_temp_min_label"), "weather_temp_min", d.weather_temp_min, "number", this._t("panel.chore_weather_temp_min_hint"))}
+                  ${this._field(this._t("panel.chore_weather_temp_max_label"), "weather_temp_max", d.weather_temp_max, "number", this._t("panel.chore_weather_temp_max_hint"))}
+                </div>
+                ${this._field(this._t("panel.chore_weather_wind_max_label"), "weather_wind_max", d.weather_wind_max, "number", this._t("panel.chore_weather_wind_max_hint"))}
+                <span class="tm-field-hint">${this._t("panel.chore_weather_failopen_hint")}</span>
+              ` : ""}
+            </div>
+          </details>`,
+        ]),
       ].join(""),
-      `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
-       <button type="button" class="tm-btn tm-btn-raised" data-act="save-chore">${this._t("panel.btn_save")}</button>`
+      `${this._dialog.mode === "edit" && d.id ? `<button type="button" class="tm-btn tm-drawer-delete" data-act="delete-chore" data-id="${this._esc(d.id)}"><ha-icon icon="mdi:delete-outline"></ha-icon>${this._t("panel.btn_delete")}</button>` : ""}
+       <button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
+       <button type="button" class="tm-btn tm-btn-raised" data-act="save-chore">${this._t("panel.btn_save")}</button>`,
+      { drawer: true }
     );
+  }
+
+  /**
+   * NFC / QR tags (#923): pick from HA's tag registry or type an id. Scanning a
+   * linked tag in the companion app completes the chore for the scanning child.
+   */
+  _renderChoreTags(d) {
+    const selected = d.tag_ids || [];
+    const registry = this._haTags || [];
+    const known = new Set(registry.map(tag => tag.id));
+    // Typed ids that aren't in the registry still need a chip, or they could
+    // never be removed.
+    const typed = selected.filter(id => !known.has(id));
+    const chip = (id, label) => `
+      <button type="button" class="tm-chip-btn ${selected.includes(id) ? "tm-chip-on" : ""}" data-act="toggle-tag" data-id="${this._esc(id)}" title="${this._esc(id)}">
+        <ha-icon icon="mdi:nfc-variant" style="--mdc-icon-size:16px;margin-inline-end:4px"></ha-icon>${this._esc(label || id)}
+      </button>`;
+    const cantTag = d.require_photo || d.open_ended || d.task_type === "timed";
+    const open = this._dialog._openAdvanced?.has("tags");
+    return `<details class="tm-advanced" data-section="tags"${open ? " open" : ""}>
+      <summary>${this._t("panel.chore_advanced_tags")}${selected.length ? ` <span class="tm-sched-count">${selected.length}</span>` : ""}</summary>
+      <div>
+        <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_tags_intro")}</span>
+        ${registry.length || typed.length ? `
+          <div class="tm-chip-row">
+            ${registry.map(tag => chip(tag.id, tag.name)).join("")}
+            ${typed.map(id => chip(id, id)).join("")}
+          </div>
+        ` : `<span class="tm-field-hint">${this._t("panel.chore_tags_none")}</span>`}
+        <div class="tm-field-row" style="grid-template-columns:1fr auto;align-items:end;gap:6px;margin-top:8px">
+          <div class="tm-field" style="margin:0">
+            <span class="tm-field-label">${this._t("panel.chore_tags_typed_label")}</span>
+            <input class="tm-input" type="text" data-role="tag-input" maxlength="100" placeholder="${this._t("panel.chore_tags_typed_placeholder")}">
+          </div>
+          <button type="button" class="tm-btn" data-act="add-tag">${this._t("panel.btn_add_tag")}</button>
+        </div>
+        <span class="tm-field-hint">${this._t("panel.chore_tags_hint")}</span>
+        ${cantTag ? `<span class="tm-field-hint" style="display:block;margin-top:6px;color:var(--tm-warning, #b26a00)">${this._t("panel.chore_tags_blocked_hint")}</span>` : ""}
+      </div>
+    </details>`;
   }
 
   /**
@@ -5926,12 +10068,16 @@ class TaskMatePanel extends HTMLElement {
             <span class="tm-field-hint">${this._t("panel.reward_assigned_hint")}</span>
           </div>
         ` : "",
+        // Streak freeze (#925): approving the claim hands the child a token.
+        // It is theirs alone, so the jackpot switch goes away while it's on.
+        this._switch(this._t("panel.reward_streak_freeze_label"), "streak_freeze", d.streak_freeze,
+          this._t("panel.reward_streak_freeze_hint"), true),
         // Jackpot first; toggling it re-renders so the Pool switch below can be
         // hidden — jackpots are always pool-mode (#552), so the separate Pool
         // toggle would be redundant and confusing.
-        this._switch(this._t("panel.reward_is_jackpot_label"), "is_jackpot", d.is_jackpot,
+        d.streak_freeze ? "" : this._switch(this._t("panel.reward_is_jackpot_label"), "is_jackpot", d.is_jackpot,
           this._t("panel.reward_is_jackpot_hint"), true),
-        d.is_jackpot ? "" : this._switch(this._t("panel.reward_pool_label"), "pool_enabled", d.pool_enabled,
+        (d.is_jackpot && !d.streak_freeze) ? "" : this._switch(this._t("panel.reward_pool_label"), "pool_enabled", d.pool_enabled,
           this._t("panel.reward_pool_hint")),
         `<div class="tm-field-row">
           ${this._field(this._t("panel.reward_quantity_label"), "quantity_str", d.quantity_str, "text", this._t("panel.reward_quantity_hint"))}
@@ -5953,6 +10099,30 @@ class TaskMatePanel extends HTMLElement {
       `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
        <button type="button" class="tm-btn tm-btn-raised" data-act="save-reward">${this._t("panel.btn_save")}</button>`
     );
+  }
+
+  /**
+   * Teamwork (#928): a chore that only counts once N children have joined it.
+   * Tucked into its own section like the other optional behaviours, and open
+   * whenever the chore already is one so an edit shows what's set.
+   */
+  _renderChoreTeamwork(d) {
+    const size = Number(d.team_size) || 0;
+    const open = this._dialog._openAdvanced?.has("teamwork") || size >= 2;
+    return `<details class="tm-advanced" data-section="teamwork"${open ? " open" : ""}>
+      <summary>${this._t("panel.chore_team_section")}</summary>
+      <div>
+        <span class="tm-field-hint" style="margin-bottom:8px;display:block">${this._t("panel.chore_team_hint")}</span>
+        <div class="tm-field-row">
+          ${this._field(this._t("panel.chore_team_size_label"), "team_size", size, "number")}
+          ${this._select(this._t("panel.chore_team_points_label"), "team_points_mode", d.team_points_mode || "each", [
+            { v: "each", l: this._t("panel.chore_team_points_each") },
+            { v: "split", l: this._t("panel.chore_team_points_split") },
+          ])}
+          ${this._field(this._t("panel.chore_team_bonus_label"), "team_bonus", d.team_bonus || 0, "number")}
+        </div>
+      </div>
+    </details>`;
   }
 
   /**
@@ -6027,10 +10197,9 @@ class TaskMatePanel extends HTMLElement {
     ];
     const rowHtml = rows.map((a, i) => `
       <div class="tm-avatar-row">
-        <div class="tm-avatar-row-icon">${this._mdi(a.icon || "mdi:account-circle")}</div>
         <div class="tm-avatar-row-fields">
           <input class="tm-input" type="text" data-field="catalog[${i}].label" value="${this._esc(a.label || "")}" placeholder="${this._t("panel.avatar_label_ph")}">
-          <input class="tm-input" type="text" data-field="catalog[${i}].icon" value="${this._esc(a.icon || "")}" placeholder="mdi:rocket-launch">
+          <ha-icon-picker class="tm-avatar-picker" data-field="catalog[${i}].icon" data-current="${this._esc(a.icon || "")}"></ha-icon-picker>
           <select class="tm-select" data-field="catalog[${i}].unlock_type">
             ${typeOpts.map(o => `<option value="${o.v}" ${(a.unlock_type || "free") === o.v ? "selected" : ""}>${this._esc(o.l)}</option>`).join("")}
           </select>
@@ -6046,7 +10215,9 @@ class TaskMatePanel extends HTMLElement {
         `<button type="button" class="tm-btn tm-btn-sm" data-act="avatar-add-row" style="margin-top:10px;">＋ ${this._t("panel.avatar_add_row")}</button>`,
       ].join(""),
       `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
-       <button type="button" class="tm-btn tm-btn-raised" data-act="save-avatar-catalog">${this._t("panel.btn_save")}</button>`
+       <button type="button" class="tm-btn tm-btn-raised" data-act="save-avatar-catalog">${this._t("panel.btn_save")}</button>`,
+      // Four fields per row plus the icon picker need more than 560px (#972).
+      { wide: true }
     );
   }
 
@@ -6285,10 +10456,11 @@ class TaskMatePanel extends HTMLElement {
   }
 
   // ---- form helpers ----------------------------------------------------
-  _dialogShell(title, body, footer) {
+  // `drawer: true` opens it as a full-height panel on the right (#968).
+  _dialogShell(title, body, footer, { drawer = false, wide = false } = {}) {
     return `
-      <div class="tm-scrim" data-act="scrim">
-        <div class="tm-dialog">
+      <div class="tm-scrim ${drawer ? "tm-scrim-drawer" : ""}" data-act="scrim">
+        <div class="${["tm-dialog", drawer && "tm-drawer", wide && "tm-dialog-wide"].filter(Boolean).join(" ")}" role="dialog" aria-modal="true" aria-label="${this._esc(title)}">
           <header class="tm-dialog-head">
             <h2>${this._esc(title)}</h2>
             <button type="button" class="tm-icon-btn" data-act="close-dialog" title="${this._t("panel.tooltip_close")}">&times;</button>
@@ -6565,6 +10737,8 @@ class TaskMatePanel extends HTMLElement {
       items.push({ act: "skip-chore", icon: "⏭", label: this._t("panel.btn_skip_chore") });
     if (["alternating", "random", "balanced", "first_come"].includes(c.assignment_mode))
       items.push({ act: "request-swap", icon: "⇄", label: this._t("panel.swap_btn") });
+    if (this._auctionable(c))
+      items.push({ act: "auction-chore-next", icon: "🔨", label: this._t("panel.auction_row_menu") });
     items.push({ act: "toggle-chore-active", icon: c.enabled === false ? "▶" : "⏸", label: c.enabled === false ? this._t("panel.btn_activate_chore") : this._t("panel.btn_deactivate_chore") });
     items.push({ act: "clone-chore", icon: "⧉", label: this._t("panel.btn_clone_chore") });
     items.push({ act: "delete-chore", icon: "🗑", label: this._t("panel.btn_delete"), danger: true });
@@ -6579,10 +10753,11 @@ class TaskMatePanel extends HTMLElement {
        </button>`).join("");
     this.appendChild(menu);
 
-    // Position fixed at the kebab, right-aligned, flipping up / clamping to viewport.
+    // Position fixed at the kebab, end-aligned (right, or left in RTL),
+    // flipping up / clamping to viewport.
     const rect = btn.getBoundingClientRect();
     const mw = menu.offsetWidth, mh = menu.offsetHeight, gap = 4, pad = 8;
-    let left = rect.right - mw;
+    let left = this.getAttribute("dir") === "rtl" ? rect.left : rect.right - mw;
     if (left < pad) left = pad;
     if (left + mw > window.innerWidth - pad) left = window.innerWidth - pad - mw;
     let top = rect.bottom + gap;
@@ -6661,6 +10836,14 @@ class TaskMatePanel extends HTMLElement {
   _fmtNum(n) {
     if (n == null) return "0";
     return new Intl.NumberFormat().format(n);
+  }
+
+  // Keeps number runs like "3 / 1" reading left to right when the panel is
+  // right-to-left (#995). Plain string in and out; the isolates it adds are
+  // not HTML-special, so it can sit either side of _esc().
+  _ltrNums(s) {
+    const design = window.__taskmate_design;
+    return design && design.ltrNums ? design.ltrNums(s) : s;
   }
 
   // A number bound for a markup or attribute slot. The panel assembles its
@@ -6787,7 +10970,7 @@ class TaskMatePanel extends HTMLElement {
       /* ===== Sidebar ===== */
       .tm-sidebar {
         background: var(--tm-surface-0);
-        border-right: 1px solid var(--tm-border);
+        border-inline-end: 1px solid var(--tm-border);
         display: flex; flex-direction: column;
         overflow: hidden;
       }
@@ -6859,7 +11042,7 @@ class TaskMatePanel extends HTMLElement {
         font-weight: 500;
         font-family: inherit;
         background: transparent; border: 0;
-        width: 100%; text-align: left;
+        width: 100%; text-align: start;
         position: relative;
         transition: all 0.1s var(--tm-easing);
       }
@@ -6871,9 +11054,9 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-nav-active::before {
         content: ""; position: absolute;
-        left: -8px; top: 6px; bottom: 6px; width: 2px;
+        inset-inline-start: -8px; top: 6px; bottom: 6px; width: 2px;
         background: var(--tm-accent);
-        border-radius: 0 2px 2px 0;
+        border-start-start-radius: 0; border-start-end-radius: 2px; border-end-end-radius: 2px; border-end-start-radius: 0;
       }
       .tm-nav-icon {
         width: 16px; height: 16px;
@@ -6917,7 +11100,7 @@ class TaskMatePanel extends HTMLElement {
         border: 0;
         color: var(--tm-text);
         padding: 6px;
-        margin-left: -6px;
+        margin-inline-start: -6px;
         border-radius: 8px;
         cursor: pointer;
         align-items: center; justify-content: center;
@@ -6944,7 +11127,7 @@ class TaskMatePanel extends HTMLElement {
            panel's only route to the pending-approvals queue. */
         min-height: 32px;
         box-sizing: border-box;
-        padding: 4px 12px 4px 10px;
+        padding-block: 4px; padding-inline: 10px 12px;
         border-radius: 999px;
         font-size: 12px; font-weight: 500;
         cursor: pointer;
@@ -6988,7 +11171,7 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-toolbar-count {
         color: var(--tm-text-faint); font-weight: 400;
-        margin-left: 6px;
+        margin-inline-start: 6px;
         font-variant-numeric: tabular-nums;
         font-size: 16px;
       }
@@ -6999,7 +11182,7 @@ class TaskMatePanel extends HTMLElement {
         flex: 1; min-width: 240px; max-width: 400px;
       }
       .tm-search-icon {
-        position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+        position: absolute; inset-inline-start: 10px; top: 50%; transform: translateY(-50%);
         --mdc-icon-size: 14px; color: var(--tm-text-faint);
         pointer-events: none;
       }
@@ -7009,7 +11192,7 @@ class TaskMatePanel extends HTMLElement {
         background: var(--tm-surface-0);
         border: 1px solid var(--tm-border);
         border-radius: var(--tm-radius-sm);
-        padding: 6px 10px 6px 32px;
+        padding-block: 6px; padding-inline: 32px 10px;
         color: var(--tm-text);
         font-size: 13px;
         font-family: inherit;
@@ -7024,7 +11207,7 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-search::placeholder { color: var(--tm-text-vfaint); }
       .tm-search-clear {
-        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+        position: absolute; inset-inline-end: 6px; top: 50%; transform: translateY(-50%);
         background: var(--tm-surface-2);
         color: var(--tm-text-muted);
         border: 0;
@@ -7122,7 +11305,7 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-card:last-child { margin-bottom: 0; }
       .tm-card:hover { border-color: var(--tm-border-strong); box-shadow: var(--tm-shadow-sm); }
-      .tm-card-error { border-left: 3px solid var(--tm-danger); color: var(--tm-danger); }
+      .tm-card-error { border-inline-start: 3px solid var(--tm-danger); color: var(--tm-danger); }
       .tm-loading { color: var(--tm-text-muted); }
 
       .tm-section-title {
@@ -7145,6 +11328,38 @@ class TaskMatePanel extends HTMLElement {
         color: var(--tm-accent);
       }
       .tm-avatar ha-icon { --mdc-icon-size: 24px; }
+      .tm-bounty-cell { display: flex; align-items: center; gap: 12px; }
+      .tm-bounty-ic { width: 34px; height: 34px; border-radius: 50%; color: var(--tm-gold, #d4ac0d); }
+      .tm-bounty-ic ha-icon { --mdc-icon-size: 18px; }
+      .tm-bounty-note { margin: 0 0 12px; }
+      /* Chore auctions (#982) */
+      .tm-auc-ic { width: 34px; height: 34px; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #7e57c2, #5e35b1); }
+      .tm-auc-ic ha-icon { --mdc-icon-size: 18px; }
+      .tm-auc-gold { color: var(--tm-gold, #d4ac0d); }
+      .tm-auc-head { flex: 1; min-width: 0; }
+      .tm-auc-chips .tm-chip-btn { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
+      .tm-auc-chips .tm-chip-btn > ha-icon { --mdc-icon-size: 15px; }
+      .tm-auc-chips .tm-av { width: 20px; height: 20px; --mdc-icon-size: 14px; }
+      .tm-auc-stats { grid-template-columns: repeat(3, 1fr); margin-bottom: 14px; }
+      .tm-auc-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+      .tm-auc-reveal { margin-inline-start: auto; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+      .tm-auc-chip {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding-block: 2px; padding-inline: 2px 8px; margin-block: 2px; margin-inline: 0 4px;
+        border-radius: 999px; background: var(--tm-surface-2); font-size: 12px; white-space: nowrap;
+      }
+      .tm-auc-chip b { color: var(--tm-gold, #d4ac0d); }
+      .tm-auc-stack { display: inline-flex; }
+      .tm-auc-stack .tm-av + .tm-av { margin-inline-start: -6px; }
+      .tm-auc-cdown { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; font-variant-numeric: tabular-nums; color: #7e57c2; }
+      .tm-auc-cdown ha-icon { --mdc-icon-size: 15px; }
+      .tm-auc-win { display: flex; align-items: center; gap: 8px; }
+      .tm-auc-warn { color: var(--tm-warning, #b9770e); }
+      .tm-auc-steprow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .tm-auc-stepper { display: inline-flex; align-items: center; border: 1px solid var(--tm-border); border-radius: 8px; overflow: hidden; }
+      .tm-auc-stepper button { width: 34px; height: 34px; border: 0; cursor: pointer; font-size: 18px; background: var(--tm-surface-2); color: var(--tm-text); }
+      .tm-auc-stepper span { min-width: 64px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .tm-bounty-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
       .tm-avatar-reward  { color: var(--tm-gold); }
       .tm-child-name { min-width: 0; flex: 1; }
       .tm-child-name h3 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
@@ -7284,7 +11499,7 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
       .tm-table th, .tm-table td {
-        text-align: left;
+        text-align: start;
         padding: 11px 16px;
         border-bottom: 1px solid var(--tm-border-soft);
         vertical-align: middle;
@@ -7303,15 +11518,15 @@ class TaskMatePanel extends HTMLElement {
       .tm-row { transition: background 0.1s var(--tm-easing); }
       .tm-row:hover { background: var(--tm-surface-hover); }
       .tm-row-disabled { opacity: 0.5; }
-      .tm-row-icon { display: inline-flex; vertical-align: middle; margin-right: 10px; opacity: 0.7; --mdc-icon-size: 18px; color: var(--tm-text-muted); }
-      .tm-row-actions { text-align: right; white-space: nowrap; }
+      .tm-row-icon { display: inline-flex; vertical-align: middle; margin-inline-end: 10px; opacity: 0.7; --mdc-icon-size: 18px; color: var(--tm-text-muted); }
+      .tm-row-actions { text-align: end; white-space: nowrap; }
       .tm-row-actions > div { display: inline-flex; gap: 4px; align-items: center; justify-content: flex-end; }
 
       /* Keep the task-name column visible when a wide table scrolls
          horizontally (issue #533). Pinned only outside bulk-select mode,
          where the checkbox column sits to the name's left. */
       .tm-table th.tm-col-sticky, .tm-table td.tm-col-sticky {
-        position: sticky; left: 0; z-index: 1;
+        position: sticky; inset-inline-start: 0; z-index: 1;
       }
       .tm-table td.tm-col-sticky { background: var(--tm-surface-0); }
       .tm-table th.tm-col-sticky { z-index: 3; }
@@ -7323,9 +11538,18 @@ class TaskMatePanel extends HTMLElement {
       .tm-name-cell { display: flex; align-items: center; gap: 12px; }
       .tm-name-cell .tm-name-main { min-width: 0; }
       .tm-name-cell .tm-name-actions {
-        margin-left: auto; display: inline-flex; gap: 4px;
+        margin-inline-start: auto; display: inline-flex; gap: 4px;
         align-items: center; flex-shrink: 0;
       }
+      /* Variant for rows whose actions are full buttons (Wishlists, Bounties;
+         #951): the name wraps and the actions drop under it, so the pinned
+         cell shrinks on a narrow panel instead of pushing them off the edge. */
+      .tm-table td.tm-cell-wrap { white-space: normal; }
+      .tm-name-cell-wrap { flex-wrap: wrap; row-gap: 8px; }
+      .tm-name-cell-wrap .tm-name-main { flex: 1 1 auto; min-width: 150px; }
+      /* Icon-only actions (Pledges, Wish history; #962) stay beside the name,
+         which wraps instead, so a lone delete icon doesn't take its own line. */
+      .tm-name-cell-icon .tm-name-main { flex: 1 1 auto; min-width: 150px; }
 
       /* Floating kebab (⋮) action menu for chore rows. Rendered fixed at the
          document root so the table wrap's overflow never clips it. */
@@ -7347,7 +11571,7 @@ class TaskMatePanel extends HTMLElement {
         padding: 8px 10px; border: 0; background: transparent;
         border-radius: var(--tm-radius-sm);
         color: var(--tm-text); font-family: inherit; font-size: 13px;
-        text-align: left; cursor: pointer; white-space: nowrap;
+        text-align: start; cursor: pointer; white-space: nowrap;
         transition: background 0.08s var(--tm-easing);
       }
       .tm-row-menu-item:hover { background: var(--tm-surface-hover); }
@@ -7384,7 +11608,7 @@ class TaskMatePanel extends HTMLElement {
         line-height: 1.5;
         background: var(--tm-surface-2); color: var(--tm-text-muted);
         border: 1px solid var(--tm-border);
-        margin-left: 4px; vertical-align: middle;
+        margin-inline-start: 4px; vertical-align: middle;
       }
       .tm-pill-accent  { background: var(--tm-accent-soft);   color: var(--tm-accent-text); border-color: var(--tm-accent-border); }
       .tm-pill-success { background: var(--tm-positive-soft); color: var(--tm-positive);    border-color: var(--tm-positive-border); }
@@ -7398,7 +11622,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-pill-jackpot { background: var(--tm-gold-soft);     color: var(--tm-gold);        border-color: color-mix(in srgb, var(--tm-gold), transparent 75%); }
       .tm-pill-muted   { background: var(--tm-surface-2);     color: var(--tm-text-muted);  border-color: var(--tm-border); }
       .tm-quest-inactive { opacity: 0.6; }
-      .tm-quest-steps { margin: 8px 0 4px; padding-left: 20px; color: var(--tm-text); font-size: 13px; }
+      .tm-quest-steps { margin: 8px 0 4px; padding-inline-start: 20px; color: var(--tm-text); font-size: 13px; }
       .tm-quest-steps li { margin: 2px 0; }
       .tm-quest-step-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
       .tm-quest-step-row { display: flex; align-items: center; gap: 8px; }
@@ -7406,8 +11630,8 @@ class TaskMatePanel extends HTMLElement {
       .tm-quest-step-name { flex: 1; font-size: 13px; }
       .tm-avatar-rows { display: flex; flex-direction: column; gap: 10px; }
       .tm-avatar-row { display: flex; align-items: center; gap: 8px; }
-      .tm-avatar-row-icon { flex: 0 0 32px; font-size: 24px; color: var(--tm-accent-text); }
-      .tm-avatar-row-fields { flex: 1; display: grid; grid-template-columns: 1.2fr 1.2fr 1fr 0.7fr; gap: 6px; }
+      .tm-avatar-row-fields { flex: 1; display: grid; grid-template-columns: 1fr 1.5fr 1.3fr 0.6fr; gap: 6px; align-items: center; }
+      .tm-avatar-picker { display: block; min-width: 0; }
       @media (max-width: 600px) { .tm-avatar-row-fields { grid-template-columns: 1fr 1fr; } }
       .tm-pill-alternating, .tm-pill-random, .tm-pill-balanced { background: var(--tm-accent-soft); color: var(--tm-accent-text); border-color: var(--tm-accent-border); }
       .tm-pill-first_come { background: var(--tm-gold-soft); color: var(--tm-gold); border-color: color-mix(in srgb, var(--tm-gold), transparent 75%); }
@@ -7478,10 +11702,10 @@ class TaskMatePanel extends HTMLElement {
         border: 1px solid var(--tm-border);
       }
       .tm-empty h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; letter-spacing: -0.005em; color: var(--tm-text); }
-      .tm-empty p  { margin: 0 0 16px; color: var(--tm-text-muted); font-size: 13px; max-width: 360px; margin-left: auto; margin-right: auto; }
+      .tm-empty p  { margin: 0 0 16px; color: var(--tm-text-muted); font-size: 13px; max-width: 360px; margin-inline-start: auto; margin-inline-end: auto; }
 
       /* Group list */
-      .tm-group-list { margin: 8px 0 0; padding-left: 20px; color: var(--tm-text-muted); font-size: 13px; }
+      .tm-group-list { margin: 8px 0 0; padding-inline-start: 20px; color: var(--tm-text-muted); font-size: 13px; }
       .tm-group-list li { margin-bottom: 2px; }
 
       /* Activity tab */
@@ -7505,7 +11729,24 @@ class TaskMatePanel extends HTMLElement {
       .tm-approval-body { flex: 1; min-width: 0; }
       .tm-approval-photo img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; display: block; }
       .tm-approval-line { font-size: 13px; }
-      .tm-approval-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .tm-approval-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; margin-inline-start: auto; }
+      /* Let the actions drop below the text on a narrow screen instead of
+         crushing it into a one-word column (the star picker made it worse). */
+      .tm-approval-item { flex-wrap: wrap; }
+      .tm-approval-body { flex: 1 1 180px; }
+      /* Quality rating star picker (#927) */
+      .tm-stars { display: inline-flex; gap: 2px; margin-inline-end: 4px; }
+      .tm-star {
+        background: none; border: 0; padding: 2px 3px; cursor: pointer;
+        font-size: 20px; line-height: 1; color: var(--tm-text-muted, #888);
+        border-radius: 6px;
+      }
+      .tm-star:hover { color: #f5b301; }
+      .tm-star.tm-star-on { color: #f5b301; }
+      .tm-star:focus-visible { outline: 2px solid var(--tm-accent); outline-offset: 1px; }
+      .tm-q-stars { color: #f5b301; letter-spacing: 1px; margin-inline-end: 6px; }
+      .tm-q-off { color: var(--tm-text-muted, #888); }
+      .tm-quality td, .tm-quality th { font-size: 13px; }
 
       .tm-timeline { display: flex; flex-direction: column; }
       .tm-timeline-row {
@@ -7527,6 +11768,49 @@ class TaskMatePanel extends HTMLElement {
       .tm-timeline-completion ha-icon { color: var(--tm-positive); }
       .tm-timeline-claim ha-icon      { color: var(--tm-gold); }
       .tm-timeline-manual ha-icon     { color: var(--tm-accent); }
+      /* Surprise inspections (#981) */
+      .tm-timeline-inspection ha-icon { color: #e67e22; }
+      .tm-insp-note { font-style: italic; margin-top: 2px; overflow-wrap: anywhere; }
+      .tm-insp-tag { margin-inline-start: 0; margin-top: 3px; max-width: 100%; white-space: normal; }
+      .tm-insp-tag ha-icon { --mdc-icon-size: 13px; }
+      .tm-insp-flag { vertical-align: middle; margin-inline-start: 4px; color: #e67e22; }
+      .tm-insp-flag ha-icon { --mdc-icon-size: 18px; }
+      .tm-insp-icon { background: color-mix(in srgb, #e67e22, transparent 86%); color: #e67e22; }
+      .tm-insp-item { border-color: color-mix(in srgb, #e67e22, transparent 60%); }
+      .tm-insp-ctx {
+        display: flex; gap: 12px; align-items: center; margin-bottom: 14px;
+        padding: 10px 12px; border-radius: var(--tm-radius-sm);
+        background: var(--tm-surface-2); border: 1px solid var(--tm-border);
+      }
+      .tm-insp-ctx-ic {
+        width: 40px; height: 40px; border-radius: 10px; flex: none; display: grid; place-items: center;
+        background: color-mix(in srgb, #e67e22, transparent 86%); color: #e67e22;
+      }
+      .tm-insp-stepper { display: inline-flex; align-items: center; gap: 6px; }
+      .tm-insp-stepper .tm-input { width: 90px; text-align: center; }
+      .tm-insp-stepper .tm-btn { min-width: 36px; justify-content: center; font-size: 16px; }
+      .tm-insp-go { background: #e67e22 !important; border-color: #e67e22 !important; color: #fff !important; }
+      .tm-insp-go ha-icon { --mdc-icon-size: 18px; }
+      .tm-insp-opts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+      .tm-insp-opt {
+        display: flex; gap: 10px; align-items: flex-start; text-align: start; width: 100%;
+        padding: 10px 12px; border-radius: var(--tm-radius-sm); cursor: pointer;
+        background: var(--tm-surface-0); border: 1px solid var(--tm-border); color: inherit; font: inherit;
+      }
+      .tm-insp-opt small { display: block; color: var(--tm-text-muted); margin-top: 2px; font-size: 12.5px; }
+      .tm-insp-opt-on { border-color: var(--tm-accent); background: var(--tm-accent-soft); }
+      .tm-insp-opt:disabled { opacity: 0.55; cursor: not-allowed; }
+      .tm-insp-radio {
+        width: 16px; height: 16px; border-radius: 50%; flex: none; margin-top: 2px;
+        border: 2px solid var(--tm-text-muted); box-sizing: border-box;
+      }
+      .tm-insp-opt-on .tm-insp-radio { border-color: var(--tm-accent); box-shadow: inset 0 0 0 3px var(--tm-surface-0); background: var(--tm-accent); }
+      .tm-insp-hint { display: flex; gap: 6px; align-items: center; }
+      .tm-insp-hint ha-icon { --mdc-icon-size: 15px; }
+      .tm-insp-settings { border-color: color-mix(in srgb, #e67e22, transparent 55%); }
+      .tm-insp-settings h3 ha-icon { --mdc-icon-size: 18px; color: #e67e22; vertical-align: -3px; }
+      .tm-insp-sub { padding-inline-start: 18px; }
+      .tm-insp-settings .tm-setting-label ha-icon { --mdc-icon-size: 16px; vertical-align: -3px; }
       .tm-timeline-points { font-weight: 600; }
 
       /* Settings */
@@ -7543,6 +11827,12 @@ class TaskMatePanel extends HTMLElement {
       .tm-section-head h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
       .tm-section-head p  { margin: 0; color: var(--tm-text-faint); font-size: 12.5px; }
       .tm-section-body { padding: 0; }
+      /* Section content that isn't a .tm-setting-row pads itself (#972). */
+      .tm-section-pad { padding: 14px 20px 16px; border-top: 1px solid var(--tm-border-soft); }
+      .tm-section-body.tm-section-pad, .tm-section-body > .tm-section-pad:first-child { border-top: 0; padding-top: 4px; }
+      .tm-section-pad > p.tm-meta { margin: 0 0 12px; }
+      .tm-section-pad > p.tm-meta:last-child { margin-bottom: 0; }
+      .tm-subhead { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
       .tm-setting-row {
         display: grid; grid-template-columns: 280px 1fr;
         gap: 20px; align-items: center;
@@ -7550,11 +11840,6 @@ class TaskMatePanel extends HTMLElement {
         border-top: 1px solid var(--tm-border-soft);
       }
       .tm-setting-row:first-child { border-top: 0; }
-      .tm-role-row { grid-template-columns: 1fr auto; cursor: pointer; }
-      .tm-role-check {
-        width: 20px; height: 20px; margin: 0;
-        justify-self: end; accent-color: var(--tm-accent); cursor: pointer;
-      }
       .tm-setting-label { color: var(--tm-text); font-size: 13px; font-weight: 500; }
       .tm-setting-label small { display: block; color: var(--tm-text-faint); font-weight: 400; font-size: 12px; margin-top: 2px; }
       .tm-difficulty-mults { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -7598,11 +11883,11 @@ class TaskMatePanel extends HTMLElement {
         background: var(--secondary-background-color, #f1f1f1);
         border-radius: 10px;
       }
-      .tm-bulk-count { font-weight: 600; margin-right: auto; }
+      .tm-bulk-count { font-weight: 600; margin-inline-end: auto; }
       .tm-btn-on { background: var(--primary-color, #5b8def); color: #fff; }
       .tm-audit-row {
         display: grid;
-        grid-template-columns: 180px 130px 180px 1fr;
+        grid-template-columns: 170px 120px minmax(0, 1.3fr) minmax(0, 1fr);
         gap: 12px;
         padding: 8px 20px;
         border-top: 1px solid var(--tm-border-soft);
@@ -7612,6 +11897,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-audit-head { font-weight: 600; color: var(--tm-text-faint); }
       .tm-audit-when, .tm-audit-user { color: var(--tm-text-faint); }
       .tm-audit-action { font-family: var(--code-font-family, monospace); }
+      .tm-audit-action, .tm-audit-target { min-width: 0; overflow-wrap: anywhere; }
       @media (max-width: 700px) {
         .tm-audit-row { grid-template-columns: 1fr 1fr; }
         .tm-audit-head { display: none; }
@@ -7657,8 +11943,8 @@ class TaskMatePanel extends HTMLElement {
         display: flex; align-items: flex-start; justify-content: center;
         padding: 60px 20px; z-index: 100;
         overflow-y: auto;
-        animation: tm-scrim-in 0.18s var(--tm-easing);
       }
+      .tm-scrim.tm-enter { animation: tm-scrim-in 0.18s var(--tm-easing); }
       @keyframes tm-scrim-in { from { opacity: 0; } to { opacity: 1; } }
       .tm-dialog {
         background: var(--tm-surface-0);
@@ -7669,9 +11955,39 @@ class TaskMatePanel extends HTMLElement {
         display: flex; flex-direction: column;
         max-height: calc(100vh - 120px);
         overflow: hidden;
-        animation: tm-dialog-in 0.2s var(--tm-easing);
       }
+      .tm-scrim.tm-enter > .tm-dialog { animation: tm-dialog-in 0.2s var(--tm-easing); }
+      .tm-dialog.tm-dialog-wide { max-width: 860px; }
       @keyframes tm-dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+      /* Side-panel editor (#968): full height on the right, page visible behind. */
+      .tm-scrim.tm-scrim-drawer {
+        padding: 0; overflow: hidden;
+        justify-content: flex-end; align-items: stretch;
+        background: rgba(0, 0, 0, 0.32);
+      }
+      .tm-dialog.tm-drawer {
+        width: min(520px, 100vw); max-width: none; box-sizing: border-box;
+        height: 100%; max-height: none;
+        border-radius: 0; border-width: 0; border-inline-start-width: 1px;
+        box-shadow: -16px 0 40px rgba(0, 0, 0, 0.18);
+      }
+      .tm-scrim.tm-enter > .tm-dialog.tm-drawer { animation: tm-drawer-in 0.22s var(--tm-easing); }
+      @keyframes tm-drawer-in { from { transform: translateX(100%); } to { transform: none; } }
+      /* RTL (#979): the drawer sits on the left, so it casts and slides the other way. */
+      [dir="rtl"] .tm-dialog.tm-drawer { box-shadow: 16px 0 40px rgba(0, 0, 0, 0.18); }
+      [dir="rtl"] .tm-scrim.tm-enter > .tm-dialog.tm-drawer { animation-name: tm-drawer-in-rtl; }
+      @keyframes tm-drawer-in-rtl { from { transform: translateX(-100%); } to { transform: none; } }
+      .tm-drawer .tm-dialog-body { flex: 1; padding-top: 4px; }
+      .tm-drawer-sec { padding-bottom: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--tm-border-soft); }
+      .tm-drawer-sec:last-child { border-bottom: 0; margin-bottom: 0; }
+      .tm-drawer-sec-h {
+        margin: 12px 0 12px; font-size: 11.5px; font-weight: 600;
+        letter-spacing: 0.06em; text-transform: uppercase; color: var(--tm-text-muted);
+      }
+      .tm-drawer-delete { margin-inline-end: auto; color: var(--tm-danger); display: inline-flex; align-items: center; gap: 4px; }
+      .tm-drawer-delete ha-icon { --mdc-icon-size: 18px; }
+      @media (prefers-reduced-motion: reduce) { .tm-scrim.tm-enter > .tm-dialog.tm-drawer { animation: none; } }
 
       .tm-dialog-head {
         padding: 18px 22px;
@@ -7717,11 +12033,12 @@ class TaskMatePanel extends HTMLElement {
       .tm-select {
         cursor: pointer;
         appearance: none; -webkit-appearance: none;
-        padding-right: 32px;
+        padding-inline-end: 32px;
         background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%23888' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
         background-repeat: no-repeat;
-        background-position: right 10px center;
+        background-position: right 10px center; /* rtl-ok: [dir="rtl"] override below */
       }
+      [dir="rtl"] .tm-select { background-position: left 10px center; } /* rtl-ok: RTL side of the rule above */
       .tm-select option { background: var(--tm-surface-0); color: var(--tm-text); }
       .tm-textarea {
         width: 100%;
@@ -7754,7 +12071,7 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-ep-search-icon {
         --mdc-icon-size: 18px;
-        color: var(--tm-text-faint); flex-shrink: 0; margin-right: 6px;
+        color: var(--tm-text-faint); flex-shrink: 0; margin-inline-end: 6px;
       }
       .tm-ep-input {
         flex: 1; border: 0; background: transparent; outline: 0;
@@ -7785,7 +12102,7 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-entity-clear:hover { background: var(--tm-danger-soft); color: var(--tm-danger); }
       .tm-ep-dropdown {
-        position: absolute; top: 100%; left: 0; right: 0;
+        position: absolute; top: 100%; inset-inline-start: 0; inset-inline-end: 0;
         max-height: 260px; overflow-y: auto;
         background: var(--tm-surface-0); border: 1px solid var(--tm-border);
         border-radius: var(--tm-radius); z-index: 200;
@@ -7929,7 +12246,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-proj-kid { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; align-items: center; }
       .tm-proj-kid .tm-fair-figs { grid-column: 2; }
       .tm-projection td, .tm-projection th { font-size: 13px; text-align: center; }
-      .tm-projection td:first-child, .tm-projection th:first-child { text-align: left; }
+      .tm-projection td:first-child, .tm-projection th:first-child { text-align: start; }
       .tm-proj-date { color: var(--tm-text-muted); font-size: 11.5px; }
       .tm-proj-count { color: var(--tm-text-muted); font-size: 11.5px; }
 
@@ -7952,7 +12269,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-allow-chip {
         display: inline-flex; align-items: center; gap: 6px;
         background: var(--tm-surface-0); border: 1px solid var(--tm-border);
-        border-radius: 999px; padding: 4px 6px 4px 12px;
+        border-radius: 999px; padding-block: 4px; padding-inline: 12px 6px;
         font-size: 12.5px; font-family: var(--tm-mono, monospace);
       }
       .tm-allow-chip button {
@@ -7988,6 +12305,21 @@ class TaskMatePanel extends HTMLElement {
       .tm-sched-tick { color: var(--tm-success, #2e7d32); font-weight: 800; }
 
       .tm-chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+      /* Recaps (#929) */
+      .tm-recap-cell { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+      .tm-recap-next { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--tm-text-muted); }
+      .tm-recap-next b { color: var(--tm-text); font-weight: 500; }
+      .tm-recap-off { display: inline-flex; align-items: center; gap: 6px; color: var(--tm-warning, #f5b041); }
+      .tm-recap-off ha-icon { --mdc-icon-size: 14px; }
+      .tm-recap-kids { padding: 14px 20px; border-top: 1px solid var(--tm-border-soft); display: flex; flex-direction: column; gap: 10px; }
+      .tm-recap-kids .tm-table td { vertical-align: top; }
+      .tm-recap-mode { display: inline-flex; align-self: flex-start; border: 1px solid var(--tm-border); border-radius: 8px; overflow: hidden; }
+      .tm-recap-mode button { background: transparent; border: 0; color: var(--tm-text-muted); padding: 5px 11px; font: inherit; font-size: 12px; cursor: pointer; }
+      .tm-recap-mode button.on { background: var(--tm-accent-soft); color: var(--tm-accent-text); font-weight: 600; }
+      .tm-chip-btn[disabled] { opacity: 0.55; cursor: default; }
+      .tm-recap-switches { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+      .tm-recap-switches label { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--tm-text-muted); }
+      .tm-recap-preview { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       .tm-chip-btn {
         background: var(--tm-surface-0);
         color: var(--tm-text-muted);
@@ -8054,6 +12386,7 @@ class TaskMatePanel extends HTMLElement {
         font-size: 10px;
       }
       details.tm-advanced[open] summary::before { transform: rotate(90deg); }
+      [dir="rtl"] details.tm-advanced:not([open]) summary::before { transform: scaleX(-1); }
       details.tm-advanced > div {
         padding: 14px;
         border-top: 1px solid var(--tm-border-soft);
@@ -8092,7 +12425,7 @@ class TaskMatePanel extends HTMLElement {
 
       /* Toast */
       .tm-toast {
-        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); /* rtl-ok: centred with translate(-50%), symmetric */
         padding: 10px 16px; border-radius: var(--tm-radius);
         font-size: 13px; font-weight: 500;
         box-shadow: var(--tm-shadow);
@@ -8149,6 +12482,10 @@ class TaskMatePanel extends HTMLElement {
       .tm-tpl-preview-header:hover { background: var(--tm-surface-hover); }
       .tm-tpl-expand { font-size: 11px; color: var(--tm-text-faint); transition: transform 0.2s; }
       .tm-tpl-expand.open { transform: rotate(90deg); }
+      [dir="rtl"] .tm-tpl-expand { display: inline-block; }
+      [dir="rtl"] .tm-tpl-expand:not(.open) { transform: scaleX(-1); }
+      /* RTL (#979): icons that point along the reading direction turn round. */
+      [dir="rtl"] .tm-rtl-flip { transform: scaleX(-1); }
       .tm-tpl-preview-name { font-size: 14px; font-weight: 600; flex: 1; }
       .tm-tpl-preview-summary { font-size: 12px; color: var(--tm-text-muted); display: flex; gap: 12px; }
       .tm-tpl-remove {
@@ -8225,12 +12562,13 @@ class TaskMatePanel extends HTMLElement {
         position: relative; transition: background 0.15s; flex-shrink: 0;
       }
       .tm-badge-toggle::after {
-        content: ""; position: absolute; top: 2px; left: 2px;
+        content: ""; position: absolute; top: 2px; inset-inline-start: 2px;
         width: 16px; height: 16px; border-radius: 50%;
         background: #fff; transition: transform 0.15s;
       }
       .tm-badge-toggle-on { background: var(--tm-accent); }
       .tm-badge-toggle-on::after { transform: translateX(16px); }
+      [dir="rtl"] .tm-badge-toggle-on::after { transform: translateX(-16px); }
 
       .tm-badge-src {
         font-size: 10px; font-weight: 700; padding: 2px 8px;
@@ -8322,12 +12660,13 @@ class TaskMatePanel extends HTMLElement {
       }
       .tm-notif-switch::after {
         content: ""; position: absolute;
-        top: 3px; left: 3px;
+        top: 3px; inset-inline-start: 3px;
         width: 16px; height: 16px; border-radius: 50%;
         background: #fff; transition: transform 0.15s;
       }
       .tm-notif-switch:checked { background: var(--tm-accent); }
       .tm-notif-switch:checked::after { transform: translateX(16px); }
+      [dir="rtl"] .tm-notif-switch:checked::after { transform: translateX(-16px); }
       .tm-notif-switch:disabled { opacity: 0.35; cursor: not-allowed; }
 
       /* Notification matrix cells */
@@ -8374,7 +12713,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-notif-info-box {
         margin-top: 16px; padding: 14px 16px;
         background: var(--tm-surface-1); border: 1px solid var(--tm-border);
-        border-left: 3px solid var(--tm-accent, #4fc3f7);
+        border-inline-start: 3px solid var(--tm-accent, #4fc3f7);
         border-radius: var(--tm-radius-sm);
         font-size: 12.5px; color: var(--tm-text-muted); line-height: 1.55;
       }
@@ -8391,7 +12730,7 @@ class TaskMatePanel extends HTMLElement {
         .tm-topbar { padding: 0 12px; }
         /* Redundant with the section picker below — hide on mobile. */
         .tm-crumbs { display: none; }
-        .tm-approval-pill { margin-left: auto; }
+        .tm-approval-pill { margin-inline-start: auto; }
 
         /* Section picker replaces the old horizontal tab strip. */
         .tm-main { position: relative; }
@@ -8414,7 +12753,7 @@ class TaskMatePanel extends HTMLElement {
           cursor: pointer;
           font-family: inherit;
           color: var(--tm-text);
-          text-align: left;
+          text-align: start;
           transition: background 0.12s var(--tm-easing), border-color 0.12s var(--tm-easing);
         }
         .tm-mnav-trigger:active { background: var(--tm-surface-3); }
@@ -8454,7 +12793,7 @@ class TaskMatePanel extends HTMLElement {
         }
         .tm-mnav-scrim {
           position: absolute;
-          top: 100%; left: 0; right: 0;
+          top: 100%; inset-inline-start: 0; inset-inline-end: 0;
           height: 100vh;
           background: rgba(10, 15, 22, 0.32);
           z-index: 30;
@@ -8462,7 +12801,7 @@ class TaskMatePanel extends HTMLElement {
         }
         .tm-mnav-sheet {
           position: absolute;
-          top: calc(100% + 6px); left: 8px; right: 8px;
+          top: calc(100% + 6px); inset-inline-start: 8px; inset-inline-end: 8px;
           z-index: 31;
           background: var(--tm-surface-0);
           border: 1px solid var(--tm-border);
@@ -8481,7 +12820,7 @@ class TaskMatePanel extends HTMLElement {
         .tm-mnav-item {
           display: flex; align-items: center; gap: 12px; width: 100%;
           background: none; border: 0; font-family: inherit; cursor: pointer;
-          padding: 11px 16px; color: var(--tm-text); text-align: left;
+          padding: 11px 16px; color: var(--tm-text); text-align: start;
         }
         .tm-mnav-item:active { background: var(--tm-surface-2); }
         .tm-mnav-item-ico {
@@ -8503,10 +12842,360 @@ class TaskMatePanel extends HTMLElement {
         .tm-scrim { padding: 0; }
         .tm-dialog-body .tm-field-row { grid-template-columns: 1fr; }
         .tm-setting-row { grid-template-columns: 1fr; gap: 6px; padding: 12px 16px; }
-        .tm-role-row { grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
-        .tm-section-head, .tm-setting-row { padding-left: 16px; padding-right: 16px; }
+        .tm-section-head, .tm-setting-row { padding-inline-start: 16px; padding-inline-end: 16px; }
         .tm-timeline-row { grid-template-columns: 1fr auto; }
         .tm-timeline-time, .tm-timeline-icon { display: none; }
+      }
+      /* Wishlists tab (#932) */
+      .tm-wl-intro { margin: -4px 0 10px; }
+      .tm-wl-thumb {
+        flex: none; border-radius: 10px; object-fit: cover; display: inline-grid; place-items: center;
+      }
+      .tm-wl-thumb-ph {
+        background: linear-gradient(135deg, #e91e63, #9b59b6); color: #fff; --mdc-icon-size: 20px;
+      }
+      .tm-wl-appr { align-items: center; }
+      .tm-wl-target { display: inline-flex; align-items: center; gap: 6px; }
+      .tm-wl-target .tm-input { width: 96px; padding: 6px 8px; }
+      .tm-wl-link { text-decoration: none; --mdc-icon-size: 13px; margin-inline-start: 4px; }
+      .tm-wl-cell { display: flex; align-items: center; gap: 10px; }
+      .tm-wl-progress { min-width: 180px; }
+      .tm-wl-acts { display: flex; align-items: center; justify-content: flex-end; gap: 6px; white-space: nowrap; }
+      .tm-wl-acts .tm-btn { --mdc-icon-size: 16px; }
+      .tm-wl-gold { color: var(--tm-gold); font-weight: 700; }
+      .tm-wl-quick { margin: -6px 0 14px; }
+      .tm-wl-split {
+        height: 12px; border-radius: 6px; overflow: hidden; display: flex; margin-bottom: 4px;
+        background: var(--tm-surface-2); border: 1px solid var(--tm-border);
+      }
+      .tm-wl-split-lg { height: 16px; margin-top: 4px; }
+      .tm-wl-split i { display: block; height: 100%; }
+      .tm-wl-me { background: #e91e63; }
+      .tm-wl-fam { background: repeating-linear-gradient(135deg, #f1c40f 0 6px, #f39c12 6px 12px); }
+      .tm-wl-new { background: var(--tm-text); opacity: .35; }
+      @media (max-width: 700px) {
+        .tm-wl-appr { flex-wrap: wrap; }
+        .tm-wl-progress { min-width: 120px; }
+      }
+
+      /* ===== Admin panel layout (#966) ===== */
+      .tm-sr {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+      }
+      button.tm-nav-head {
+        display: flex; align-items: center; gap: 4px;
+        width: 100%; background: none; border: 0; cursor: pointer;
+        font-family: inherit; text-align: start;
+        border-radius: 6px;
+      }
+      button.tm-nav-head:hover { color: var(--tm-text); }
+      .tm-nav-chev { --mdc-icon-size: 14px; transition: transform 0.15s var(--tm-easing); }
+      .tm-nav-head[aria-expanded="false"] .tm-nav-chev { transform: rotate(-90deg); }
+      .tm-nav-group:first-child { margin-bottom: 10px; }
+      .tm-rail-btn {
+        flex-shrink: 0; width: 28px; height: 28px; border-radius: 7px;
+        display: grid; place-items: center; cursor: pointer;
+        background: none; border: 0; color: var(--tm-text-faint);
+      }
+      .tm-rail-btn:hover { background: var(--tm-surface-2); color: var(--tm-text); }
+      .tm-rail-btn ha-icon { --mdc-icon-size: 18px; }
+
+      /* Icon-only sidebar */
+      .tm-shell.tm-shell-rail { grid-template-columns: 64px 1fr; }
+      .tm-shell-rail .tm-brand { flex-direction: column; padding: 12px 0; gap: 8px; }
+      .tm-shell-rail .tm-brand-text, .tm-shell-rail .tm-brand-wiki,
+      .tm-shell-rail .tm-nav-label, .tm-shell-rail .tm-nav-chev,
+      .tm-shell-rail .tm-nav-head span { display: none; }
+      .tm-shell-rail .tm-nav-head {
+        height: 1px; padding: 0; margin: 10px 8px; background: var(--tm-border);
+        pointer-events: none;
+      }
+      .tm-shell-rail .tm-nav-item { justify-content: center; padding: 9px 0; }
+      .tm-shell-rail .tm-nav-icon, .tm-shell-rail .tm-nav-icon ha-icon { --mdc-icon-size: 20px; width: 20px; height: 20px; }
+      .tm-shell-rail .tm-nav-badge { display: none; }
+      .tm-shell-rail .tm-nav-badge-urgent {
+        display: block; position: absolute; top: 2px; inset-inline-end: 6px;
+        padding: 0 5px; font-size: 10px; line-height: 16px;
+      }
+
+      /* Topbar controls */
+      .tm-topbar .tm-crumbs { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
+      .tm-search-btn {
+        flex: 1 1 auto; max-width: 420px; margin: 0 auto;
+        display: flex; align-items: center; gap: 8px;
+        height: 36px; padding: 0 10px;
+        border-radius: 10px; border: 1px solid var(--tm-border);
+        background: var(--tm-bg); color: var(--tm-text-faint);
+        font-family: inherit; font-size: 13px; cursor: text; text-align: start;
+      }
+      .tm-search-btn:hover { border-color: var(--tm-accent-border); }
+      .tm-search-btn ha-icon { --mdc-icon-size: 18px; flex-shrink: 0; }
+      .tm-search-btn-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tm-topbar kbd, .tm-pal kbd {
+        font-family: inherit; font-size: 11px; line-height: 1.6;
+        padding: 0 6px; border-radius: 5px;
+        border: 1px solid var(--tm-border); background: var(--tm-surface-2); color: var(--tm-text-muted);
+      }
+      .tm-scope {
+        display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+        padding: 3px; border-radius: 999px;
+        background: var(--tm-bg); border: 1px solid var(--tm-border);
+      }
+      .tm-scope-btn {
+        display: inline-flex; align-items: center; gap: 6px;
+        min-height: 30px; padding-block: 0; padding-inline: 3px 10px; border-radius: 999px;
+        background: none; border: 0; cursor: pointer;
+        font-family: inherit; font-size: 12.5px; color: var(--tm-text-muted);
+      }
+      .tm-scope-all { padding: 0 12px; }
+      .tm-scope-btn:hover { color: var(--tm-text); background: var(--tm-surface-2); }
+      .tm-scope-on { background: var(--tm-accent-soft); color: var(--tm-accent-text); font-weight: 600; }
+      .tm-av {
+        width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+        display: grid; place-items: center;
+        background: color-mix(in srgb, var(--kc), transparent 80%);
+        color: var(--kc); --mdc-icon-size: 16px;
+      }
+      .tm-av-sm { width: 22px; height: 22px; --mdc-icon-size: 14px; }
+      .tm-scope-on .tm-av { box-shadow: 0 0 0 2px var(--kc); }
+      @media (max-width: 1280px) {
+        .tm-scope-name { display: none; }
+        .tm-scope-btn { padding: 0 3px; }
+        .tm-scope-all { padding: 0 10px; }
+      }
+      .tm-new-wrap { position: relative; flex-shrink: 0; }
+      .tm-new-btn { display: inline-flex; align-items: center; gap: 4px; }
+      .tm-new-btn ha-icon { --mdc-icon-size: 18px; }
+      .tm-new-menu {
+        position: absolute; inset-inline-end: 0; top: calc(100% + 6px); z-index: 40;
+        min-width: 210px; padding: 6px;
+        background: var(--tm-surface-0); border: 1px solid var(--tm-border);
+        border-radius: 12px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+      }
+      .tm-new-item {
+        display: flex; align-items: center; gap: 10px; width: 100%;
+        padding: 9px 10px; border: 0; border-radius: 8px; background: none;
+        font-family: inherit; font-size: 13.5px; color: var(--tm-text);
+        cursor: pointer; text-align: start;
+      }
+      .tm-new-item:hover, .tm-new-item:focus-visible { background: var(--tm-surface-2); }
+      .tm-new-item ha-icon { --mdc-icon-size: 18px; color: var(--tm-text-muted); }
+      .tm-scope-banner {
+        display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+        padding: 8px 24px;
+        background: var(--tm-accent-soft); border-bottom: 1px solid var(--tm-accent-border);
+        font-size: 13px; color: var(--tm-text);
+      }
+      .tm-scope-banner ha-icon { --mdc-icon-size: 18px; color: var(--tm-accent-text); }
+      .tm-scope-banner span { flex: 1; }
+
+      /* Today page */
+      .tm-today-head { margin-bottom: 18px; }
+      .tm-today-head .tm-toolbar-title { margin: 0; }
+      .tm-today-needs { color: var(--tm-warning); font-weight: 600; }
+      .tm-section-title > ha-icon { --mdc-icon-size: 18px; color: var(--tm-text-muted); }
+      .tm-today-kids {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 14px; margin-bottom: 18px;
+      }
+      .tm-kid {
+        display: grid; grid-template-columns: 1fr auto; gap: 8px 6px;
+        padding: 14px; margin: 0;
+        border-top: 4px solid var(--kc);
+      }
+      .tm-kid-main {
+        display: flex; align-items: center; gap: 14px; min-width: 0;
+        background: none; border: 0; padding: 0; cursor: pointer;
+        font-family: inherit; color: inherit; text-align: start;
+      }
+      .tm-ring {
+        --p: 0; width: 54px; height: 54px; border-radius: 50%; flex-shrink: 0;
+        background: conic-gradient(var(--kc) calc(var(--p) * 1%), var(--tm-surface-3) 0);
+        display: grid; place-items: center;
+      }
+      .tm-ring > span {
+        width: 42px; height: 42px; border-radius: 50%;
+        background: var(--tm-surface-0);
+        display: grid; place-items: center;
+        font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+      }
+      .tm-kid-text { display: flex; flex-direction: column; min-width: 0; }
+      .tm-kid-name { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tm-kid-pts { font-size: 13px; color: var(--tm-text-muted); }
+      .tm-kid-pts strong { font-size: 18px; color: var(--tm-gold); margin-inline-end: 2px; }
+      .tm-kid-adj { align-self: start; }
+      .tm-kid-pills { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+      .tm-kid-pills ha-icon { --mdc-icon-size: 13px; margin-inline-end: 2px; }
+      .tm-today-cols {
+        display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+        gap: 18px; align-items: start;
+      }
+      .tm-today-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+      .tm-today-col > .tm-card { margin: 0; }
+      .tm-today-clear { display: flex; align-items: center; gap: 8px; }
+      /* A long queue scrolls inside its card so the chore board stays in reach. */
+      .tm-today-col .tm-approval-list { max-height: 440px; overflow-y: auto; overscroll-behavior: contain; }
+      .tm-today-clear ha-icon { color: var(--tm-positive); --mdc-icon-size: 18px; }
+      .tm-today-quick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .tm-today-quick .tm-btn { justify-content: flex-start; gap: 8px; }
+      .tm-today-quick ha-icon { --mdc-icon-size: 18px; }
+      .tm-seg {
+        margin-inline-start: auto; display: inline-flex; padding: 2px; gap: 2px;
+        border-radius: 8px; background: var(--tm-surface-2);
+      }
+      .tm-seg button {
+        border: 0; background: none; cursor: pointer; font-family: inherit;
+        font-size: 12.5px; font-weight: 500; color: var(--tm-text-muted);
+        padding: 4px 10px; border-radius: 6px;
+      }
+      .tm-seg .tm-seg-on { background: var(--tm-surface-0); color: var(--tm-text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+
+      /* Chore board */
+      .tm-board-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+      .tm-board {
+        display: grid; grid-template-columns: 120px repeat(var(--cols), minmax(140px, 1fr));
+        font-size: 13px;
+      }
+      .tm-board > div { padding: 8px 10px; border-bottom: 1px solid var(--tm-border-soft); min-width: 0; }
+      .tm-board-h { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12.5px; }
+      .tm-board-h span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tm-board-slot { display: flex; align-items: center; gap: 6px; color: var(--tm-text-muted); font-size: 12.5px; }
+      .tm-board-slot ha-icon { --mdc-icon-size: 16px; flex-shrink: 0; }
+      .tm-board-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+      .tm-board-none { color: var(--tm-text-vfaint); }
+      .tm-bchip {
+        display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+        background: none; border: 0; padding: 3px 4px; margin-inline-start: -4px;
+        border-radius: 6px; cursor: pointer;
+        font-family: inherit; font-size: 12.5px; color: var(--tm-text); text-align: start;
+      }
+      button.tm-bchip:hover { background: var(--tm-surface-2); }
+      .tm-bchip > span:not(.tm-sr) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tm-bchip small { color: var(--tm-text-faint); }
+      .tm-bdot {
+        width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+        border: 2px solid var(--tm-text-faint); box-sizing: border-box;
+      }
+      .tm-bchip-done .tm-bdot { background: var(--tm-positive); border-color: var(--tm-positive); }
+      .tm-bchip-done > span:not(.tm-sr) { color: var(--tm-text-faint); text-decoration: line-through; }
+      .tm-bchip-pending .tm-bdot { border-color: var(--tm-warning); background: var(--tm-warning-soft); }
+      .tm-bchip-missed .tm-bdot { border-color: var(--tm-danger); }
+      .tm-bchip-missed > span:not(.tm-sr) { color: var(--tm-danger); }
+      .tm-board-legend {
+        display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px;
+        font-size: 12px; color: var(--tm-text-muted);
+      }
+      .tm-board-legend .tm-bchip { cursor: default; font-size: 12px; color: var(--tm-text-muted); text-decoration: none; }
+      .tm-board-legend .tm-bchip-done { text-decoration: none; }
+
+      /* Week view */
+      .tm-week {
+        display: grid; grid-template-columns: 110px repeat(var(--days), minmax(38px, 1fr));
+        gap: 6px; align-items: center; font-size: 12px;
+      }
+      .tm-week-h { text-align: center; color: var(--tm-text-muted); font-weight: 500; }
+      .tm-week-kid { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
+      .tm-week-kid span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tm-week-cell {
+        height: 32px; border-radius: 7px;
+        display: grid; place-items: center;
+        font-weight: 600; font-variant-numeric: tabular-nums;
+        background: color-mix(in srgb, var(--kc) calc(15% + var(--p) * 0.7%), var(--tm-surface-2));
+        color: var(--tm-text);
+      }
+      .tm-week-none { background: var(--tm-surface-2); color: var(--tm-text-vfaint); font-weight: 400; }
+      .tm-week-hint { margin: 10px 0 0; }
+
+      /* Command search */
+      .tm-pal-scrim {
+        position: fixed; inset: 0; z-index: 60;
+        background: rgba(0, 0, 0, 0.45);
+        display: flex; align-items: flex-start; justify-content: center;
+        padding: 10vh 12px 12px;
+      }
+      .tm-pal {
+        width: 600px; max-width: 100%; max-height: 72vh;
+        display: flex; flex-direction: column;
+        background: var(--tm-surface-0); color: var(--tm-text);
+        border: 1px solid var(--tm-border); border-radius: 14px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4); overflow: hidden;
+      }
+      .tm-pal-head {
+        display: flex; align-items: center; gap: 10px;
+        padding: 12px 16px; border-bottom: 1px solid var(--tm-border);
+      }
+      .tm-pal-head ha-icon { --mdc-icon-size: 20px; color: var(--tm-text-muted); }
+      .tm-pal-input {
+        flex: 1; min-width: 0; border: 0; outline: 0; background: none;
+        font-family: inherit; font-size: 16px; color: var(--tm-text);
+      }
+      .tm-pal-list { overflow-y: auto; padding: 4px 0 8px; }
+      .tm-pal-group {
+        padding: 10px 16px 4px; font-size: 11px; font-weight: 600;
+        letter-spacing: 0.06em; text-transform: uppercase; color: var(--tm-text-faint);
+      }
+      .tm-pal-item {
+        display: flex; align-items: center; gap: 12px; width: 100%;
+        padding: 8px 16px; border: 0; background: none; cursor: pointer;
+        font-family: inherit; font-size: 14px; color: var(--tm-text); text-align: start;
+      }
+      .tm-pal-item ha-icon { --mdc-icon-size: 18px; color: var(--tm-text-muted); flex-shrink: 0; }
+      .tm-pal-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tm-pal-item:hover, .tm-pal-hi { background: var(--tm-accent-soft); }
+      .tm-pal-hi ha-icon { color: var(--tm-accent-text); }
+      .tm-pal-empty { padding: 20px 16px; color: var(--tm-text-muted); }
+      .tm-pal-foot {
+        padding: 8px 16px; border-top: 1px solid var(--tm-border);
+        font-size: 12px; color: var(--tm-text-faint);
+      }
+
+      /* Phone bottom bar (shown in the narrow block below) */
+      .tm-bnav { display: none; }
+
+      @media (max-width: 1100px) {
+        .tm-today-cols { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 900px) {
+        .tm-shell.tm-shell-rail { grid-template-columns: 1fr; }
+        .tm-search-btn { flex: 0 0 auto; width: 38px; height: 38px; margin-block: 0; margin-inline: auto 0; padding: 0; justify-content: center; border: 0; background: none; color: var(--tm-text-muted); }
+        .tm-search-btn-text, .tm-search-btn kbd, .tm-new-text { display: none; }
+        .tm-approval-pill { display: none; }
+        .tm-new-btn { width: 38px; height: 38px; padding: 0; justify-content: center; border-radius: 10px; }
+        .tm-new-btn ha-icon { --mdc-icon-size: 22px; }
+        .tm-today-col .tm-approval-list { max-height: 60vh; }
+        /* Clear the bottom bar. */
+        .tm-toast { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+        .tm-scope-banner { padding: 8px 12px; }
+        .tm-today-kids {
+          grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(240px, 80%);
+          overflow-x: auto; scroll-snap-type: x mandatory; scroll-padding-inline: 16px;
+          margin: 0 -16px 16px; padding: 0 16px 4px;
+        }
+        .tm-kid { scroll-snap-align: start; }
+        .tm-board { grid-template-columns: 92px repeat(var(--cols), minmax(120px, 1fr)); }
+        .tm-bnav {
+          display: grid; grid-template-columns: repeat(5, 1fr); flex-shrink: 0;
+          background: var(--tm-surface-0); border-top: 1px solid var(--tm-border);
+          padding-bottom: env(safe-area-inset-bottom, 0);
+        }
+        .tm-bnav-item {
+          position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+          gap: 2px; min-height: 56px; border: 0; background: none; cursor: pointer;
+          font-family: inherit; font-size: 11px; color: var(--tm-text-muted);
+        }
+        .tm-bnav-item ha-icon { --mdc-icon-size: 22px; }
+        .tm-bnav-on { color: var(--tm-accent-text); }
+        .tm-bnav-dot {
+          position: absolute; top: 6px; inset-inline-start: calc(50% + 6px);
+          min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+          background: var(--tm-warning); color: #fff;
+          font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+        }
+      }
+      @media (max-width: 480px) {
+        .tm-scope { max-width: 46vw; overflow-x: auto; }
+        .tm-today-quick { grid-template-columns: 1fr; }
       }
     </style>`;
   }

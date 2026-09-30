@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 
 from homeassistant.util import dt as dt_util
 
-from .models import PointsTransaction, PoolAllocation, Reward, RewardClaim
+from .coord_rejections import clean_reject_reason
+from .models import Child, PointsTransaction, PoolAllocation, Reward, RewardClaim
 from .timewindow import has_window, is_within_window
 
 if TYPE_CHECKING:
@@ -52,18 +53,40 @@ class RewardsMixin:
         return self.storage.get_reward(reward_id)
 
     def is_pool_mode_claim(self, claim: RewardClaim) -> bool:
-        """True if the claim is covered by pool allocations (points already deducted).
+        """True if the claim is funded from the pool rather than a wallet.
 
-        Pool-mode claims must NOT be counted against a child's spendable balance,
-        because their cost was already removed from child.points at allocation time.
+        Pool-funded claims must NOT be counted against a child's spendable
+        balance, because their cost was already removed from child.points at
+        allocation time. A jackpot is always pool-funded (#552), even if the
+        pool has since dipped below the cost — it is still not the claimer's
+        wallet that is on the hook for it.
         """
+        # A wishlist redemption (#932) is paid from the wish's own savings,
+        # which left the child's balance when they were moved in.
+        if getattr(claim, "wish_id", ""):
+            return True
         reward = self.get_reward(claim.reward_id)
         if not reward:
             return False
         if getattr(reward, "is_jackpot", False):
-            return self.storage.get_total_allocated_for_reward(claim.reward_id) >= reward.cost
+            return True
         alloc = self.storage.get_pool_allocation(claim.child_id, claim.reward_id)
         return bool(alloc and alloc.allocated_points >= reward.cost)
+
+    def _require_funded_jackpot(self, reward: Reward, cost: int) -> None:
+        """Raise unless the shared pool covers a jackpot's cost.
+
+        Jackpots are funded from one shared pool and never from a wallet
+        (#552). The pool can fall short of a pending claim — the cost is
+        raised, a contributor is unassigned, a child is deleted — and without
+        this guard the fallback path charged the full jackpot to whichever
+        child happened to be holding the claim.
+        """
+        pool_total = self.storage.get_total_allocated_for_reward(reward.id)
+        if pool_total < cost:
+            raise ValueError(
+                f"'{reward.name}' is a shared jackpot and its pool is not full. Need {cost}, have {pool_total} saved up"
+            )
 
     async def async_add_reward(
         self,
@@ -76,8 +99,9 @@ class RewardsMixin:
         pool_enabled: bool = False,
         quantity: int | None = None,
         expires_at: str | None = None,
+        refresh: bool = True,
     ) -> Reward:
-        """Add a new reward."""
+        """Add a new reward. ``refresh=False`` defers the refresh to a batch."""
         reward = Reward(
             name=name,
             cost=cost,
@@ -91,7 +115,8 @@ class RewardsMixin:
         )
         self.storage.add_reward(reward)
         await self.storage.async_save()
-        await self.async_refresh()
+        if refresh:
+            await self.async_refresh()
         return reward
 
     async def async_update_reward(self, reward: Reward) -> None:
@@ -102,12 +127,25 @@ class RewardsMixin:
         can't appear as e.g. 11/10. If the edit makes the reward unavailable
         (quantity set to 0, or expires_at moved into the past) any pool
         allocations on that reward are refunded in full.
+
+        An edit can also take the savings jar itself away: switching a reward
+        between jackpot and ordinary, turning pool mode off, or dropping a
+        child from ``assigned_to``. Allocations are locked with no withdraw
+        operation, so anything left behind by those edits is a child's points
+        stranded for good — they are refunded, and any pending claim the edit
+        has invalidated is cancelled with it.
         """
         old = self.get_reward(reward.id)
+        # A streak freeze is bought by one child for themselves (#925).
+        if getattr(reward, "streak_freeze", False):
+            reward.is_jackpot = False
         # Jackpots are always pool-mode (#552); keep stored data consistent.
         if reward.is_jackpot:
             reward.pool_enabled = True
+        if old and reward.cost != old.cost:
+            self._freeze_unrecorded_prices(old)
         self.storage.update_reward(reward)
+        cancelled_claim_ids = self._settle_pool_after_edit(old, reward) if old else []
         if old and reward.cost < old.cost:
             self._refund_pool_excess(reward, "Pool refund (reward cost reduced)")
         became_unavailable = (
@@ -120,6 +158,63 @@ class RewardsMixin:
             self._refund_all_pool_allocations(reward, reason)
         await self.storage.async_save()
         await self.async_refresh()
+
+        # Dismiss the approval pushes for claims this edit just cancelled.
+        if cancelled_claim_ids and getattr(self, "notifications", None):
+            for claim_id in cancelled_claim_ids:
+                await self.notifications.clear_approval("pending_reward_claim", claim_id)
+
+    def _settle_pool_after_edit(self, old: Reward, reward: Reward) -> list[str]:
+        """Refund savings and cancel claims an edit has just invalidated.
+
+        Returns the ids of the cancelled claims so the caller can clear their
+        approval notifications once the change is saved.
+        """
+        # Funding changed: the shared jar became per-child jars, or the other
+        # way round, or pool mode was switched off altogether. Whatever is in
+        # the pool was saved towards something that no longer exists.
+        funding_changed = reward.is_jackpot != old.is_jackpot or (old.pool_enabled and not reward.pool_enabled)
+        if funding_changed:
+            self._refund_all_pool_allocations(reward, "Pool refund (reward funding changed)")
+        else:
+            # Narrowed assignment: a child who can no longer be given this
+            # reward can no longer redeem what they saved towards it either.
+            for alloc in list(self.storage.get_pool_allocations()):
+                if alloc.reward_id == reward.id and not self._reward_is_for_child(reward, alloc.child_id):
+                    self._apply_pool_refund(
+                        alloc, alloc.allocated_points, reward, "Pool refund (reward assignment changed)"
+                    )
+
+        cancelled: list[str] = []
+        for claim in self.storage.get_reward_claims():
+            if claim.reward_id != reward.id or claim.approved:
+                continue
+            # A pool-funded claim whose pool has just been refunded would fall
+            # through to the claimer's wallet on approval, and an unassigned
+            # child's claim should not be approvable at all.
+            if funding_changed or not self._reward_is_for_child(reward, claim.child_id):
+                self.storage.remove_reward_claim(claim.id)
+                cancelled.append(claim.id)
+        if cancelled:
+            _LOGGER.info(
+                "Cancelled %d pending claim(s) for '%s' — the edit changed how it is funded or who it is for",
+                len(cancelled),
+                reward.name,
+            )
+        return cancelled
+
+    def _freeze_unrecorded_prices(self, old: Reward) -> None:
+        """Stamp the current price onto approved claims that never recorded one.
+
+        Claims approved before the price was stored alongside them have no
+        record of what was paid, so history reads the reward's live cost. This
+        is the last moment that cost is still the one those purchases were
+        approved at, so it is written down before the edit lands.
+        """
+        for claim in self.storage.get_reward_claims():
+            if claim.reward_id == old.id and claim.approved and claim.approved_cost is None:
+                claim.approved_cost = old.cost
+                self.storage.update_reward_claim(claim)
 
     async def async_remove_reward(self, reward_id: str) -> None:
         """Remove a reward and clean up any pending claims and pool allocations referencing it."""
@@ -253,14 +348,34 @@ class RewardsMixin:
             )
         )
 
-    async def async_claim_reward(self, reward_id: str, child_id: str) -> RewardClaim:
-        """Child claims a reward — creates a pending claim awaiting parent approval.
+    def reward_claim_funding(self, reward: Reward, child_id: str) -> int:
+        """What is available to pay for this reward, from whichever purse applies.
 
-        Two modes are supported:
-          * Wallet mode (default): requires child.points (minus committed) to cover cost
-          * Pool mode: if pool allocations exist for this (child, reward) and they fill the
-            reward's cost, the claim is a "redeem" — no wallet check needed. For jackpot
-            rewards the pool total across all contributing children must reach the cost.
+        A jackpot is paid from the shared pool, an ordinary reward from either
+        a filled savings jar or the child's uncommitted balance — so "can they
+        afford it" cannot be answered from the wallet alone.
+        """
+        if reward.is_jackpot:
+            return self.storage.get_total_allocated_for_reward(reward.id)
+        child = self.get_child(child_id)
+        if not child:
+            return 0
+        committed = 0
+        for claim in self.storage.get_pending_reward_claims():
+            if claim.child_id == child_id and not self.is_pool_mode_claim(claim):
+                pending_reward = self.get_reward(claim.reward_id)
+                if pending_reward:
+                    committed += pending_reward.cost
+        wallet = child.points - committed
+        allocation = self.storage.get_pool_allocation(child_id, reward.id)
+        return max(wallet, allocation.allocated_points) if allocation else wallet
+
+    def validate_reward_claim(self, reward_id: str, child_id: str) -> tuple[Reward, Child]:
+        """Check a claim is allowed, raising ValueError with the reason if not.
+
+        Every rule that decides whether a child may claim right now lives here,
+        so the claim itself and anything that offers it — the per-reward button
+        entity, for one — cannot drift apart. Mutates nothing.
         """
         reward = self.get_reward(reward_id)
         if not reward:
@@ -283,9 +398,21 @@ class RewardsMixin:
         # reward can never fail it, so without these two guards a child can
         # queue unlimited claims — each one a stored record plus a push to
         # every parent.
-        own_pending = [c for c in self.storage.get_pending_reward_claims() if c.child_id == child_id]
-        if any(c.reward_id == reward_id for c in own_pending):
+        pending = self.storage.get_pending_reward_claims()
+        own_pending = [c for c in pending if c.child_id == child_id]
+        # A jackpot is funded from one shared pool, so it is redeemed once per
+        # funding cycle: a queued claim owns that pool whoever made it. Without
+        # this, a second child's claim is approved after the pool is already
+        # spent, falls through to wallet mode, and charges them the full cost
+        # all over again (#873).
+        if reward.is_jackpot:
+            blocking = [c for c in pending if c.reward_id == reward_id]
+        else:
+            blocking = [c for c in own_pending if c.reward_id == reward_id]
+        if blocking:
             raise ValueError(f"A claim for '{reward.name}' is already waiting for approval")
+        if getattr(reward, "streak_freeze", False):
+            self._require_streak_freeze_room(child, pending_claims=pending)
         if len(own_pending) >= _MAX_PENDING_CLAIMS_PER_CHILD:
             raise ValueError("Too many reward claims are already waiting for approval")
 
@@ -296,9 +423,10 @@ class RewardsMixin:
         # or for jackpots the summed pool across all children reaches cost.
         pool_filled = False
         if reward.is_jackpot:
-            pool_total = self.storage.get_total_allocated_for_reward(reward_id)
-            if pool_total >= effective_cost:
-                pool_filled = True
+            # A short pool is the end of it: a jackpot is never redeemed out of
+            # one child's wallet, however many points they happen to have.
+            self._require_funded_jackpot(reward, effective_cost)
+            pool_filled = True
         else:
             allocation = self.storage.get_pool_allocation(child_id, reward_id)
             if allocation and allocation.allocated_points >= effective_cost:
@@ -319,6 +447,40 @@ class RewardsMixin:
 
             if available_points < effective_cost:
                 raise ValueError(f"Not enough points. Need {effective_cost}, have {available_points} available")
+
+        return reward, child
+
+    def _require_streak_freeze_room(self, child: Child, pending_claims: list | None = None) -> None:
+        """Refuse a streak-freeze purchase the child could not hold (#925).
+
+        Counts tokens already held plus streak-freeze claims still waiting for
+        approval, so a queue of claims can't push the child past the cap.
+        Pass ``pending_claims=None`` at approval time: the claim being approved
+        is itself pending, and only the tokens actually held matter then.
+        """
+        cap = self.streak_freeze_max()
+        if cap <= 0:
+            raise ValueError("Streak freezes are turned off")
+        queued = 0
+        for claim in pending_claims or []:
+            if claim.child_id != child.id:
+                continue
+            queued_reward = self.get_reward(claim.reward_id)
+            if queued_reward and getattr(queued_reward, "streak_freeze", False):
+                queued += 1
+        if (child.streak_freezes or 0) + queued >= cap:
+            raise ValueError(f"{child.name} already has the maximum of {cap} streak freezes")
+
+    async def async_claim_reward(self, reward_id: str, child_id: str) -> RewardClaim:
+        """Child claims a reward — creates a pending claim awaiting parent approval.
+
+        Two modes are supported:
+          * Wallet mode (default): requires child.points (minus committed) to cover cost
+          * Pool mode: if pool allocations exist for this (child, reward) and they fill the
+            reward's cost, the claim is a "redeem" — no wallet check needed. For jackpot
+            rewards the pool total across all contributing children must reach the cost.
+        """
+        reward, child = self.validate_reward_claim(reward_id, child_id)
 
         claim = RewardClaim(
             reward_id=reward_id,
@@ -368,7 +530,8 @@ class RewardsMixin:
                 continue
             when = claim.approved_at or claim.claimed_at
             if when and dt_util.as_local(when).date() >= start:
-                total += reward_cost.get(claim.reward_id, 0)
+                paid = claim.approved_cost
+                total += paid if paid is not None else reward_cost.get(claim.reward_id, 0)
         return total
 
     def _enforce_spend_cap(self, child_id: str, cost: int) -> None:
@@ -393,6 +556,11 @@ class RewardsMixin:
         wallet-mode path deducts directly from child.points.
         """
         claims = self.storage.get_reward_claims()
+        # A funded wish's claim (#932) has no Reward behind it.
+        wish_claim = next((c for c in claims if c.id == claim_id and c.wish_id and not c.approved), None)
+        if wish_claim is not None:
+            await self._async_approve_wish_claim(wish_claim)
+            return
         for claim in claims:
             if claim.id == claim_id:
                 if claim.approved:
@@ -421,14 +589,21 @@ class RewardsMixin:
 
                 # Spending cap: block approval if it would exceed the per-period budget.
                 self._enforce_spend_cap(claim.child_id, effective_cost)
+                # A streak freeze can't be handed over past the cap, whatever
+                # has happened since the claim was made (#925).
+                if getattr(reward, "streak_freeze", False):
+                    self._require_streak_freeze_room(child)
 
                 # Detect pool mode: either a direct allocation, or a filled jackpot pool.
                 pool_alloc = self.storage.get_pool_allocation(claim.child_id, claim.reward_id)
                 is_pool_mode = False
                 if reward.is_jackpot:
-                    pool_total = self.storage.get_total_allocated_for_reward(claim.reward_id)
-                    if pool_total >= effective_cost:
-                        is_pool_mode = True
+                    # The pool can have drained since the claim was made, and
+                    # the wallet path below is not an acceptable fallback for a
+                    # shared reward — it would charge the whole jackpot to the
+                    # one child holding the claim.
+                    self._require_funded_jackpot(reward, effective_cost)
+                    is_pool_mode = True
                 elif pool_alloc and pool_alloc.allocated_points >= effective_cost:
                     is_pool_mode = True
 
@@ -463,15 +638,40 @@ class RewardsMixin:
                         # still have earmarked for this reward's pool.
                         self._refund_all_pool_allocations(reward, "Pool refund (reward sold out)")
 
+                if getattr(reward, "streak_freeze", False):
+                    child.streak_freezes = (child.streak_freezes or 0) + 1
+                    self.storage.update_child(child)
+
                 claim.approved = True
                 claim.approved_at = dt_util.now()
+                claim.approved_cost = effective_cost
                 self.storage.update_reward_claim(claim)
+
+                # One pool, one redemption. Claims stored before a jackpot was
+                # limited to a single pending claim (#873) can still be sitting
+                # in the queue; the pool that would have paid for them has just
+                # been spent, so approving one of those later would fall
+                # through to its claimer's wallet. Retire them with the pool.
+                superseded = []
+                if reward.is_jackpot:
+                    superseded = [c for c in claims if c.id != claim.id and c.reward_id == reward.id and not c.approved]
+                    for other in superseded:
+                        self.storage.remove_reward_claim(other.id)
+                    if superseded:
+                        _LOGGER.info(
+                            "Retired %d duplicate pending claim(s) for jackpot '%s' on redemption",
+                            len(superseded),
+                            reward.name,
+                        )
+
                 await self.storage.async_save()
                 await self.async_refresh()
 
                 # Dismiss the mobile approval push now this claim is reviewed.
                 if getattr(self, "notifications", None):
                     await self.notifications.clear_approval("pending_reward_claim", claim_id)
+                    for other in superseded:
+                        await self.notifications.clear_approval("pending_reward_claim", other.id)
 
                 # Timed unlock (#678): allowlisted entity on, auto-off later.
                 await self.async_start_unlock(reward, child)
@@ -495,14 +695,34 @@ class RewardsMixin:
                 return
         _LOGGER.warning("Reward claim %s not found for approval", claim_id)
 
-    async def async_reject_reward(self, claim_id: str) -> None:
-        """Reject a reward claim — no refund needed as points were never deducted."""
+    async def async_reject_reward(self, claim_id: str, reason: str = "") -> None:
+        """Reject a *pending* reward claim — no refund needed as points were never deducted.
+
+        That "no refund needed" only holds while the claim is pending. Two
+        parents can review the same claim at once — one in the panel, one from
+        a mobile approval push — and the second one is acting on a list that no
+        longer matches storage. Deleting an approved claim there would erase
+        the purchase from history while its points, its stock and any timed
+        unlock stayed spent, so the stale review is refused instead.
+
+        ``reason`` (#976) is the parent's optional "why", shown to the child.
+        """
+        reason = clean_reject_reason(reason)
         claim = next((c for c in self.storage.get_reward_claims() if c.id == claim_id), None)
+        if claim is not None and claim.approved:
+            reward = self.get_reward(claim.reward_id)
+            name = reward.name if reward else "This reward"
+            raise ValueError(f"'{name}' has already been approved and can no longer be rejected")
+        if claim is not None and claim.wish_id:
+            await self._async_reject_wish_claim(claim, reason)
+            return
         self.storage.remove_reward_claim(claim_id)
+        reward = self.get_reward(claim.reward_id) if claim else None
+        if claim:
+            self._record_rejection("reward", claim.child_id, claim.reward_id, getattr(reward, "name", ""), reason)
         await self.storage.async_save()
         await self.async_refresh()
         if claim:
-            reward = self.get_reward(claim.reward_id)
             child = self.get_child(claim.child_id)
             self.hass.bus.async_fire(
                 "taskmate_reward_rejected",
@@ -512,12 +732,14 @@ class RewardsMixin:
                     "reward_id": claim.reward_id,
                     "reward_name": getattr(reward, "name", ""),
                     "claim_id": claim.id,
+                    "reason": reason,
                     "timestamp": dt_util.now().isoformat(),
                 },
             )
             # Dismiss the mobile approval push for this reviewed claim.
             if getattr(self, "notifications", None):
                 await self.notifications.clear_approval("pending_reward_claim", claim_id)
+            await self._async_notify_rejected("reward", child, getattr(reward, "name", ""), reason)
 
     async def async_allocate_points_to_pool(self, child_id: str, reward_id: str, points: int) -> PoolAllocation:
         """Move `points` from a child's spendable balance into a reward pool.

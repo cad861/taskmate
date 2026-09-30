@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.util import dt as dt_util
 
+from .chore_undo import undo_window_seconds
 from .models import ChoreCompletion, TimedSession
 
 if TYPE_CHECKING:
@@ -128,7 +129,10 @@ class TimedMixin:
             completed_at=now,
             approved=not chore.requires_approval,
             points_awarded=pts if not chore.requires_approval else 0,
+            submitted_points=pts,
             timed_duration_seconds=total_seconds,
+            # The child's own stopped session: theirs to undo in the window (#918).
+            child_undo_allowed=undo_window_seconds(self.storage) > 0,
         )
 
         if not chore.requires_approval:
@@ -167,12 +171,16 @@ class TimedMixin:
         assigned = getattr(chore, "assigned_to", []) or []
         if assigned and child_id not in assigned:
             return False
+        # Calendar moves/removals (#977) outrank the weekday list for today.
+        today = dt_util.as_local(dt_util.now()).date()
+        override = self.occurrence_override(chore, today)
+        if override is False:
+            return False
         if getattr(chore, "schedule_mode", "specific_days") == "specific_days":
             due_days = getattr(chore, "due_days", []) or []
             if due_days:
-                today = dt_util.as_local(dt_util.now()).date()
                 dow = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")[today.weekday()]
-                if dow not in due_days:
+                if dow not in due_days and override is not True:
                     return False
         return True
 
@@ -251,6 +259,7 @@ class TimedMixin:
                     completed_at=dt_util.now(),
                     approved=not chore.requires_approval,
                     points_awarded=pts if not chore.requires_approval else 0,
+                    submitted_points=pts,
                     timed_duration_seconds=total_seconds,
                 )
                 if not chore.requires_approval:

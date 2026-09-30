@@ -28,7 +28,7 @@ async def test_fire_skips_when_master_disabled(coord, hass):
     hass.services.async_call.assert_not_called()
     bus_fire.assert_called_once()
     args = bus_fire.call_args[0]
-    assert args[0] == "taskmate_badge_earned"
+    assert args[0] == "taskmate_badge_earned_notification"
     assert args[1]["recipients"] == []
 
 
@@ -83,7 +83,7 @@ async def test_fire_emits_bus_event_with_recipients(coord, hass):
 
     bus_fire.assert_called_once()
     name, payload = bus_fire.call_args[0]
-    assert name == "taskmate_badge_earned"
+    assert name == "taskmate_badge_earned_notification"
     assert p.id in payload["recipients"]
 
 
@@ -127,7 +127,11 @@ async def test_pending_chore_approval_dispatches_actionable(coord, hass):
     assert len(notify_calls) == 1
     data = notify_calls[0][0][2]["data"]
     assert {"action": "TASKMATE_APPROVE_completion-123", "title": "Approve"} in data["actions"]
-    assert {"action": "TASKMATE_REJECT_completion-123", "title": "Reject"} in data["actions"]
+    # Reject keeps its id and asks for a reason in a reply box (#976).
+    reject = next(a for a in data["actions"] if a["action"] == "TASKMATE_REJECT_completion-123")
+    assert reject["title"] == "Reject"
+    assert reject["behavior"] == "textInput"
+    assert reject["textInputPlaceholder"]
 
 
 @pytest.mark.asyncio

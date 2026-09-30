@@ -85,3 +85,17 @@ def test_serve_view_sets_sniffing_protections():
 
 def test_upload_bounds_the_form_part_scan():
     assert "parts_scanned > 16" in SRC
+
+
+def test_upload_returns_a_signed_url():
+    """The editor shows the returned URL in an <img>, which can't send the HA
+    bearer token: a bare URL 401s and HA logs a failed login (#970). The save
+    path strips the signature again (normalize_taskmate_image_url, #827)."""
+    post = SRC[SRC.index("async def post(") : SRC.index("class TaskMateImageServeView")]
+    returned = post[post.rindex("return self.json(") :]
+    assert "images.sign_image_url(self.hass" in returned, "the upload must hand back a signed URL"
+
+
+def test_a_signed_upload_url_is_stored_bare():
+    signed = f"{images.URL_PREFIX}/{'a' * 32}.jpg?authSig=eyJ0eXAi.x.y"
+    assert images.normalize_taskmate_image_url(signed) == f"{images.URL_PREFIX}/{'a' * 32}.jpg"

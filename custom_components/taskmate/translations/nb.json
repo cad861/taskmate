@@ -15,6 +15,9 @@
     },
     "abort": {
       "already_configured": "TaskMate er allerede konfigurert"
+    },
+    "create_entry": {
+      "default": "TaskMate er klar. [Åpne TaskMate-panelet](/taskmate-admin) for å legge til barna dine med oppsettveiviseren, som foreslår oppgaver etter alderen deres."
     }
   },
   "selector": {
@@ -139,6 +142,14 @@
         "child_id": {
           "name": "Barn-ID",
           "description": "ID-en til barnet som fullfører oppgaven"
+        },
+        "note": {
+          "name": "Notat",
+          "description": "Hva barnet gjorde, med egne ord. Påkrevd for åpne oppgaver, og vises til forelderen ved godkjenning."
+        },
+        "suggested_points": {
+          "name": "Foreslåtte poeng",
+          "description": "Hva barnet mener arbeidet var verdt. Bare et hint til forelderen som godkjenner — det gir ikke poeng i seg selv."
         }
       }
     },
@@ -167,6 +178,14 @@
         "completion_id": {
           "name": "Fullførings-ID",
           "description": "ID-en til oppgavefullføringen som skal godkjennes"
+        },
+        "points": {
+          "name": "Poeng",
+          "description": "Gi dette antallet poeng i stedet for oppgavens egen verdi. La stå tomt for å bruke oppgavens poeng."
+        },
+        "rating": {
+          "name": "Kvalitetsvurdering",
+          "description": "Valgfri vurdering på 1-3 stjerner av hvor godt oppgaven ble gjort. Når kvalitetsvurdering er slått på, skaleres poengene med stjernens multiplikator; la feltet stå tomt for å gi 100 %."
         }
       }
     },
@@ -177,6 +196,10 @@
         "completion_ids": {
           "name": "Fullførings-ID-er",
           "description": "Bestemte fullførings-ID-er som skal godkjennes; utelat for å godkjenne alle ventende"
+        },
+        "rating": {
+          "name": "Kvalitetsvurdering",
+          "description": "Valgfri vurdering på 1-3 stjerner som gjelder alle oppgaver godkjent med dette kallet (kvalitetsvurdering må være slått på)."
         }
       }
     },
@@ -187,6 +210,20 @@
         "completion_id": {
           "name": "Fullførings-ID",
           "description": "ID-en til oppgavefullføringen som skal avvises"
+        },
+        "reason": {
+          "name": "Begrunnelse",
+          "description": "Valgfri begrunnelse som vises for barnet"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Angre gjøremål",
+      "description": "La et barn ta tilbake sitt eget gjøremål — en innsending som venter, helt til en forelder har gått gjennom den, eller et automatisk godkjent gjøremål innenfor angrevinduet. Av med mindre vinduet er satt over 0 i TaskMate-innstillingene; alt en forelder har gått gjennom, må en forelder angre.",
+      "fields": {
+        "completion_id": {
+          "name": "Fullførings-ID",
+          "description": "ID-en til barnets fullførte gjøremål som skal tas tilbake"
         }
       }
     },
@@ -295,6 +332,10 @@
         "claim_id": {
           "name": "Krav-ID",
           "description": "ID-en til belønningskravet som skal avvises"
+        },
+        "reason": {
+          "name": "Begrunnelse",
+          "description": "Valgfri begrunnelse som vises for barnet"
         }
       }
     },
@@ -513,6 +554,18 @@
         "requires_approval": {
           "name": "Krever godkjenning",
           "description": "Hvis sann må en forelder godkjenne fullføringen før poeng tildeles"
+        },
+        "team_size": {
+          "name": "Lagstørrelse",
+          "description": "Gjør dette til en lagoppgave som først teller når så mange ulike barn er med. Når laget er fullt, sendes den inn for alle. 0 = en vanlig oppgave."
+        },
+        "team_points_mode": {
+          "name": "Lagpoeng",
+          "description": "Hvordan en lagoppgave betaler ut: «each» gir alle deltakerne fulle poeng, «split» deler dem likt (rundet ned)."
+        },
+        "team_bonus": {
+          "name": "Lagbonus",
+          "description": "Ekstra poeng hver deltaker får når en lagoppgave er fullført."
         }
       }
     },
@@ -601,6 +654,174 @@
         "child_id": {
           "name": "Barn-ID",
           "description": "ID-en til barnet som starter timeren"
+        }
+      }
+    },
+    "leave_team_chore": {
+      "name": "Forlat lagoppgave",
+      "description": "Ta et barn ut av en lagoppgave det ble med på i dag, før laget er fullt",
+      "fields": {
+        "chore_id": {
+          "name": "Oppgave-ID",
+          "description": "ID-en til lagoppgaven"
+        },
+        "child_id": {
+          "name": "Barn-ID",
+          "description": "ID-en til barnet som forlater laget"
+        }
+      }
+    },
+    "complete_next_chore": {
+      "name": "Fullfør neste oppgave",
+      "description": "Fullfører barnets neste utestående oppgave, i rekkefølgen barnekortet viser dem. Oppgaver som krever bilde, notat, tidtaker eller lag hoppes over. Laget for klokkeknapper og snarveier; vanlige godkjenningsregler gjelder.",
+      "fields": {
+        "child_id": {
+          "name": "Barn-ID",
+          "description": "ID-en til barnet som skal få neste oppgave fullført"
+        }
+      }
+    },
+    "post_bounty": {
+      "name": "Legg ut dusør",
+      "description": "Legg ut en engangsjobb på dusørtavlen for et fast antall poeng. Alle barn som kan, får ta den; når den er gjort, går den gjennom vanlig godkjenning.",
+      "fields": {
+        "title": {
+          "name": "Tittel",
+          "description": "Hva jobben er, f.eks. \"Vask bilen\""
+        },
+        "points": {
+          "name": "Poeng",
+          "description": "Faste poeng som betales når en forelder godkjenner den ferdige jobben"
+        },
+        "description": {
+          "name": "Beskrivelse",
+          "description": "Valgfrie detaljer til barna"
+        },
+        "icon": {
+          "name": "Ikon",
+          "description": "MDI-ikon som vises på tavlen"
+        },
+        "expires_at": {
+          "name": "Utløper",
+          "description": "Valgfri dato og tid da dusøren forsvinner fra tavlen hvis ingen har tatt den. La stå tom for ingen utløp."
+        },
+        "eligible_child_ids": {
+          "name": "Barn som kan ta den",
+          "description": "ID-ene til barna som kan ta den. Tom = alle barn."
+        },
+        "claim_hours": {
+          "name": "Reservasjon (timer)",
+          "description": "Hvor lenge en reservasjon varer før dusøren går tilbake på tavlen"
+        },
+        "require_photo": {
+          "name": "Krev bilde",
+          "description": "Barnet må legge ved et bilde når det melder jobben ferdig"
+        },
+        "notify_children": {
+          "name": "Varsle barna",
+          "description": "Send varselet \"Ny dusør\" til barna som kan ta den"
+        }
+      }
+    },
+    "update_bounty": {
+      "name": "Oppdater dusør",
+      "description": "Rediger en dusør. Når den er tatt, kan bare poeng og utløp endres.",
+      "fields": {
+        "bounty_id": {
+          "name": "Dusør-ID",
+          "description": "ID-en til dusøren som skal redigeres"
+        },
+        "title": {
+          "name": "Tittel",
+          "description": "Hva jobben er, f.eks. \"Vask bilen\""
+        },
+        "points": {
+          "name": "Poeng",
+          "description": "Faste poeng som betales når en forelder godkjenner den ferdige jobben"
+        },
+        "description": {
+          "name": "Beskrivelse",
+          "description": "Valgfrie detaljer til barna"
+        },
+        "icon": {
+          "name": "Ikon",
+          "description": "MDI-ikon som vises på tavlen"
+        },
+        "expires_at": {
+          "name": "Utløper",
+          "description": "Valgfri dato og tid da dusøren forsvinner fra tavlen hvis ingen har tatt den. La stå tom for ingen utløp."
+        },
+        "eligible_child_ids": {
+          "name": "Barn som kan ta den",
+          "description": "ID-ene til barna som kan ta den. Tom = alle barn."
+        },
+        "claim_hours": {
+          "name": "Reservasjon (timer)",
+          "description": "Hvor lenge en reservasjon varer før dusøren går tilbake på tavlen"
+        },
+        "require_photo": {
+          "name": "Krev bilde",
+          "description": "Barnet må legge ved et bilde når det melder jobben ferdig"
+        },
+        "notify_children": {
+          "name": "Varsle barna",
+          "description": "Send varselet \"Ny dusør\" til barna som kan ta den"
+        }
+      }
+    },
+    "remove_bounty": {
+      "name": "Fjern dusør",
+      "description": "Ta en dusør av tavlen. Ikke mulig mens en ferdig jobb venter på godkjenning.",
+      "fields": {
+        "bounty_id": {
+          "name": "Dusør-ID",
+          "description": "ID-en til dusøren som skal fjernes"
+        }
+      }
+    },
+    "claim_bounty": {
+      "name": "Ta dusør",
+      "description": "Ta en dusør for et barn og lås den til dem i reservasjonstiden. Et barn kan ha én om gangen.",
+      "fields": {
+        "bounty_id": {
+          "name": "Dusør-ID",
+          "description": "ID-en til dusøren som skal tas"
+        },
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som tar den"
+        }
+      }
+    },
+    "give_back_bounty": {
+      "name": "Gi tilbake dusør",
+      "description": "Gi en tatt dusør tilbake til tavlen så et annet barn kan ta den",
+      "fields": {
+        "bounty_id": {
+          "name": "Dusør-ID",
+          "description": "ID-en til den tatte dusøren"
+        },
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som tok den"
+        }
+      }
+    },
+    "complete_bounty": {
+      "name": "Fullfør dusør",
+      "description": "Meld en tatt dusør som ferdig. Den går til godkjenning som en oppgave.",
+      "fields": {
+        "bounty_id": {
+          "name": "Dusør-ID",
+          "description": "ID-en til den tatte dusøren"
+        },
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som tok den"
+        },
+        "photo_url": {
+          "name": "Bilde-URL",
+          "description": "Bilde av den ferdige jobben (påkrevd når dusøren ber om det)"
         }
       }
     },
@@ -806,6 +1027,20 @@
         }
       }
     },
+    "adjust_streak_freezes": {
+      "name": "Juster rekkefrys",
+      "description": "Gi et barn rekkefrys (positivt antall) eller ta noen bort (negativt). En tildeling går aldri over grensen streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som får endret frys"
+        },
+        "amount": {
+          "name": "Antall",
+          "description": "Frys som skal legges til (positivt) eller fjernes (negativt)"
+        }
+      }
+    },
     "postpone_mandatory_chore": {
       "name": "Utsett obligatorisk oppgave",
       "description": "Gi en glemt obligatorisk oppgave en ny periode (eller i morgen) uten straff, og fjern gjennomgangselementet.",
@@ -853,6 +1088,238 @@
           "description": "Poeng som skal regnes om til penger og trekkes fra"
         }
       }
+    },
+    "add_wish": {
+      "name": "Legg til ønske",
+      "description": "Et barn legger til noe det vil spare til. Det venter på at en forelder godkjenner det.",
+      "fields": {
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som ønsker seg noe"
+        },
+        "name": {
+          "name": "Navn",
+          "description": "Det barnet ønsker seg"
+        },
+        "target": {
+          "name": "Mål",
+          "description": "Foreslått antall poeng det koster. Forelderen kan endre det ved godkjenning."
+        },
+        "link": {
+          "name": "Lenke",
+          "description": "Valgfri nettadresse (http eller https) til tingen"
+        },
+        "photo_url": {
+          "name": "Bilde",
+          "description": "Valgfritt bilde som nettopp er lastet opp via TaskMates fotoendepunkt"
+        }
+      }
+    },
+    "withdraw_wish": {
+      "name": "Trekk tilbake ønske",
+      "description": "Et barn trekker tilbake et ønske som fortsatt venter på godkjenning, eller fjerner et avslått ønske.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som ønsket tilhører"
+        }
+      }
+    },
+    "move_points_to_wish": {
+      "name": "Flytt poeng til ønske",
+      "description": "Flytt poeng fra et barns disponible saldo til ett av barnets godkjente ønsker.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som ønsket tilhører"
+        },
+        "points": {
+          "name": "Poeng",
+          "description": "Hvor mange poeng som flyttes (høyst saldoen og det ønsket fortsatt mangler)"
+        }
+      }
+    },
+    "take_points_from_wish": {
+      "name": "Ta poeng fra ønske",
+      "description": "Gi noen av barnets egne sparte poeng tilbake fra et ønske. Poeng fra tilsagn kan aldri tas ut.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som ønsket tilhører"
+        },
+        "points": {
+          "name": "Poeng",
+          "description": "Hvor mange sparte poeng som tas tilbake (høyst det barnet har spart)"
+        }
+      }
+    },
+    "request_wish_redeem": {
+      "name": "Be om å løse inn ønske",
+      "description": "Et fullfinansiert ønske blir et belønningskrav som venter på forelderens godkjenning.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "child_id": {
+          "name": "Barne-ID",
+          "description": "ID-en til barnet som ønsket tilhører"
+        }
+      }
+    },
+    "approve_wish": {
+      "name": "Godkjenn ønske",
+      "description": "Gjør et ventende ønske om til et sparemål, eventuelt med et annet mål.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "target": {
+          "name": "Mål",
+          "description": "Poeng ønsket koster. La feltet stå tomt for å beholde barnets forslag."
+        }
+      }
+    },
+    "decline_wish": {
+      "name": "Avslå ønske",
+      "description": "Si nei til et ønske. Sparte poeng går tilbake til barnet, og tilsagn annulleres.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "reason": {
+          "name": "Begrunnelse",
+          "description": "Valgfri begrunnelse som vises for barnet"
+        }
+      }
+    },
+    "pledge_to_wish": {
+      "name": "Gi tilsagn til ønske",
+      "description": "Registrer poeng et familiemedlem bidrar med til et barns ønske. De rører aldri noen saldo.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "name": {
+          "name": "Fra",
+          "description": "Hvem tilsagnet er fra, f.eks. Bestemor"
+        },
+        "points": {
+          "name": "Poeng",
+          "description": "Hvor mange poeng det gis tilsagn om (høyst det ønsket fortsatt mangler)"
+        },
+        "message": {
+          "name": "Melding",
+          "description": "Valgfri melding til barnet"
+        }
+      }
+    },
+    "remove_wish_pledge": {
+      "name": "Fjern tilsagn",
+      "description": "Angre et tilsagn. Mulig til ønsket er løst inn.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        },
+        "pledge_id": {
+          "name": "Tilsagn-ID",
+          "description": "ID-en til tilsagnet som skal fjernes"
+        }
+      }
+    },
+    "remove_wish": {
+      "name": "Fjern ønske",
+      "description": "Slett et ønske. Sparte poeng går tilbake til barnet, og tilsagn annulleres.",
+      "fields": {
+        "wish_id": {
+          "name": "Ønske-ID",
+          "description": "ID-en til ønsket"
+        }
+      }
+    },
+    "start_inspection": {
+      "name": "Start inspeksjon",
+      "description": "Merk en oppgave som er godkjent de siste 24 timene for en overraskelsesinspeksjon. Godkjenn eller underkjenn den før vinduet lukkes; en uavgjort inspeksjon lukkes stille.",
+      "fields": {
+        "completion_id": {
+          "name": "Fullførings-ID",
+          "description": "ID-en til den godkjente fullføringen som skal inspiseres"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Poeng som betales hvis den består. Standard er verdien fra Innstillinger."
+        },
+        "window": {
+          "name": "Vindu",
+          "description": "Hvor lenge du har på å sjekke: 1h, 2h, 4h eller bed (til leggetid). Standard er verdien fra Innstillinger."
+        },
+        "tell_child": {
+          "name": "Si fra til barnet",
+          "description": "Vis «Inspeksjon på vei» på barnets kort nå. Slå av for en hemmelig sjekk."
+        }
+      }
+    },
+    "pass_inspection": {
+      "name": "Godkjenn inspeksjon",
+      "description": "Den inspiserte oppgaven besto. Betaler bonusen som en vanlig poengføring og feirer på barnets kort.",
+      "fields": {
+        "inspection_id": {
+          "name": "Inspeksjons-ID",
+          "description": "ID-en til den åpne inspeksjonen"
+        },
+        "bonus": {
+          "name": "Bonus",
+          "description": "Poeng som skal betales. Standard er bonusen som ble satt da inspeksjonen startet."
+        },
+        "note": {
+          "name": "Notat",
+          "description": "Valgfritt notat som vises til barnet"
+        }
+      }
+    },
+    "fail_inspection": {
+      "name": "Underkjenn inspeksjon",
+      "description": "Den inspiserte oppgaven besto ikke. Ingen poeng trekkes. Den kan sendes tilbake for å gjøres på nytt; det gir ingen ekstra poeng.",
+      "fields": {
+        "inspection_id": {
+          "name": "Inspeksjons-ID",
+          "description": "ID-en til den åpne inspeksjonen"
+        },
+        "redo": {
+          "name": "Send tilbake for å gjøres på nytt",
+          "description": "Setter oppgaven tilbake på barnets liste som ikke gjort i dag. Standard er verdien fra Innstillinger."
+        },
+        "note": {
+          "name": "Notat",
+          "description": "Valgfritt notat som vises til barnet (hva som må fikses)"
+        }
+      }
+    },
+    "cancel_inspection": {
+      "name": "Avbryt inspeksjon",
+      "description": "Avlys en åpen inspeksjon, som om den aldri startet.",
+      "fields": {
+        "inspection_id": {
+          "name": "Inspeksjons-ID",
+          "description": "ID-en til den åpne inspeksjonen"
+        }
+      }
     }
   },
   "entity": {
@@ -862,6 +1329,13 @@
       },
       "child_badges": {
         "unit_of_measurement": "merker"
+      },
+      "child_watch": {
+        "state": {
+          "left": "# igjen",
+          "all_done": "Alt ferdig",
+          "no_chores": "Ingen oppgaver"
+        }
       }
     },
     "number": {
@@ -879,6 +1353,35 @@
       "card_design": {
         "name": "Kortdesign"
       }
+    }
+  },
+  "exceptions": {
+    "calendar_unknown_event": {
+      "message": "Denne hendelsen er ikke en TaskMate-oppgave i dette barnets kalender."
+    },
+    "calendar_series_not_supported": {
+      "message": "En gjentakende oppgave kan bare flyttes eller fjernes én dag om gangen fra kalenderen. Rediger oppgaven i TaskMate for å endre hele serien."
+    },
+    "calendar_repeating_create": {
+      "message": "Gjentakende hendelser kan ikke legges til fra kalenderen. Opprett en gjentakende oppgave i TaskMate i stedet."
+    },
+    "calendar_rename_series": {
+      "message": "Gi en gjentakende oppgave nytt navn i TaskMate. Fra kalenderen kan du bare flytte eller fjerne én enkelt dag."
+    },
+    "calendar_time_follows_chore": {
+      "message": "En gjentakende oppgave beholder tidspunktet på dagen. Bare datoen for én enkelt forekomst kan endres fra kalenderen."
+    },
+    "calendar_past_date": {
+      "message": "Oppgaver kan ikke legges til, flyttes til eller flyttes fra en dag som har vært."
+    },
+    "calendar_already_scheduled": {
+      "message": "{chore} ligger allerede på {date}."
+    },
+    "calendar_empty_title": {
+      "message": "Gi oppgaven en tittel."
+    },
+    "calendar_own_event": {
+      "message": "Denne hendelsen er publisert av TaskMate selv, så den legges ikke til som en ny oppgave."
     }
   }
 }

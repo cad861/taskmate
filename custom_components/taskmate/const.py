@@ -26,6 +26,37 @@ MAX_CALENDAR_PROJECTION_DAYS: Final = 90
 #                 hides for everyone else (shared quota of 1). A parent rejection reopens it for the pool.
 ASSIGNMENT_MODES: Final = ["everyone", "alternating", "random", "balanced", "first_come", "unassigned"]
 
+# Teamwork chores (#928): how a finished team's points are shared out.
+# "each"  = every participant earns the chore's full points
+# "split" = the points are divided evenly across the team, rounded down
+TEAM_POINTS_MODES: Final = ["each", "split"]
+# Upper bound on team_size — more than a family has children is meaningless,
+# and the joins list rides in a sensor attribute.
+TEAM_SIZE_MAX: Final = 10
+
+# Bounty board (#931): one-off jobs any eligible child can claim.
+# A claim locks the bounty to one child for claim_hours (never past its
+# expiry); an unfinished claim lapses back onto the board.
+BOUNTY_STATUSES: Final = ["open", "claimed", "pending", "completed", "expired"]
+BOUNTY_CLAIM_HOURS_DEFAULT: Final = 2
+BOUNTY_CLAIM_HOURS_MAX: Final = 48
+BOUNTY_POINTS_MAX: Final = 100000
+BOUNTY_TITLE_MAX_LENGTH: Final = 120
+BOUNTY_DESCRIPTION_MAX_LENGTH: Final = 500
+# The claimer is warned this long before their claim lapses (opt-in type).
+BOUNTY_LAPSE_WARNING_MINUTES: Final = 15
+# Approved bounties stay on the card as "Recently completed" this long.
+BOUNTY_RECENT_HOURS: Final = 24
+
+# Chore auctions (#982): children bid the fewest points they'd accept for one
+# occurrence of a chore; the lowest bid wins it at that price.
+AUCTION_STATUSES: Final = ["open", "closed", "cancelled"]
+AUCTION_POINTS_MAX: Final = 100000
+# Eligible children get the "closing soon" push this long before bidding ends.
+AUCTION_REMINDER_MINUTES: Final = 60
+# Closed auctions stay on the children's cards as results this long.
+AUCTION_RESULTS_HOURS: Final = 24
+
 # Default values
 DEFAULT_POINTS_NAME: Final = "Stars"
 DEFAULT_POINTS_ICON: Final = "mdi:star"
@@ -78,6 +109,25 @@ DEFAULT_TIME_PERIODS: Final = [
 
 MAX_TIME_PERIODS: Final = 24
 
+# Open-ended chores (#832): the child describes the work and suggests what it
+# was worth. Both are child-entered free input, so they're bounded before storage.
+CHORE_NOTE_MAX_LENGTH: Final = 200
+
+# Admin panel Today page (#966): days of per-child done/total snapshots kept.
+DAILY_PROGRESS_KEEP_DAYS: Final = 30
+CHORE_SUGGESTED_POINTS_MAX: Final = 999
+
+# NFC / QR tag completion (#923): a chore lists the HA tag ids that complete it.
+# Tag ids are typed or picked by a parent, so both the count and the length are
+# bounded before storage.
+MAX_CHORE_TAGS: Final = 10
+TAG_ID_MAX_LENGTH: Final = 100
+# A phone reading an NFC sticker often fires tag_scanned twice for one tap, so a
+# second scan of the same chore by the same child inside this window is ignored
+# even when the daily limit would allow another completion.
+TAG_SCAN_DEBOUNCE_SECONDS: Final = 60
+EVENT_TAG_COMPLETION: Final = "taskmate_tag_completion"
+
 # Platforms
 PLATFORMS: Final = ["sensor", "button", "binary_sensor"]
 
@@ -86,6 +136,7 @@ SERVICE_COMPLETE_CHORE: Final = "complete_chore"
 SERVICE_APPROVE_CHORE: Final = "approve_chore"
 SERVICE_APPROVE_ALL_CHORES: Final = "approve_all_chores"
 SERVICE_REJECT_CHORE: Final = "reject_chore"
+SERVICE_UNDO_CHORE: Final = "undo_chore"
 SERVICE_UNDO_CHORE_APPROVAL: Final = "undo_chore_approval"
 SERVICE_APPLY_MANDATORY_PENALTY: Final = "apply_mandatory_penalty"
 SERVICE_POSTPONE_MANDATORY_CHORE: Final = "postpone_mandatory_chore"
@@ -98,6 +149,7 @@ SERVICE_REMOVE_POINTS: Final = "remove_points"
 SERVICE_UNDO_TRANSACTION: Final = "undo_transaction"
 SERVICE_TEST_NOTIFICATION: Final = "test_notification"
 SERVICE_GIFT_POINTS: Final = "gift_points"
+SERVICE_ADJUST_STREAK_FREEZES: Final = "adjust_streak_freezes"
 SERVICE_RECORD_ALLOWANCE_PAYOUT: Final = "record_allowance_payout"
 SERVICE_REQUEST_SWAP: Final = "request_swap"
 SERVICE_SPIN_ROULETTE: Final = "spin_roulette"
@@ -124,6 +176,14 @@ SERVICE_COMPLETE_BONUS_SUBTASK: Final = "complete_bonus_subtask"
 SERVICE_START_TIMED_TASK: Final = "start_timed_task"
 SERVICE_PAUSE_TIMED_TASK: Final = "pause_timed_task"
 SERVICE_STOP_TIMED_TASK: Final = "stop_timed_task"
+SERVICE_LEAVE_TEAM_CHORE: Final = "leave_team_chore"
+SERVICE_COMPLETE_NEXT_CHORE: Final = "complete_next_chore"
+SERVICE_POST_BOUNTY: Final = "post_bounty"
+SERVICE_UPDATE_BOUNTY: Final = "update_bounty"
+SERVICE_REMOVE_BOUNTY: Final = "remove_bounty"
+SERVICE_CLAIM_BOUNTY: Final = "claim_bounty"
+SERVICE_GIVE_BACK_BOUNTY: Final = "give_back_bounty"
+SERVICE_COMPLETE_BOUNTY: Final = "complete_bounty"
 
 # Events
 EVENT_PREVIEW_SOUND: Final = "taskmate_preview_sound"
@@ -224,6 +284,21 @@ DIFFICULTY_TIERS: Final = ("easy", "medium", "hard")
 DEFAULT_DIFFICULTY: Final = "medium"
 DEFAULT_DIFFICULTY_MULTIPLIERS: Final = {"easy": 0.5, "medium": 1.0, "hard": 2.0}
 
+# Setup wizard age groups (#980), youngest first. A child's age group only
+# decides which chores the wizard suggests; "" means none picked. It is stored
+# separately from the birthday so an age without a date never becomes a fake
+# birthday (which would set off birthday mode on the wrong day).
+AGE_GROUPS: Final = ("3_5", "6_8", "9_12", "13_plus")
+
+# --- Chore quality rating (#927) ---
+# When the "quality_rating_enabled" setting is on, a parent may rate an approval
+# 1-3 stars and the chore's base points are scaled by that star's multiplier
+# (configurable via the "quality_rating_multiplier_<n>" settings keys). An
+# unrated approval pays 100%, so turning the feature on changes nothing until a
+# parent actually picks a star.
+QUALITY_RATINGS: Final = (1, 2, 3)
+DEFAULT_QUALITY_RATING_MULTIPLIERS: Final = {1: 0.75, 2: 1.0, 3: 1.25}
+
 # --- Notification type IDs (v3.9.0) ---
 NOTIF_TYPE_BEDTIME_REMINDER: Final = "bedtime_reminder"
 NOTIF_TYPE_STREAK_AT_RISK: Final = "streak_at_risk"
@@ -240,6 +315,30 @@ NOTIF_TYPE_MANDATORY_PARENT_ALERT: Final = "mandatory_parent_alert"
 NOTIF_TYPE_MONTHLY_REPORT: Final = "monthly_report"
 NOTIF_TYPE_SEASON_CHAMPION: Final = "season_champion"
 NOTIF_TYPE_FAMILY_GOAL_REACHED: Final = "family_goal_reached"
+NOTIF_TYPE_BIRTHDAY: Final = "birthday"
+NOTIF_TYPE_STREAK_FREEZE_USED: Final = "streak_freeze_used"
+NOTIF_TYPE_PRESENCE_ARRIVAL: Final = "presence_arrival"
+NOTIF_TYPE_BOUNTY_POSTED: Final = "bounty_posted"
+NOTIF_TYPE_BOUNTY_CLAIM_LAPSING: Final = "bounty_claim_lapsing"
+NOTIF_TYPE_RECAP_READY: Final = "recap_ready"
+# Reject reasons (#976): tells a child a chore or reward claim was sent back,
+# with the parent's reason when one was given.
+NOTIF_TYPE_ITEM_REJECTED: Final = "item_rejected"
+# Chore auctions (#982): an auction opened, bidding closes within the hour,
+# and the result (or a cancellation).
+NOTIF_TYPE_AUCTION_OPENED: Final = "auction_opened"
+NOTIF_TYPE_AUCTION_CLOSING: Final = "auction_closing"
+NOTIF_TYPE_AUCTION_RESULT: Final = "auction_result"
+# Surprise inspections (#981): the child hears an inspection is coming (only
+# when they're told) and that it passed; the parent is reminded 30 minutes
+# before an undecided inspection closes.
+NOTIF_TYPE_INSPECTION_STARTED: Final = "inspection_started"
+NOTIF_TYPE_INSPECTION_PASSED: Final = "inspection_passed"
+NOTIF_TYPE_INSPECTION_REMINDER: Final = "inspection_reminder"
+
+# Presence-aware reminders (#926): the default for how long a child must have
+# been away before arriving home earns a "you're home" nudge.
+DEFAULT_PRESENCE_ARRIVAL_MIN_AWAY: Final = 30
 
 # Default notification tap target. Must match PANEL_URL_PATH in panel.py —
 # a bare /taskmate is the static-files prefix and returns 403, not the panel.
@@ -250,3 +349,27 @@ DEFAULT_NOTIFICATION_NAV_URL: Final = "/taskmate-admin"
 # scattering through the rest of the phone's HA notifications. Applied by
 # default — set it to "" in the panel to turn grouping off.
 DEFAULT_NOTIFICATION_GROUP: Final = "taskmate"
+
+# --- Wishlist with pledges (#932) ---
+# Wishes a child has open at once: waiting for approval, saving, or waiting
+# for the parent to hand the thing over.
+WISH_MAX_OPEN_PER_CHILD: Final = 5
+WISH_MAX_TARGET: Final = 100000
+# Pledges on one wish; each is typed by a parent, so this only bounds abuse.
+WISH_MAX_PLEDGES: Final = 50
+# Finished wishes kept per child: declined ones stay on the card (with the
+# reason) until dismissed, redeemed ones are the panel's history.
+WISH_KEEP_DECLINED_PER_CHILD: Final = 3
+WISH_KEEP_REDEEMED_PER_CHILD: Final = 20
+NOTIF_TYPE_WISH_REQUESTED: Final = "wish_requested"
+NOTIF_TYPE_WISH_PLEDGED: Final = "wish_pledged"
+SERVICE_ADD_WISH: Final = "add_wish"
+SERVICE_WITHDRAW_WISH: Final = "withdraw_wish"
+SERVICE_MOVE_POINTS_TO_WISH: Final = "move_points_to_wish"
+SERVICE_TAKE_POINTS_FROM_WISH: Final = "take_points_from_wish"
+SERVICE_REQUEST_WISH_REDEEM: Final = "request_wish_redeem"
+SERVICE_APPROVE_WISH: Final = "approve_wish"
+SERVICE_DECLINE_WISH: Final = "decline_wish"
+SERVICE_PLEDGE_TO_WISH: Final = "pledge_to_wish"
+SERVICE_REMOVE_WISH_PLEDGE: Final = "remove_wish_pledge"
+SERVICE_REMOVE_WISH: Final = "remove_wish"

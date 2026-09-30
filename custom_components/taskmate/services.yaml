@@ -33,6 +33,22 @@ complete_chore:
       required: false
       selector:
         date:
+    note:
+      name: Note
+      description: What the child did, in their own words. Required when the chore is open-ended, and shown to the parent during approval.
+      required: false
+      selector:
+        text:
+          multiline: true
+    suggested_points:
+      name: Suggested points
+      description: What the child reckons the work was worth. A hint for the approving parent — it awards nothing on its own.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 999
+          mode: box
 
 complete_bonus_subtask:
   name: Complete Bonus Sub-task
@@ -67,6 +83,24 @@ approve_chore:
       required: true
       selector:
         text:
+    points:
+      name: Points
+      description: Award this many points instead of the chore's own value. Leave empty to use the chore's points.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 9999
+          mode: box
+    rating:
+      name: Quality rating
+      description: Optional 1-3 star rating of how well the chore was done. When quality ratings are enabled it scales the points by that star's multiplier; leave empty to pay 100%.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 3
+          mode: slider
 
 approve_all_chores:
   name: Approve All Chores
@@ -78,6 +112,15 @@ approve_all_chores:
       required: false
       selector:
         object:
+    rating:
+      name: Quality rating
+      description: Optional 1-3 star rating applied to every chore approved by this call (quality ratings must be enabled).
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 3
+          mode: slider
 
 reject_chore:
   name: Reject Chore
@@ -87,6 +130,12 @@ reject_chore:
       name: Completion ID
       description: The ID of the chore completion to reject
       required: true
+      selector:
+        text:
+    reason:
+      name: Reason
+      description: Optional reason shown to the child
+      required: false
       selector:
         text:
 
@@ -130,6 +179,17 @@ undo_transaction:
     transaction_id:
       name: Transaction ID
       description: The ID of the points transaction to reverse
+      required: true
+      selector:
+        text:
+
+undo_chore:
+  name: Undo Chore
+  description: Let a child take back their own chore — a pending submission until a parent reviews it, or an automatically approved one within the chore undo window. Off unless the window is set above 0 in TaskMate settings; anything a parent has reviewed needs a parent to undo it.
+  fields:
+    completion_id:
+      name: Completion ID
+      description: The ID of the child's chore completion to take back
       required: true
       selector:
         text:
@@ -196,6 +256,26 @@ gift_points:
         number:
           min: 1
           max: 10000
+          mode: box
+
+adjust_streak_freezes:
+  name: Adjust Streak Freezes
+  description: Give a child streak-freeze tokens (positive amount) or take some away (negative). A grant never goes past the streak_freeze_max cap.
+  fields:
+    child_id:
+      name: Child ID
+      description: The ID of the child whose tokens change
+      required: true
+      selector:
+        text:
+    amount:
+      name: Amount
+      description: Tokens to add (positive) or remove (negative)
+      required: true
+      selector:
+        number:
+          min: -10
+          max: 10
           mode: box
 
 request_swap:
@@ -343,6 +423,12 @@ reject_reward:
       name: Claim ID
       description: The ID of the reward claim to reject
       required: true
+      selector:
+        text:
+    reason:
+      name: Reason
+      description: Optional reason shown to the child
+      required: false
       selector:
         text:
 
@@ -707,6 +793,41 @@ add_chore:
           min: 0
           max: 10000
           mode: box
+    team_size:
+      name: Team size
+      description: >-
+        Make this a teamwork chore that only counts once this many different children have joined
+        it. Each child's Done tap joins; when the team is full it submits for all of them. 0 = a
+        normal chore.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 10
+          mode: box
+    team_points_mode:
+      name: Team points
+      description: >-
+        How a teamwork chore pays out — "each" gives every participant the full points, "split"
+        divides them evenly (rounded down).
+      required: false
+      default: each
+      selector:
+        select:
+          options:
+            - each
+            - split
+    team_bonus:
+      name: Team bonus
+      description: Extra points each participant earns when a teamwork chore is completed.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
 
 read_aloud:
   name: Read Chores Aloud
@@ -865,6 +986,252 @@ start_timed_task:
       name: Child ID
       description: The ID of the child starting the timer
       required: true
+      selector:
+        text:
+
+leave_team_chore:
+  name: Leave Teamwork Chore
+  description: Take a child back out of a teamwork chore they joined today, before the team is complete
+  fields:
+    chore_id:
+      name: Chore ID
+      description: The ID of the teamwork chore
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: The ID of the child leaving the team
+      required: true
+      selector:
+        text:
+
+complete_next_chore:
+  name: Complete Next Chore
+  description: >-
+    Complete the child's next outstanding chore, in the order the child card shows them. Chores that need a photo, a note, a timer or a team are skipped. Made for watch buttons and shortcuts; normal approval rules apply.
+  fields:
+    child_id:
+      name: Child ID
+      description: The ID of the child whose next chore to complete
+      required: true
+      selector:
+        text:
+
+post_bounty:
+  name: Post Bounty
+  description: >-
+    Post a one-off job to the bounty board for a fixed number of points. Any eligible child can claim it; finishing it goes through the normal approval queue.
+  fields:
+    title:
+      name: Title
+      description: "What the job is, e.g. \"Wash the car\""
+      required: true
+      selector:
+        text:
+    points:
+      name: Points
+      description: "Fixed points paid when a parent approves the finished job"
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    description:
+      name: Description
+      description: "Optional extra detail for the children"
+      required: false
+      selector:
+        text:
+          multiline: true
+    icon:
+      name: Icon
+      description: "MDI icon shown on the board"
+      required: false
+      selector:
+        icon:
+    expires_at:
+      name: Expires at
+      description: "Optional date and time the bounty leaves the board if nobody has claimed it. Leave empty for no expiry."
+      required: false
+      selector:
+        datetime:
+    eligible_child_ids:
+      name: Eligible children
+      description: "IDs of the children who may claim it. Empty = every child."
+      required: false
+      selector:
+        object:
+    claim_hours:
+      name: Claim lock (hours)
+      description: "How long a claim lasts before the bounty goes back on the board"
+      required: false
+      default: 2
+      selector:
+        number:
+          min: 1
+          max: 48
+          unit_of_measurement: h
+          mode: box
+    require_photo:
+      name: Require photo
+      description: "The child must attach a photo when marking it done"
+      required: false
+      default: false
+      selector:
+        boolean:
+    notify_children:
+      name: Notify children
+      description: "Send the \"New bounty\" notification to the eligible children"
+      required: false
+      default: true
+      selector:
+        boolean:
+
+update_bounty:
+  name: Update Bounty
+  description: >-
+    Edit a bounty. Once it has been claimed, only its points and expiry can change.
+  fields:
+    bounty_id:
+      name: Bounty ID
+      description: "The ID of the bounty to edit"
+      required: true
+      selector:
+        text:
+    title:
+      name: Title
+      description: "What the job is, e.g. \"Wash the car\""
+      required: false
+      selector:
+        text:
+    points:
+      name: Points
+      description: "Fixed points paid when a parent approves the finished job"
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    description:
+      name: Description
+      description: "Optional extra detail for the children"
+      required: false
+      selector:
+        text:
+          multiline: true
+    icon:
+      name: Icon
+      description: "MDI icon shown on the board"
+      required: false
+      selector:
+        icon:
+    expires_at:
+      name: Expires at
+      description: "Optional date and time the bounty leaves the board if nobody has claimed it. Leave empty for no expiry."
+      required: false
+      selector:
+        datetime:
+    eligible_child_ids:
+      name: Eligible children
+      description: "IDs of the children who may claim it. Empty = every child."
+      required: false
+      selector:
+        object:
+    claim_hours:
+      name: Claim lock (hours)
+      description: "How long a claim lasts before the bounty goes back on the board"
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 48
+          unit_of_measurement: h
+          mode: box
+    require_photo:
+      name: Require photo
+      description: "The child must attach a photo when marking it done"
+      required: false
+      selector:
+        boolean:
+    notify_children:
+      name: Notify children
+      description: "Send the \"New bounty\" notification to the eligible children"
+      required: false
+      selector:
+        boolean:
+
+remove_bounty:
+  name: Remove Bounty
+  description: >-
+    Take a bounty off the board. Not allowed while a finished job waits for approval.
+  fields:
+    bounty_id:
+      name: Bounty ID
+      description: "The ID of the bounty to remove"
+      required: true
+      selector:
+        text:
+
+claim_bounty:
+  name: Claim Bounty
+  description: >-
+    Claim a bounty for a child, locking it to them for its claim period. A child can hold one claim at a time.
+  fields:
+    bounty_id:
+      name: Bounty ID
+      description: "The ID of the bounty to claim"
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: "The ID of the child claiming it"
+      required: true
+      selector:
+        text:
+
+give_back_bounty:
+  name: Give Back Bounty
+  description: >-
+    Hand a claimed bounty back to the board so another child can take it
+  fields:
+    bounty_id:
+      name: Bounty ID
+      description: "The ID of the claimed bounty"
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: "The ID of the child who claimed it"
+      required: true
+      selector:
+        text:
+
+complete_bounty:
+  name: Complete Bounty
+  description: >-
+    Mark a claimed bounty as done. It goes to the approval queue like a chore.
+  fields:
+    bounty_id:
+      name: Bounty ID
+      description: "The ID of the claimed bounty"
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: "The ID of the child who claimed it"
+      required: true
+      selector:
+        text:
+    photo_url:
+      name: Photo URL
+      description: "Photo of the finished job (required when the bounty asks for one)"
+      required: false
       selector:
         text:
 
@@ -1056,3 +1423,325 @@ revoke_badge:
 rebuild_badges:
   name: Rebuild Badges
   description: Re-evaluate all badges across all children silently (no notifications, no point bonuses).
+
+# Wishlist (#932)
+add_wish:
+  name: Add Wish
+  description: A child adds something they want to save for. It waits for a parent to approve it.
+  fields:
+    child_id:
+      name: Child ID
+      description: The ID of the child making the wish
+      required: true
+      selector:
+        text:
+    name:
+      name: Name
+      description: What the child wants
+      required: true
+      selector:
+        text:
+    target:
+      name: Target
+      description: Suggested number of points it costs. The parent can change it when approving.
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    link:
+      name: Link
+      description: Optional web address (http or https) for the thing
+      required: false
+      selector:
+        text:
+          type: url
+    photo_url:
+      name: Picture
+      description: Optional picture just uploaded through the TaskMate photo endpoint
+      required: false
+      selector:
+        text:
+
+withdraw_wish:
+  name: Withdraw Wish
+  description: A child takes back a wish that is still waiting for approval, or clears one that was declined.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: The ID of the child whose wish it is
+      required: true
+      selector:
+        text:
+
+move_points_to_wish:
+  name: Move Points to Wish
+  description: Move points from a child's spendable balance into one of their approved wishes.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: The ID of the child whose wish it is
+      required: true
+      selector:
+        text:
+    points:
+      name: Points
+      description: How many points to move (capped at the balance and at what the wish still needs)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+
+take_points_from_wish:
+  name: Take Points from Wish
+  description: Give some of a child's own saved points back from a wish. Pledged points never come out.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: The ID of the child whose wish it is
+      required: true
+      selector:
+        text:
+    points:
+      name: Points
+      description: How many saved points to take back (capped at what the child saved)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+
+request_wish_redeem:
+  name: Ask to Redeem Wish
+  description: A fully funded wish becomes a reward claim waiting for the parent's approval.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    child_id:
+      name: Child ID
+      description: The ID of the child whose wish it is
+      required: true
+      selector:
+        text:
+
+approve_wish:
+  name: Approve Wish
+  description: Turn a waiting wish into a savings goal, optionally at a different target.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    target:
+      name: Target
+      description: Points the wish costs. Leave empty to keep the child's suggestion.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+
+decline_wish:
+  name: Decline Wish
+  description: Say no to a wish. Saved points go back to the child and pledges are voided.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    reason:
+      name: Reason
+      description: Optional reason shown to the child
+      required: false
+      selector:
+        text:
+          multiline: true
+
+pledge_to_wish:
+  name: Pledge to Wish
+  description: Record points a relative chips in towards a child's wish. They never touch any balance.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    name:
+      name: From
+      description: Who the pledge is from, e.g. Grandma
+      required: true
+      selector:
+        text:
+    points:
+      name: Points
+      description: How many points to pledge (capped at what the wish still needs)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    message:
+      name: Message
+      description: Optional message for the child
+      required: false
+      selector:
+        text:
+
+remove_wish_pledge:
+  name: Remove Wish Pledge
+  description: Undo a pledge. Allowed until the wish is redeemed.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+    pledge_id:
+      name: Pledge ID
+      description: The ID of the pledge to remove
+      required: true
+      selector:
+        text:
+
+remove_wish:
+  name: Remove Wish
+  description: Delete a wish. Saved points go back to the child and pledges are voided.
+  fields:
+    wish_id:
+      name: Wish ID
+      description: The ID of the wish
+      required: true
+      selector:
+        text:
+
+start_inspection:
+  name: Start Inspection
+  description: >-
+    Flag a chore approved in the last 24 hours for a surprise inspection. Pass or fail it before the window closes; an undecided inspection closes quietly.
+  fields:
+    completion_id:
+      name: Completion ID
+      description: The ID of the approved chore completion to inspect
+      required: true
+      selector:
+        text:
+    bonus:
+      name: Bonus
+      description: Points paid if it passes. Defaults to the Settings value.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+    window:
+      name: Window
+      description: "How long you have to check it: 1h, 2h, 4h or bed (until bedtime). Defaults to the Settings value."
+      required: false
+      selector:
+        select:
+          options:
+            - "1h"
+            - "2h"
+            - "4h"
+            - "bed"
+    tell_child:
+      name: Tell the child
+      description: Show "Inspection coming" on the child's card now. Turn off for a secret check.
+      required: false
+      selector:
+        boolean:
+
+pass_inspection:
+  name: Pass Inspection
+  description: The inspected chore passed. Pays the bonus as a normal points entry and celebrates on the child's card.
+  fields:
+    inspection_id:
+      name: Inspection ID
+      description: The ID of the open inspection
+      required: true
+      selector:
+        text:
+    bonus:
+      name: Bonus
+      description: Points to pay. Defaults to the bonus set when the inspection started.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+    note:
+      name: Note
+      description: Optional note shown to the child
+      required: false
+      selector:
+        text:
+
+fail_inspection:
+  name: Fail Inspection
+  description: The inspected chore didn't pass. No points are taken. It can be sent back to redo; the redo earns nothing extra.
+  fields:
+    inspection_id:
+      name: Inspection ID
+      description: The ID of the open inspection
+      required: true
+      selector:
+        text:
+    redo:
+      name: Send back to redo
+      description: Put the chore back on the child's list as not done for today. Defaults to the Settings value.
+      required: false
+      selector:
+        boolean:
+    note:
+      name: Note
+      description: Optional note shown to the child (what needs fixing)
+      required: false
+      selector:
+        text:
+
+cancel_inspection:
+  name: Cancel Inspection
+  description: Call off an open inspection, as if it never started.
+  fields:
+    inspection_id:
+      name: Inspection ID
+      description: The ID of the open inspection
+      required: true
+      selector:
+        text:

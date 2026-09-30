@@ -24,6 +24,9 @@ const html = LitElement.prototype.html;
 const css = LitElement.prototype.css;
 
 const _safeColor = (c, d) => (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : d);
+// Keeps number runs like "3 / 1" reading left to right in RTL text (#995);
+// identity until the design layer has loaded (it is also what stamps dir).
+const _ltrNums = (s) => (window.__taskmate_design && window.__taskmate_design.ltrNums ? window.__taskmate_design.ltrNums(s) : s);
 
 class TaskMateChildCard extends LitElement {
   static get properties() {
@@ -38,6 +41,8 @@ class TaskMateChildCard extends LitElement {
       _justEarnedBadge: { type: String },
       _avatarPickerOpen: { type: Boolean },
       _photoCapture: { type: Object },
+      _extraCapture: { type: Object },
+      _inspCelebration: { type: Object },
     };
   }
 
@@ -75,6 +80,8 @@ class TaskMateChildCard extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._stopTimerTick();
+    clearTimeout(this._undoExpiryTimer);
+    this._undoExpiryTimer = null;
     if (this._justEarnedTimeout) {
       clearTimeout(this._justEarnedTimeout);
       this._justEarnedTimeout = null;
@@ -89,6 +96,9 @@ class TaskMateChildCard extends LitElement {
     super.updated(changedProperties);
     const attrs = (window.__taskmate_attrs && window.__taskmate_attrs(this.hass, this.config?.entity))
       || this.hass?.states?.[this.config?.entity]?.attributes || {};
+    this._maybeBirthdayConfetti(attrs);
+    this._maybeInspectionCelebration(attrs);
+    this._scheduleUndoExpiry(attrs);
     const sessions = attrs.active_timed_sessions || [];
     const hasRunning = sessions.some(s => s.state === 'running' && s.child_id === this.config?.child_id);
     // A reactive chore's countdown (#674) has to keep ticking too, otherwise it
@@ -98,7 +108,8 @@ class TaskMateChildCard extends LitElement {
       if (!c.deadline_at) return false;
       const at = new Date(c.deadline_at).getTime();
       return !Number.isNaN(at) && at > now;
-    });
+    }) || this._inspectionsOf((attrs.children || []).find(c => c.id === this.config?.child_id))
+      .some(i => i.status === "open");
     if ((hasRunning || hasDeadline) && !this._timerInterval) {
       this._timerInterval = setInterval(() => { this._timerTick++; this.requestUpdate(); }, 1000);
     } else if (!hasRunning && !hasDeadline && this._timerInterval) {
@@ -308,7 +319,7 @@ class TaskMateChildCard extends LitElement {
 
       .avatar-clickable { cursor: pointer; position: relative; }
       .avatar-edit-dot {
-        position: absolute; bottom: -2px; right: -2px;
+        position: absolute; bottom: -2px; inset-inline-end: -2px;
         width: 18px; height: 18px; border-radius: 50%;
         background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center;
       }
@@ -322,7 +333,7 @@ class TaskMateChildCard extends LitElement {
       .tmd-av-wrap { position: relative; display: inline-flex; align-items: center; flex: none; }
       .tmd-av-wrap.avatar-clickable { cursor: pointer; }
       .tmd-av-edit {
-        position: absolute; bottom: -2px; right: -2px;
+        position: absolute; bottom: -2px; inset-inline-end: -2px;
         width: 15px; height: 15px; border-radius: 50%;
         background: var(--tmd-accent, #7c3aed); color: #fff;
         display: grid; place-items: center;
@@ -828,6 +839,42 @@ class TaskMateChildCard extends LitElement {
 
       .first-come-label ha-icon { --mdc-icon-size: 12px; }
 
+      /* Teamwork chores (#928): joiners' avatars + "2 / 3 joined". Shared by
+         the classic row, the designed rows (as a .tmd-tag) and pre-reader
+         tiles, so every colour carries a classic fallback. */
+      .tm-team {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-size: 0.72rem; font-weight: 700;
+        color: var(--secondary-text-color);
+        max-width: 100%;
+      }
+      .tm-team.team-label {
+        background: color-mix(in srgb, var(--primary-text-color, #212121) 8%, transparent);
+        border-radius: 999px; padding-block: 2px; padding-inline: 3px 8px; margin-top: 3px;
+      }
+      .tm-team.mine { color: var(--tmd-good, #2e7d32); }
+      .tm-team.tmd-tag { padding-block: 2px; padding-inline: 2px 7px; }
+      .tm-team-avs { display: inline-flex; }
+      .tm-team-avs:empty { display: none; }
+      .tm-team-av {
+        width: 18px; height: 18px; border-radius: 50%;
+        display: inline-grid; place-items: center; overflow: hidden;
+        background: var(--ac, #7e57c2); color: #fff;
+        font-size: 10px; font-weight: 800; line-height: 1;
+        border: 2px solid var(--card-background-color, #fff);
+        margin-inline-start: -5px;
+      }
+      .tm-team-av:first-child { margin-inline-start: 0; }
+      .tm-team-av img { width: 100%; height: 100%; object-fit: cover; }
+      .tm-team-av ha-icon { --mdc-icon-size: 12px; }
+      .tm-team-txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* Joined but the team isn't full: a half-way state between the empty
+         box and the solid green "done" one. */
+      .chore-checkbox.team ha-icon { color: var(--secondary-text-color, #7f8c8d); }
+      .chore-checkbox.team-joined { border-color: var(--fun-green); background: rgba(46, 204, 113, 0.16); }
+      .chore-checkbox.team-joined ha-icon { color: var(--fun-green); }
+      .pre-tile-team { justify-content: center; font-size: 0.7rem; }
+
       /* Locked preview — chore is visible but not yet claimable because its
          time-of-day window has not started. Dim with a padlock badge. */
       .chore-card.chore-locked {
@@ -870,6 +917,85 @@ class TaskMateChildCard extends LitElement {
         color: var(--secondary-text-color);
       }
       .dependency-label ha-icon { --mdc-icon-size: 12px; }
+
+      /* Surprise inspections (#981). Shared by every design: the tokens fall
+         back to the classic colours, so classic renders them unchanged. */
+      .tm-insp-banner {
+        display: flex; align-items: center; gap: 12px;
+        margin: 0 12px 10px; padding: 12px 14px;
+        border-radius: var(--tmd-r, 16px);
+        border: 2px solid var(--ib, #f39c12);
+        background: color-mix(in srgb, var(--ib, #f39c12) 16%, var(--tmd-card, var(--card-background-color, #fff)));
+        color: var(--tmd-ink, var(--primary-text-color));
+      }
+      .tm-insp-banner.designed { margin: 0 0 10px; }
+      .tm-insp-banner.is-open { --ib: #f39c12; }
+      .tm-insp-banner.is-passed { --ib: var(--tmd-good, #2ecc71); }
+      .tm-insp-banner.is-redo { --ib: #e67e22; }
+      .tm-insp-banner.is-failed { --ib: var(--tmd-dim, #9aa3ad); border-width: 1px; }
+      .tm-insp-bi {
+        width: 40px; height: 40px; border-radius: 12px; flex: none;
+        display: grid; place-items: center; color: #fff; background: var(--ib, #f39c12);
+      }
+      .tm-insp-bi ha-icon { --mdc-icon-size: 24px; }
+      .tm-insp-bt { display: flex; flex-direction: column; min-width: 0; }
+      .tm-insp-title { font-weight: 800; font-size: 1rem; line-height: 1.25; }
+      .tm-insp-sub { font-size: 0.82rem; font-weight: 600; opacity: 0.85; overflow-wrap: anywhere; }
+      .tm-insp-tag {
+        display: inline-flex; align-items: center; gap: 3px; margin-block: 3px 0; margin-inline: 0 4px;
+        padding: 1px 8px; border-radius: 999px; font-size: 0.7rem; font-weight: 800;
+        color: #fff; background: #f39c12; white-space: nowrap; vertical-align: middle;
+        width: fit-content; align-self: flex-start;
+      }
+      .tm-insp-tag ha-icon { --mdc-icon-size: 12px; }
+      .tm-insp-tag.is-passed { background: #f1c40f; color: #5a4300; }
+      .tm-insp-tag.is-redo { background: #e67e22; }
+      .tm-insp-tag.is-failed { background: var(--tmd-dim, #7f8c8d); }
+      .chore-card.tm-insp-row-open, .tm-insp-row-open { outline: 2px dashed #f39c12; outline-offset: -2px; }
+      .chore-card.tm-insp-row-passed, .tm-insp-row-passed { box-shadow: inset 0 0 0 2px #f1c40f; }
+      .tm-insp-note {
+        margin: 3px 0 2px; padding: 4px 8px; border-radius: 8px;
+        font-size: 0.75rem; font-weight: 600; line-height: 1.3;
+        white-space: normal; overflow-wrap: anywhere;
+        background: rgba(230, 126, 34, 0.14); color: #b35900;
+      }
+      .tm-insp-note ha-icon { --mdc-icon-size: 13px; }
+      .tm-insp-note.designed { color: var(--tmd-ink, #b35900); background: color-mix(in srgb, #e67e22 16%, transparent); }
+      .tm-insp-cele {
+        position: relative; text-align: center; color: #fff;
+        padding: 28px 34px 22px; border-radius: 28px; max-width: 320px; margin: 16px;
+        background: linear-gradient(160deg, #f5b301, #e67e22);
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+        font-family: var(--tmd-font, inherit);
+      }
+      .tm-insp-cele-mag {
+        width: 76px; height: 76px; margin: 0 auto 10px; border-radius: 50%;
+        display: grid; place-items: center; background: rgba(255, 255, 255, 0.22);
+      }
+      .tm-insp-cele-mag ha-icon { --mdc-icon-size: 46px; }
+      .tm-insp-cele-title { font-size: 1.7rem; font-weight: 900; }
+      .tm-insp-cele-msg { font-size: 1rem; font-weight: 600; opacity: 0.92; margin-top: 2px; }
+      .tm-insp-cele-big { font-size: 2.4rem; font-weight: 900; margin: 10px 0 4px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+      .tm-insp-cele-big ha-icon { --mdc-icon-size: 34px; }
+      .tm-insp-cele-note { font-style: italic; font-weight: 600; background: rgba(255, 255, 255, 0.18); border-radius: 12px; padding: 8px 12px; overflow-wrap: anywhere; }
+      .tm-insp-cele-btn {
+        margin-top: 16px; padding: 10px 28px; border: 0; border-radius: 999px; cursor: pointer;
+        font: inherit; font-weight: 800; font-size: 1rem; color: #fff; background: rgba(255, 255, 255, 0.28);
+      }
+
+      /* Reject reason (#976): a parent's "why" on a chore they sent back. */
+      .tm-reject-note {
+        margin: 3px 0 2px;
+        padding: 4px 8px;
+        border-radius: 8px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        line-height: 1.3;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        background: rgba(244, 67, 54, 0.12);
+        color: var(--error-color, #d32f2f);
+      }
 
 
       /* Recurring chore not yet available — dimmed/greyed */
@@ -919,8 +1045,8 @@ class TaskMateChildCard extends LitElement {
 
       /* Bonus sub-task cards */
       .chore-card.bonus-subtask {
-        margin-left: 24px;
-        border-left: 3px solid var(--fun-amber, #f39c12);
+        margin-inline-start: 24px;
+        border-inline-start: 3px solid var(--fun-amber, #f39c12);
         background: linear-gradient(135deg,
           rgba(243, 156, 18, 0.08) 0%,
           rgba(241, 196, 15, 0.12) 100%);
@@ -954,12 +1080,12 @@ class TaskMateChildCard extends LitElement {
         background: rgba(243, 156, 18, 0.15);
         padding: 1px 5px;
         border-radius: 3px;
-        margin-left: 6px;
+        margin-inline-start: 6px;
       }
 
       .chore-card.bonus-subtask.completed {
         border-color: var(--fun-green) !important;
-        border-left: 3px solid var(--fun-green);
+        border-inline-start: 3px solid var(--fun-green);
       }
 
       /* Mandatory chores (#532): red border + tint + left spine + badge. */
@@ -970,7 +1096,7 @@ class TaskMateChildCard extends LitElement {
       .chore-card.mandatory::before {
         content: "";
         position: absolute;
-        left: 0;
+        inset-inline-start: 0;
         top: 0;
         bottom: 0;
         width: 6px;
@@ -1097,6 +1223,23 @@ class TaskMateChildCard extends LitElement {
         font-weight: 900;
       }
 
+      /* Won at auction (#982): same shape as the mandatory badge, auction purple. */
+      .auction-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: #7e57c2;
+        color: #fff;
+        font-size: 0.62rem;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        border-radius: 8px;
+        padding: 2px 7px;
+        margin-inline-start: 8px;
+        vertical-align: middle;
+        white-space: nowrap;
+      }
       .mandatory-badge {
         display: inline-flex;
         align-items: center;
@@ -1109,7 +1252,7 @@ class TaskMateChildCard extends LitElement {
         text-transform: uppercase;
         border-radius: 8px;
         padding: 2px 7px;
-        margin-left: 8px;
+        margin-inline-start: 8px;
         vertical-align: middle;
         white-space: nowrap;
       }
@@ -1124,7 +1267,7 @@ class TaskMateChildCard extends LitElement {
         color: var(--secondary-text-color);
         background: var(--secondary-background-color, #f5f5f5);
         border-radius: 20px;
-        padding: 2px 8px 2px 6px;
+        padding-block: 2px; padding-inline: 6px 8px;
         white-space: nowrap;
         flex-shrink: 0;
       }
@@ -1178,8 +1321,8 @@ class TaskMateChildCard extends LitElement {
       .celebration-overlay {
         position: fixed;
         top: 0;
-        left: 0;
-        right: 0;
+        inset-inline-start: 0;
+        inset-inline-end: 0;
         bottom: 0;
         background: rgba(0, 0, 0, 0.5);
         display: flex;
@@ -1227,7 +1370,7 @@ class TaskMateChildCard extends LitElement {
       }
       .photo-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
       .photo-size-tag {
-        position: absolute; bottom: 8px; right: 8px;
+        position: absolute; bottom: 8px; inset-inline-end: 8px;
         background: rgba(0, 0, 0, 0.6); color: #fff;
         font-size: 0.66rem; padding: 3px 8px; border-radius: 999px;
       }
@@ -1256,6 +1399,22 @@ class TaskMateChildCard extends LitElement {
         border-top-color: var(--fun-purple); animation: photo-spin 1s linear infinite;
       }
       @keyframes photo-spin { to { transform: rotate(360deg); } }
+
+      /* Open-ended submission sheet (#832) — shares the photo sheet's shell. */
+      .extra-note, .extra-points {
+        width: 100%; box-sizing: border-box; font: inherit;
+        border-radius: 12px; padding: 10px 12px;
+        border: 2px solid var(--divider-color, #e0e0e0);
+        color: var(--primary-text-color, #33373d);
+        background: var(--card-background-color, #fff);
+      }
+      .extra-note { resize: vertical; font-size: 0.95rem; }
+      .extra-points { font-size: 1.05rem; font-weight: 800; }
+      .extra-note:focus, .extra-points:focus { outline: none; border-color: var(--fun-purple); }
+      .extra-points-label {
+        display: block; margin: 14px 0 6px; font-weight: 700; font-size: 0.85rem;
+        color: var(--secondary-text-color, #6b7280);
+      }
 
       @keyframes fade-in {
         from { opacity: 0; }
@@ -1326,7 +1485,7 @@ class TaskMateChildCard extends LitElement {
       .confetti-container {
         position: fixed;
         top: 0;
-        left: 0;
+        inset-inline-start: 0;
         width: 100%;
         height: 100%;
         pointer-events: none;
@@ -1450,7 +1609,7 @@ class TaskMateChildCard extends LitElement {
         gap: 12px;
       }
       .timed-rate {
-        margin-left: auto;
+        margin-inline-start: auto;
         font-size: 0.8rem;
         font-weight: 700;
         color: var(--fun-cyan);
@@ -1613,11 +1772,51 @@ class TaskMateChildCard extends LitElement {
         border-bottom: 1px solid var(--divider-color, #e0e0e0);
       }
       .vacation-banner ha-icon { --mdc-icon-size: 24px; }
+      .birthday-banner {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        background: linear-gradient(135deg, #ffd1e8, #e3c8ff);
+        color: #5b1f6b;
+        border-bottom: 1px solid var(--divider-color, #e0e0e0);
+      }
+      .birthday-banner ha-icon { --mdc-icon-size: 28px; flex-shrink: 0; }
+      .bday-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .birthday-banner .bday-title { font-weight: 800; font-size: 1rem; }
+      .birthday-banner .bday-sub { font-size: 0.85rem; font-weight: 600; opacity: 0.85; }
+      /* Child undo strip (#918). The --tmd-* tokens only exist under a
+         designed style, so classic falls through to the HA theme. */
+      .tm-child-undo {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--tmd-border, var(--divider-color, #e0e0e0));
+      }
+      .tmd-bd .tm-child-undo { padding: 0 0 10px; border-bottom: none; }
+      .tm-child-undo button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 44px;
+        padding: 6px 14px;
+        border: 2px solid var(--tmd-accent, var(--primary-color, #03a9f4));
+        border-radius: var(--tmd-radius-sm, 22px);
+        background: var(--tmd-surface, var(--card-background-color, #fff));
+        color: var(--tmd-text, var(--primary-text-color, #212121));
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .tm-child-undo button ha-icon { --mdc-icon-size: 20px; color: var(--tmd-accent, var(--primary-color, #03a9f4)); }
+      .tm-child-undo button:disabled { opacity: 0.5; cursor: default; }
+      .tm-child-undo button:focus-visible { outline: 3px solid var(--tmd-accent, var(--primary-color, #03a9f4)); outline-offset: 2px; }
       .badge-strip:hover { background: var(--secondary-background-color, rgba(0,0,0,0.03)); }
       .badge-strip-label {
         font-size: 11px;
         color: var(--secondary-text-color);
-        margin-right: 2px;
+        margin-inline-end: 2px;
         white-space: nowrap;
       }
       .badge-mini {
@@ -1642,7 +1841,7 @@ class TaskMateChildCard extends LitElement {
       .badge-strip-more {
         font-size: 11px;
         color: var(--primary-color);
-        margin-left: 2px;
+        margin-inline-start: 2px;
         white-space: nowrap;
       }
 
@@ -1695,7 +1894,7 @@ class TaskMateChildCard extends LitElement {
         white-space: nowrap;
       }
       .next-badge-count {
-        margin-left: auto;
+        margin-inline-start: auto;
         font-size: 11px;
         font-weight: 700;
         color: var(--secondary-text-color);
@@ -1713,6 +1912,12 @@ class TaskMateChildCard extends LitElement {
         border-radius: 3px;
         transition: width 0.4s ease;
       }
+      .next-badge-nudge {
+        margin-top: 5px;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--primary-color);
+      }
 
       /* ══════════════════════════════════════════════════════════════════
          DESIGNED STYLES (playroom / console / cleanpro)
@@ -1721,6 +1926,12 @@ class TaskMateChildCard extends LitElement {
          Ported from docs/design/redesigns/frag/03-child.html.
       ══════════════════════════════════════════════════════════════════ */
       .tmd-chores { display: grid; gap: 11px; }
+      /* The designed chore lists are one-column grids. An auto column sizes
+         to the widest row's min-content, and a nowrap chore name makes that
+         the whole name, so a long name pushed every row's Done button off a
+         phone-width card (#916). minmax(0, 1fr) pins the column to the card
+         width, and the name ellipsises instead. */
+      .tmd-chores, .tmd-quests, .tmd-checklist { grid-template-columns: minmax(0, 1fr); }
       .tmd-chore {
         display: flex; align-items: center; gap: 10px;
         background: var(--tmd-surface-2);
@@ -1797,11 +2008,18 @@ class TaskMateChildCard extends LitElement {
         border: 1px solid var(--tmd-border);
       }
       .tmd-tag.mandatory { background: color-mix(in srgb, var(--tmd-bad) 16%, transparent); color: var(--tmd-bad); border-color: transparent; }
+      .tmd-tag.auction { background: color-mix(in srgb, #7e57c2 18%, transparent); color: color-mix(in srgb, #7e57c2 70%, var(--tmd-text)); border-color: transparent; }
       .tmd-tag.photo { background: color-mix(in srgb, var(--tmd-accent) 14%, transparent); color: var(--tmd-accent); border-color: transparent; }
       .tmd-desc { font-size: 11.5px; color: var(--tmd-dim); margin-top: 3px; white-space: normal; line-height: 1.3; }
+      .tmd-reject {
+        margin-top: 4px; padding: 4px 8px; border-radius: 8px;
+        font-size: 11.5px; font-weight: 700; line-height: 1.3;
+        white-space: normal; overflow-wrap: anywhere;
+        background: color-mix(in srgb, var(--tmd-bad) 14%, transparent); color: var(--tmd-bad);
+      }
       .tmd-chore.mandatory, .tmd-quest.mandatory, .tmd-check.mandatory {
         box-shadow: inset 3px 0 0 0 var(--tmd-bad);
-        padding-left: 20px;
+        padding-inline-start: 20px;
       }
       .tmd-chore.dimmed, .tmd-quest.dimmed, .tmd-check.dimmed { opacity: 0.5; }
       /* Clickable done-state chips (tap to undo) */
@@ -1820,8 +2038,14 @@ class TaskMateChildCard extends LitElement {
       .tmd-check .c-emoji .tmd-glyph-icon { --mdc-icon-size: 18px; }
 
       /* Designed: pending-points + countdown chips on the header/section */
+      .tmd-freeze {
+        margin-inline-start: auto; display: inline-flex; align-items: center; gap: 3px;
+        font-size: 11px; font-weight: 800; padding: 4px 9px; border-radius: 999px;
+        background: rgba(255,255,255,.22); color: #fff; white-space: nowrap;
+      }
+      .tmd-freeze + .tmd-pending { margin-inline-start: 6px; }
       .tmd-pending {
-        margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+        margin-inline-start: auto; display: inline-flex; align-items: center; gap: 4px;
         font-size: 11px; font-weight: 800; padding: 4px 9px; border-radius: 999px;
         background: rgba(255,255,255,.22); color: #fff;
       }
@@ -1830,7 +2054,7 @@ class TaskMateChildCard extends LitElement {
         font-family: var(--tmd-font-display); font-weight: 800; font-size: 14px; color: var(--tmd-text);
       }
       .tmd-countdown {
-        margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+        margin-inline-start: auto; display: inline-flex; align-items: center; gap: 4px;
         font-size: 11px; font-weight: 700; color: var(--tmd-dim);
       }
       .tmd-countdown.soon { color: var(--tmd-warn); }
@@ -1874,7 +2098,7 @@ class TaskMateChildCard extends LitElement {
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       .tmd-next-badge .cnt {
-        margin-left: auto; font-size: 11px; font-weight: 800;
+        margin-inline-start: auto; font-size: 11px; font-weight: 800;
         color: var(--tmd-dim); white-space: nowrap;
       }
       .tmd-next-badge .bar {
@@ -1882,6 +2106,9 @@ class TaskMateChildCard extends LitElement {
       }
       .tmd-next-badge .bar i {
         display: block; height: 100%; border-radius: 999px; transition: width .4s ease;
+      }
+      .tmd-next-badge .nudge {
+        margin-top: 5px; font-size: 11px; font-weight: 800; color: var(--tmd-accent);
       }
       /* Playroom is chunkier, console squares everything off, accessible needs
          a solid ring rather than a dashed one to stay legible. */
@@ -1892,6 +2119,7 @@ class TaskMateChildCard extends LitElement {
       :host([data-tm-design="accessible"]) .tmd-next-badge .bar { height: 10px; }
       :host([data-tm-design="accessible"]) .tmd-next-badge .nm,
       :host([data-tm-design="accessible"]) .tmd-next-badge .cnt { font-size: 14px; }
+      :host([data-tm-design="accessible"]) .tmd-next-badge .nudge { font-size: 13px; }
 
       /* Designed: vacation banner + swappable section */
       .tmd-vacation {
@@ -1899,6 +2127,15 @@ class TaskMateChildCard extends LitElement {
         background: color-mix(in srgb, var(--tmd-warn) 16%, transparent); color: var(--tmd-warn);
         border-radius: var(--tmd-radius-sm); font-weight: 700; font-size: 12.5px;
       }
+      .tmd-birthday {
+        display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 11px;
+        background: color-mix(in srgb, var(--tmd-accent) 16%, transparent); color: var(--tmd-text);
+        border: 1px solid color-mix(in srgb, var(--tmd-accent) 40%, transparent);
+        border-radius: var(--tmd-radius-sm);
+      }
+      .tmd-birthday ha-icon { --mdc-icon-size: 26px; color: var(--tmd-accent); flex-shrink: 0; }
+      .tmd-birthday .bday-title { font-weight: 800; font-size: 14px; }
+      .tmd-birthday .bday-sub { font-size: 12px; font-weight: 600; color: var(--tmd-dim); }
       .tmd-swaps { margin-top: 12px; }
     `;
     const tokens = window.__taskmate_design && window.__taskmate_design.styles
@@ -1925,6 +2162,7 @@ class TaskMateChildCard extends LitElement {
       show_due_days_only: true,      // Whether to apply due_days filtering at all
       show_badges: true,             // Show badge strip between points and chores
       show_next_badge: true,         // Show progress toward the closest unearned badge
+      show_badge_nudge: true,        // Encouraging line when one away from that badge
             header_color: '#9b59b6',
     ...config,
     };
@@ -2055,12 +2293,15 @@ class TaskMateChildCard extends LitElement {
             <div class="child-name-container">
               <div class="child-name">${child.name}</div>
               ${child.level ? html`
-                <div class="child-level" title="${child.level_progress || 0} / ${child.level_target || 100} XP">
+                <div class="child-level" title="${_ltrNums(`${child.level_progress || 0} / ${child.level_target || 100}`)} XP">
                   <span class="level-badge">${this._t('child.level_label', { level: child.level })}</span>
                   <div class="level-xp-track">
                     <div class="level-xp-fill" style="width: ${Math.max(0, Math.min(100, Math.round(((child.level_progress || 0) / (child.level_target || 100)) * 100)))}%"></div>
                   </div>
+                  ${this._renderFreezeBadge(child, "level-badge freeze-badge")}
                 </div>
+              ` : child.streak_freezes > 0 ? html`
+                <div class="child-level">${this._renderFreezeBadge(child, "level-badge freeze-badge")}</div>
               ` : ''}
             </div>
           </div>
@@ -2087,6 +2328,10 @@ class TaskMateChildCard extends LitElement {
           </div>
         </div>
 
+        ${this._renderBirthdayBanner(child, false)}
+        ${this._renderInspectionBanners(child, false, pointsName)}
+        ${this._renderChildUndo(child, todaysCompletions)}
+
         ${attrs.vacation_active ? html`
           <div class="vacation-banner">
             <ha-icon icon="mdi:palm-tree"></ha-icon>
@@ -2103,7 +2348,7 @@ class TaskMateChildCard extends LitElement {
                 <ha-icon icon="${b.icon || 'mdi:medal'}"></ha-icon>
               </div>
             `)}
-            ${earnedBadges.length > 5 ? html`<span class="badge-strip-more">+${earnedBadges.length - 5} →</span>` : ''}
+            ${earnedBadges.length > 5 ? html`<span class="badge-strip-more">+${earnedBadges.length - 5} ${this.getAttribute?.("dir") === "rtl" ? "←" : "→"}</span>` : ''}
           </div>
         ` : ''}
 
@@ -2125,6 +2370,9 @@ class TaskMateChildCard extends LitElement {
                 aria-valuenow="${nextBadge.pct}" aria-valuemin="0" aria-valuemax="100">
                 <i style="width: ${nextBadge.pct}%; background: ${this._tierColor(nextBadge.badge.tier)}"></i>
               </div>
+              ${this._badgeNudgeText(nextBadge)
+                ? html`<div class="next-badge-nudge">${this._badgeNudgeText(nextBadge)}</div>`
+                : ''}
             </div>
           </div>
         ` : ''}
@@ -2166,8 +2414,10 @@ class TaskMateChildCard extends LitElement {
         ${this._renderSwappable(allChores, child, pointsIcon)}
 
         ${this._celebrating ? this._renderCelebration() : ""}
+        ${this._renderInspectionCelebration(pointsIcon)}
         ${this._confetti.length > 0 ? this._renderConfetti() : ""}
         ${this._renderPhotoCapture()}
+        ${this._renderExtraCapture()}
         <input type="file" id="tm-photo-input" accept="image/*" capture="environment"
                style="display:none" @change="${this._onPhotoSelected}">
 
@@ -2237,9 +2487,24 @@ class TaskMateChildCard extends LitElement {
     const c = best.badge.closest_criterion;
     // Older backends (and criteria-free, manual-award badges) have no
     // closest_criterion — fall back to the percentage.
-    best.label = c && c.target ? `${c.current} / ${c.target}` : `${best.pct}%`;
-    best.name = this._badgeName(best.badge);
+    best.label = c && c.target ? _ltrNums(`${c.current} / ${c.target}`) : `${best.pct}%`;
+    best.name = _ltrNums(this._badgeName(best.badge));
     return best;
+  }
+
+  /* "Nearly there" (#890) — the line of encouragement under the next-badge bar.
+
+     It fires on the last remaining unit and nothing else, measured in the
+     criterion's own units rather than percent: 90% of a ten-week badge is one
+     week away, 90% of a hundred-point badge is ten points away. Rare on
+     purpose — a line that shows for half the climb has stopped meaning
+     anything by the time it matters. Manual-award badges carry no criterion
+     and so never nudge. */
+  _badgeNudgeText(nextBadge) {
+    if (this.config.show_badge_nudge === false) return "";
+    const c = nextBadge?.badge?.closest_criterion;
+    if (!c) return "";
+    return Number(c.target) - Number(c.current) === 1 ? this._t("badges.one_more") : "";
   }
 
   // Built-in badge names arrive from the sensor in English; the localised
@@ -2262,6 +2527,63 @@ class TaskMateChildCard extends LitElement {
         ? html`<img src="${face.url}" alt="${child.name}">`
         : (child.name || "?").split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
     return html`<div class="av" style="--av:${size}px;--ac:${tone}">${inner}</div>`;
+  }
+
+  // Teamwork chores (#928). The backend emits `team` only on a teamwork chore:
+  // {size, joined?: [child ids who have joined today], split?}. Null for every
+  // other chore, so callers can gate on it.
+  _teamState(chore, child) {
+    const team = chore && chore.team;
+    const size = team ? Number(team.size) || 0 : 0;
+    if (size < 2) return null;
+    const joined = Array.isArray(team.joined) ? team.joined.map(String) : [];
+    return { size, joined, mine: joined.includes(String(child?.id || "")) };
+  }
+
+  /** "2 / 3 joined" with the joiners' avatars. Shared by every render path —
+   *  the classic row, the designed rows (via _designChoreMeta) and the
+   *  pre-reader tile — so the progress can't go missing on one of them. */
+  _renderTeamProgress(team, cls = "") {
+    const attrs = (window.__taskmate_attrs && window.__taskmate_attrs(this.hass, this.config.entity))
+      || this.hass?.states?.[this.config.entity]?.attributes || {};
+    const kids = attrs.children || [];
+    const fallback = ["#ff7043", "#42a5f5", "#66bb6a", "#ab47bc", "#ffa726", "#26c6da"];
+    const label = _ltrNums(this._t("child.team_progress", { joined: team.joined.length, size: team.size }));
+    return html`<span class="tm-team ${cls} ${team.mine ? "mine" : ""}" aria-label="${label}">
+      <span class="tm-team-avs">${team.joined.map((id) => {
+        const i = kids.findIndex((k) => String(k.id) === id);
+        const kid = kids[i] || { name: "?" };
+        const a = kid.avatar || "";
+        const tone = `var(--tmd-c${((i < 0 ? 0 : i) % 6) + 1}, ${fallback[(i < 0 ? 0 : i) % 6]})`;
+        return html`<span class="tm-team-av" style="--ac:${tone}" title="${kid.name || ""}">${a.startsWith("mdi:")
+          ? html`<ha-icon icon="${a}"></ha-icon>`
+          : a ? html`<img src="${a}" alt="">` : (kid.name || "?").slice(0, 1).toUpperCase()}</span>`;
+      })}</span>
+      <span class="tm-team-txt">👥 ${label}${team.mine ? html` · ${this._t("child.team_you_joined")}` : ""}</span>
+    </span>`;
+  }
+
+  /** A teamwork Done tap: join (no completion yet) or, if already in, leave. */
+  async _handleTeamTap(chore, child, team, photoUrl = null) {
+    if (this._loading[chore.id]) return;
+    this._loading = { ...this._loading, [chore.id]: true };
+    this.requestUpdate();
+    try {
+      if (team.mine) {
+        await this.hass.callService("taskmate", "leave_team_chore", { chore_id: chore.id, child_id: child.id });
+      } else {
+        await this.hass.callService("taskmate", "complete_chore", {
+          chore_id: chore.id,
+          child_id: child.id,
+          ...(photoUrl ? { photo_url: photoUrl } : {}),
+        });
+      }
+    } catch (error) {
+      console.error("Failed to update teamwork chore:", error);
+    } finally {
+      this._loading = { ...this._loading, [chore.id]: false };
+      this.requestUpdate();
+    }
   }
 
   _choreEmoji(chore) {
@@ -2300,6 +2622,23 @@ class TaskMateChildCard extends LitElement {
   }
 
   /** Mirror of _renderChoreCard's "completed today" detection, designed branch only. */
+  // How many times this chore can still be ticked TODAY.
+  //
+  // Normally the chore's own daily_limit, clamped to 1 for a first_come race.
+  // A weekly target (#883) clamps it again: once the week's quota is full there
+  // is no allowance left, so a chore with daily_limit 5 and 2/2 done reads as
+  // finished rather than staying tappable — the tap would only be one
+  // complete_chore refuses (#805). Only applied once the child has ticked it
+  // today; a quota filled on earlier days leaves the row locked instead, so a
+  // green "done" row never appears with no completion behind it to undo.
+  _effectiveDailyLimit(chore, child, countToday, isFirstCome) {
+    const limit = isFirstCome ? 1 : (chore.daily_limit || 1);
+    const target = Number(chore.weekly_target) || 0;
+    if (target <= 0 || countToday <= 0) return limit;
+    const doneThisWeek = Number((child?.weekly_chore_progress || {})[chore.id] || 0);
+    return Math.min(limit, countToday + Math.max(0, target - doneThisWeek));
+  }
+
   _isChoreDone(chore, child, todaysCompletions) {
     // async_parent_complete_chore writes child_id="__parent__" to dismiss a
     // chore for the WHOLE pool with zero points — it never credits a specific
@@ -2329,7 +2668,7 @@ class TaskMateChildCard extends LitElement {
     // the filter and the backend both clamp it to 1 (coord_assignments). Reading
     // the raw daily_limit here would leave the winner's own row looking incomplete
     // and tappable, and complete_chore would then silently no-op the tap (#805).
-    const done = count >= (isFirstCome ? 1 : (chore.daily_limit || 1));
+    const done = count >= this._effectiveDailyLimit(chore, child, count, isFirstCome);
     return { done, completions: childCompletionsToday };
   }
 
@@ -2388,8 +2727,11 @@ class TaskMateChildCard extends LitElement {
       // dim/show only — hide is filtered upstream same as recurrence). Never true
       // for the winner's own row: _isFirstComeLocked is only set on siblings.
       const firstComeLocked = !!chore._isFirstComeLocked && !done;
+      // Weekly quota filled — nothing owed until Monday, so the tap is refused
+      // the same way a recurrence window refuses one.
+      const weeklyDone = !!chore._weeklyTargetMet && !done;
       const onAct = () => {
-        if (loading || blocked || recLocked || firstComeLocked) return;
+        if (loading || blocked || recLocked || firstComeLocked || weeklyDone) return;
         if (done) this._handleUndo(chore, child, completions);
         else this._handleComplete(chore, child);
       };
@@ -2402,16 +2744,20 @@ class TaskMateChildCard extends LitElement {
         (blocked && dependencyMode === "dim") ||
         (chore._isRecurrenceLocked && recurrenceDoneMode === "dim") ||
         (chore._isFirstComeLocked && firstComeClaimedMode === "dim") ||
+        weeklyDone ||
         chore._isLockedPreview === true
       );
       return {
-        chore, child, done, loading, onAct, index: i, dimmed, blocked, recLocked, firstComeLocked,
+        chore, child, done, loading, onAct, index: i, dimmed, blocked, recLocked, firstComeLocked, weeklyDone,
         tone: this._designTone(i),
         glyph: this._choreGlyph(chore),
         points: chore.effective_points ?? chore.points,
         timed: chore.task_type === "timed",
         mandatory: chore.mandatory === true,
         photo: chore.require_photo === true,
+        openEnded: chore.open_ended === true,
+        auction: !!(chore.auction && chore.auction.child_id),
+        team: this._teamState(chore, child),
         pointsIcon,
         todaysCompletions,
       };
@@ -2453,6 +2799,9 @@ class TaskMateChildCard extends LitElement {
     return html`<ha-card class="tmd" style="--hd:${hd}">
       ${this._designHeaderFull(child, design, remaining, rows.length, tone, pendingPoints)}
       <div class="tmd-bd">
+        ${this._renderBirthdayBanner(child, true)}
+        ${this._renderInspectionBanners(child, true, attrs.points_name || this._t("common.stars"))}
+        ${this._renderChildUndo(child, todaysCompletions)}
         ${attrs.vacation_active ? html`
           <div class="tmd-vacation">
             <ha-icon icon="mdi:palm-tree"></ha-icon>
@@ -2466,7 +2815,7 @@ class TaskMateChildCard extends LitElement {
                 style="--t:${this._tierColor(b.tier)}">
                 <ha-icon icon="${b.icon || "mdi:medal"}"></ha-icon>
               </div>`)}
-            ${earnedBadges.length > 5 ? html`<span class="more">+${earnedBadges.length - 5} →</span>` : ""}
+            ${earnedBadges.length > 5 ? html`<span class="more">+${earnedBadges.length - 5} ${this.getAttribute?.("dir") === "rtl" ? "←" : "→"}</span>` : ""}
           </div>` : ""}
         ${nextBadge ? html`
           <div class="tmd-next-badge" role="button" tabindex="0"
@@ -2486,6 +2835,9 @@ class TaskMateChildCard extends LitElement {
                 aria-valuenow="${nextBadge.pct}" aria-valuemin="0" aria-valuemax="100">
                 <i style="width:${nextBadge.pct}%;background:${this._tierColor(nextBadge.badge.tier)}"></i>
               </div>
+              ${this._badgeNudgeText(nextBadge)
+                ? html`<div class="nudge">${this._badgeNudgeText(nextBadge)}</div>`
+                : ""}
             </div>
           </div>` : ""}
         ${sectionLine}
@@ -2494,11 +2846,25 @@ class TaskMateChildCard extends LitElement {
         ${this._renderSwappable(allChores, child, pointsIcon)}
       </div>
       ${this._celebrating ? this._renderCelebration() : ""}
+      ${this._renderInspectionCelebration(pointsIcon)}
       ${this._confetti.length > 0 ? this._renderConfetti() : ""}
       ${this._renderPhotoCapture()}
+      ${this._renderExtraCapture()}
       <input type="file" id="tm-photo-input" accept="image/*" capture="environment"
              style="display:none" @change="${this._onPhotoSelected}">
     </ha-card>`;
+  }
+
+  /**
+   * Streak-freeze tokens (#925): "❄️ N" in the header, once the child holds
+   * at least one. Called from the classic header AND _designHeaderFull, so
+   * every design shows it (the two-render-paths rule).
+   */
+  _renderFreezeBadge(child, cls) {
+    const n = child.streak_freezes;
+    if (typeof n !== "number" || n <= 0) return "";
+    return html`<span class="${cls}" title="${this._t("streak.freezes_tooltip")}"
+      aria-label="${this._t("streak.freezes_aria", { count: n })}">❄️ ${n}</span>`;
   }
 
   /** Designed header: avatar/title, remaining pill, pending-points chip. */
@@ -2508,7 +2874,7 @@ class TaskMateChildCard extends LitElement {
       : this._t("points_display.single_title", { name: child.name });
     const sub = design === "console"
       ? (child.level ? `${this._t("child.level_label", { level: child.level })} · ${remaining} ACTIVE` : `${remaining} ACTIVE`)
-      : design === "cleanpro" ? `${remaining} / ${total}`
+      : design === "cleanpro" ? _ltrNums(`${remaining} / ${total}`)
       : `${remaining} · ${this._t("child.todays_chores")}`;
     // Avatar picker: classic makes the avatar tappable; the designed header
     // must too, or the picker only ever works on classic. Same eligibility
@@ -2526,6 +2892,7 @@ class TaskMateChildCard extends LitElement {
         </div>
         <span class="tt">${title}<small>${sub}</small></span>
         ${remaining === 0 && total > 0 ? html`<span class="pill">🎉</span>` : ""}
+        ${this._renderFreezeBadge(child, "tmd-freeze")}
         ${pendingPoints > 0 ? html`<span class="tmd-pending">
           <ha-icon icon="mdi:timer-sand"></ha-icon>+${pendingPoints}</span>` : ""}
         ${canChange && this._avatarPickerOpen ? this._renderAvatarPicker(child, opts) : ""}
@@ -2550,16 +2917,40 @@ class TaskMateChildCard extends LitElement {
           ? this._t("child.claimed_by_another", { name: r.chore._firstComeCompletedByName })
           : this._t("child.claimed_by_another_generic"))
       : "";
+    // Weekly target (#883): shown from the first tick so the child can see
+    // where they are, not only once the quota is full.
+    const weeklyLabel = r.chore._weeklyTarget > 0
+      ? this._t("child.weekly_target_progress", { done: r.chore._weeklyProgress, target: r.chore._weeklyTarget })
+      : "";
     return html`
-      ${r.mandatory || r.photo || depNames.length || recLabel || firstComeLabel ? html`
+      ${r.mandatory || r.auction || r.photo || r.openEnded || depNames.length || recLabel || firstComeLabel || weeklyLabel || (r.team && !r.done) ? html`
         <div class="tmd-meta">
           ${r.mandatory ? html`<span class="tmd-tag mandatory">⚠ ${this._t("child.mandatory")}</span>` : ""}
+          ${r.auction ? html`<span class="tmd-tag auction">🔨 ${this._t("child.won_at_auction")}</span>` : ""}
           ${r.photo ? html`<span class="tmd-tag photo">📷 ${this._t("child.photo_needed")}</span>` : ""}
+          ${r.openEnded ? html`<span class="tmd-tag photo">✍️ ${this._t("child.open_ended_tag")}</span>` : ""}
           ${depNames.length ? html`<span class="tmd-tag">🔒 ${this._t("child.blocked_by_dependency", { chores: depNames.join(", ") })}</span>` : ""}
           ${recLabel ? html`<span class="tmd-tag">🕒 ${recLabel}</span>` : ""}
           ${firstComeLabel ? html`<span class="tmd-tag">✅ ${firstComeLabel}</span>` : ""}
+          ${weeklyLabel ? html`<span class="tmd-tag">📅 ${weeklyLabel}</span>` : ""}
+          ${r.team && !r.done ? this._renderTeamProgress(r.team, "tmd-tag") : ""}
         </div>` : ""}
-      ${showDesc ? html`<div class="tmd-desc">${r.chore.description}</div>` : ""}`;
+      ${showDesc ? html`<div class="tmd-desc">${r.chore.description}</div>` : ""}
+      ${r.done ? "" : this._renderRejectNote(r.chore, r.child, "tmd-reject")}
+      ${this._renderInspectionTag(r.chore, r.child)}
+      ${r.done ? "" : this._renderInspectionNote(r.chore, r.child, "tm-insp-note designed")}`;
+  }
+
+  /**
+   * Reject reasons (#976): why a parent sent this chore back. The overview
+   * sensor carries at most a few per child, and drops one as soon as the
+   * child has another go. Called from the classic chore card, the timed card
+   * AND _designChoreMeta, so every design shows it (two-render-paths rule).
+   */
+  _renderRejectNote(chore, child, cls) {
+    const rej = ((child && child.rejections) || []).find(r => r.kind === "chore" && r.id === chore.id);
+    if (!rej || !rej.reason) return "";
+    return html`<div class="${cls}" role="note">↩️ ${this._t("child.rejected_note", { reason: rej.reason })}</div>`;
   }
 
   _designHeader(child, tt, sub, tone, pillText) {
@@ -2572,8 +2963,13 @@ class TaskMateChildCard extends LitElement {
   }
 
   _designDoneBtn(r, label, cls) {
+    // Teamwork (#928): one place relabels the button for every design.
+    if (r.team) {
+      label = r.team.mine ? this._t("child.team_leave") : `${r.photo ? "📷 " : ""}${this._t("child.team_join")}`;
+      cls = `${cls || ""} ${r.team.mine ? "tm-team-leave" : ""}`;
+    }
     return html`<button class="btn ${cls || ""}"
-      ?disabled=${r.loading || r.blocked || r.recLocked || r.firstComeLocked}
+      ?disabled=${r.loading || r.blocked || r.recLocked || r.firstComeLocked || r.weeklyDone}
       @click=${(e) => { e.stopPropagation(); r.onAct(); }}>${label}</button>`;
   }
 
@@ -2602,7 +2998,7 @@ class TaskMateChildCard extends LitElement {
     if (rows.length === 0) return html`<div class="tmd-empty">${this._t("child.all_done")}</div>`;
     return html`<div class="tmd-chores">
       ${rows.map(r => r.timed ? this._designTimed(r) : html`
-        <div class="tmd-chore ${r.done ? "done" : ""} ${r.mandatory ? "mandatory" : ""} ${r.dimmed ? "dimmed" : ""}" style="--ac:${r.tone}">
+        <div class="tmd-chore ${r.done ? "done" : ""} ${r.mandatory ? "mandatory" : ""} ${r.dimmed ? "dimmed" : ""} ${this._inspectionRowClass(r.chore, r.child)}" style="--ac:${r.tone}">
           <div class="num-badge" style="${r.done ? "--ac:var(--tmd-good)" : ""}">${r.done ? "✓" : r.index + 1}</div>
           <span class="ch-emoji">${r.glyph}</span>
           <div class="ch-mid">
@@ -2620,9 +3016,9 @@ class TaskMateChildCard extends LitElement {
 
   _designConsole(child, rows, _remaining, _tone) {
     if (rows.length === 0) return html`<div class="tmd-empty">${this._t("child.all_done")}</div>`;
-    return html`<div class="grid">
+    return html`<div class="grid tmd-quests">
       ${rows.map(r => r.timed ? this._designTimed(r) : html`
-        <div class="tmd-quest ${r.done ? "done" : ""} ${r.mandatory ? "mandatory" : ""} ${r.dimmed ? "dimmed" : ""}" style="--ac:${r.tone}">
+        <div class="tmd-quest ${r.done ? "done" : ""} ${r.mandatory ? "mandatory" : ""} ${r.dimmed ? "dimmed" : ""} ${this._inspectionRowClass(r.chore, r.child)}" style="--ac:${r.tone}">
           <div class="num q-num" style="${r.done ? "color:var(--tmd-good)" : ""}">${r.done ? "✓" : String(r.index + 1).padStart(2, "0")}</div>
           <span class="q-emoji">${r.glyph}</span>
           <div class="q-mid">
@@ -2633,7 +3029,7 @@ class TaskMateChildCard extends LitElement {
             ${this._designChoreMeta(r)}
           </div>
           ${r.done
-            ? this._designUndoChip(r, html`↩`, "q-undo")
+            ? this._designUndoChip(r, html`${this.getAttribute?.("dir") === "rtl" ? "↪" : "↩"}`, "q-undo")
             : this._designDoneBtn(r, r.photo ? `📷 ${this._t("child.done") || "CLAIM"}` : (this._t("child.done") || "CLAIM"))}
         </div>
         ${this._designBonus(r)}`)}
@@ -2644,7 +3040,7 @@ class TaskMateChildCard extends LitElement {
     if (rows.length === 0) return html`<div class="tmd-empty">${this._t("child.all_done")}</div>`;
     return html`<div class="tmd-checklist">
       ${rows.map(r => r.timed ? this._designTimed(r) : html`
-        <div class="tmd-check ${r.done ? "done" : ""} ${r.mandatory ? "mandatory" : ""} ${r.dimmed ? "dimmed" : ""}" style="--ac:${r.tone}">
+        <div class="tmd-check ${r.done ? "done" : ""} ${r.mandatory ? "mandatory" : ""} ${r.dimmed ? "dimmed" : ""} ${this._inspectionRowClass(r.chore, r.child)}" style="--ac:${r.tone}">
           <div class="c-num" style="${r.done ? "--ac:var(--tmd-good)" : ""}">${r.done ? "✓" : r.index + 1}</div>
           <span class="c-emoji">${r.glyph}</span>
           <div class="c-mid">
@@ -2671,6 +3067,7 @@ class TaskMateChildCard extends LitElement {
     const swappable = (allChores || []).filter(c =>
       !["everyone", "unassigned"].includes(c.assignment_mode || "everyone") &&
       c.enabled !== false &&
+      !c.auction &&
       c.assignment_current_child_id &&
       c.assignment_current_child_id !== child.id &&
       (!Array.isArray(c.assigned_to) || c.assigned_to.length === 0 || c.assigned_to.includes(child.id))
@@ -2796,6 +3193,10 @@ class TaskMateChildCard extends LitElement {
       const assignedToStrings = assignedTo.map(id => String(id));
       const isAssignedToAll = assignedToStrings.length === 0;
       let isAssignedToChild = isAssignedToAll || assignedToStrings.includes(childId);
+      // Won at auction (#982): today's occurrence belongs to the winner alone,
+      // whatever the assignment mode — "everyone" chores included.
+      const auctionWin = chore.auction && chore.auction.child_id ? String(chore.auction.child_id) : "";
+      if (auctionWin) isAssignedToChild = auctionWin === String(childId);
 
       // Dynamic assignment. Rotation modes (alternating / random / balanced):
       // only the currently-active child sees the chore — the backend caches
@@ -2807,8 +3208,8 @@ class TaskMateChildCard extends LitElement {
       // everyone — including today's active child.
       const assignmentMode = chore.assignment_mode || 'everyone';
       if (assignmentMode !== 'everyone' && isAssignedToChild) {
-        const activeId = chore.assignment_current_child_id ? String(chore.assignment_current_child_id) : '';
-        if (assignmentMode !== 'first_come') {
+        const activeId = auctionWin || (chore.assignment_current_child_id ? String(chore.assignment_current_child_id) : '');
+        if (assignmentMode !== 'first_come' && !auctionWin) {
           isAssignedToChild = activeId !== '' && activeId === String(childId);
         }
         if (isAssignedToChild) {
@@ -2930,10 +3331,15 @@ class TaskMateChildCard extends LitElement {
       chore._visibilityEntity = visibilityEntity;
       chore._visibilityOK = visibilityOK;
 
-      // Check due_days — if chore has due_days set and today isn't one of them
+      // Check due_days — if chore has due_days set and today isn't one of them.
+      // A calendar move/removal (#977) settles today outright: occ_today is
+      // false when today's occurrence was moved away or removed, true when one
+      // was moved onto today, and absent otherwise. A one-off chore dated for
+      // another day carries occ_today false too (#992).
+      if (chore.occ_today === false) return false;
       const dueDays = chore.due_days || [];
       const hasDueDays = dueDays.length > 0;
-      const isDueToday = !hasDueDays || dueDays.includes(todayDow);
+      const isDueToday = chore.occ_today === true || !hasDueDays || dueDays.includes(todayDow);
 
       // If due_days filtering is on and mode is "hide", exclude not-due chores
       if (showDueDaysOnly && hasDueDays && !isDueToday && dueDaysMode === 'hide') {
@@ -2979,6 +3385,20 @@ class TaskMateChildCard extends LitElement {
       );
       chore._isRecurrenceLocked = chore._isRecurring && !availableNow && !completedToday;
       if (chore._isRecurrenceLocked && recurrenceDoneMode === 'hide') return false;
+
+      // Weekly target (#883): the child picks which days, so the chore keeps
+      // being offered until the week's quota is filled. The count comes from
+      // the per-child map on the overview sensor — the card only ever sees
+      // today's completions, so it can't total a week by itself. Excluding
+      // completedToday keeps the row live for an undo when today's tick was
+      // the one that filled it, exactly as the recurrence lock does.
+      chore._weeklyTarget = Number(chore.weekly_target) || 0;
+      chore._weeklyProgress = chore._weeklyTarget > 0
+        ? Number((child.weekly_chore_progress || {})[chore.id] || 0)
+        : 0;
+      chore._weeklyTargetMet = chore._weeklyTarget > 0
+        && chore._weeklyProgress >= chore._weeklyTarget
+        && !completedToday;
 
       // Mark whether this chore's time period has elapsed (grace-aware).
       chore._isTimeElapsed = this._isTimePeriodElapsed(chore);
@@ -3251,13 +3671,30 @@ class TaskMateChildCard extends LitElement {
     });
   }
 
-  _getMidnightCountdown() {
-    const tz = this.hass?.config?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const now = new Date();
-    // Get tomorrow midnight in HA timezone
-    const tomorrow = new Date(now.toLocaleDateString("en-CA", { timeZone: tz }) + "T00:00:00");
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const diffMs = tomorrow - now;
+  /** Wall-clock parts of `date` in `tz`, as a UTC timestamp (ms). */
+  _wallClockMs(date, tz) {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, hourCycle: "h23",
+        year: "numeric", month: "numeric", day: "numeric",
+        hour: "numeric", minute: "numeric", second: "numeric",
+      }).formatToParts(date).map(p => [p.type, Number(p.value)])
+    );
+    return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  }
+
+  _getMidnightCountdown(now = new Date()) {
+    // Everything happens in HA's zone (#948): parsing a "YYYY-MM-DDT00:00" string
+    // would land on the browser's midnight instead, hours off when they differ.
+    const tz = this._getTimezone();
+    const wall = this._wallClockMs(now, tz);
+    const d = new Date(wall);
+    const nextMidnightWall = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+    // Turn that wall-clock midnight into an instant using HA's UTC offset at
+    // midnight itself, so a DST change during the day is counted correctly.
+    let tomorrow = nextMidnightWall - (wall - now.getTime());
+    tomorrow = nextMidnightWall - (this._wallClockMs(new Date(tomorrow), tz) - tomorrow);
+    const diffMs = tomorrow - now.getTime();
     if (diffMs <= 0) return null;
 
     const totalMins = Math.floor(diffMs / 60000);
@@ -3439,6 +3876,8 @@ class TaskMateChildCard extends LitElement {
             </div>`}
         ${this.config.pre_reader_labels === true
           ? html`<div class="pre-tile-label">${chore.name}</div>` : ''}
+        ${!isDone && this._teamState(chore, child)
+          ? this._renderTeamProgress(this._teamState(chore, child), 'pre-tile-team') : ''}
       </button>
     `;
   }
@@ -3484,7 +3923,7 @@ class TaskMateChildCard extends LitElement {
     // Clamped for first_come the same way the filter and the backend clamp it: a
     // stored daily_limit > 1 must not make the winner's finished row read as still
     // outstanding, or it invites a tap that complete_chore silently swallows (#805).
-    const dailyLimit = isFirstCome ? 1 : (chore.daily_limit || 1);
+    const dailyLimit = this._effectiveDailyLimit(chore, child, completionsToday, isFirstCome);
 
     // Check for optimistic completions (chores just completed but not yet confirmed by HA)
     const optimisticKey = `${chore.id}_${child.id}`;
@@ -3537,6 +3976,9 @@ class TaskMateChildCard extends LitElement {
     const firstComeClaimedMode = this.config.first_come_claimed_mode || 'hide';
     const firstComeLocked = !!chore._isFirstComeLocked && !isCompletedForToday;
     const notAvailableFirstCome = firstComeLocked && firstComeClaimedMode === 'dim';
+    // Weekly quota filled (#883). Dimmed and non-interactive: the backend
+    // would refuse the completion, so a live row would just swallow the tap.
+    const weeklyDone = !!chore._weeklyTargetMet && !isCompletedForToday;
     // Elapsed: only dim incomplete chores — completed ones keep their green "done" style
     const elapsedTimeMode = this.config.elapsed_time_mode || 'dim';
     const timeElapsed = chore._isTimeElapsed && !isCompletedForToday && elapsedTimeMode === 'dim';
@@ -3560,13 +4002,14 @@ class TaskMateChildCard extends LitElement {
       if (depBlocked) return;  // Prerequisite chore not approved yet
       if (timeElapsed) return;  // Time period passed — not interactive
       if (firstComeLocked) return;  // Claimed by another child today — not interactive
+      if (weeklyDone) return;  // Weekly target already met — nothing owed until Monday
       if (isCompletedForToday) {
         this._handleUndo(chore, child, childCompletionsToday);
       } else {
         this._handleComplete(chore, child);
       }
     };
-    const isInteractive = !(isLoading || notDueToday || recurrenceLocked || isLockedPreview || depBlocked || timeElapsed || firstComeLocked);
+    const isInteractive = !(isLoading || notDueToday || recurrenceLocked || isLockedPreview || depBlocked || timeElapsed || firstComeLocked || weeklyDone);
     const handleRowKeyDown = (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
@@ -3574,6 +4017,7 @@ class TaskMateChildCard extends LitElement {
       }
     };
 
+    const team = isCompletedForToday ? null : this._teamState(chore, child);
     const titleText = isLockedPreview
       ? (lockedUntilLabel || this._t('child.chore_locked_until_generic'))
       : depBlocked
@@ -3586,13 +4030,17 @@ class TaskMateChildCard extends LitElement {
             ? (chore._firstComeCompletedByName
                 ? this._t('child.claimed_by_another', { name: chore._firstComeCompletedByName })
                 : this._t('child.claimed_by_another_generic'))
+          : weeklyDone
+            ? this._t('child.weekly_target_done')
           : isCompletedForToday
             ? this._t('child.click_to_undo')
+          : team
+            ? this._t(team.mine ? 'child.team_tap_to_leave' : 'child.team_tap_to_join')
             : this._t('child.click_to_complete');
 
     return html`
       <div
-        class="chore-card ${chore.mandatory ? "mandatory" : ""} ${isLoading ? "loading" : ""} ${isCelebrating ? "celebrating" : ""} ${isCompletedForToday ? "completed" : ""} ${notDueToday ? "not-due-today" : ""} ${notAvailableRecurrence ? "recurrence-unavailable" : ""} ${notAvailableFirstCome ? "first-come-unavailable" : ""} ${timeElapsed ? "time-elapsed" : ""} ${isLockedPreview ? "chore-locked" : ""} ${depDimmed ? "dependency-blocked" : ""}"
+        class="chore-card ${chore.mandatory ? "mandatory" : ""} ${isLoading ? "loading" : ""} ${isCelebrating ? "celebrating" : ""} ${isCompletedForToday ? "completed" : ""} ${notDueToday ? "not-due-today" : ""} ${notAvailableRecurrence || weeklyDone ? "recurrence-unavailable" : ""} ${notAvailableFirstCome ? "first-come-unavailable" : ""} ${timeElapsed ? "time-elapsed" : ""} ${isLockedPreview ? "chore-locked" : ""} ${depDimmed ? "dependency-blocked" : ""} ${this._inspectionRowClass(chore, child)}"
         role="button"
         tabindex="${isInteractive ? '0' : '-1'}"
         aria-disabled="${isInteractive ? 'false' : 'true'}"
@@ -3606,8 +4054,11 @@ class TaskMateChildCard extends LitElement {
             ${this._choreNumberBadge(chore, colorClass, choreNumber)}
           </div>
           <div class="chore-details">
-            <div class="chore-name">${chore.name}${chore.mandatory ? html`<span class="mandatory-badge">⚠ ${this._t('child.mandatory')}</span>` : ''}</div>
+            <div class="chore-name">${chore.name}${chore.mandatory ? html`<span class="mandatory-badge">⚠ ${this._t('child.mandatory')}</span>` : ''}${chore.auction && chore.auction.child_id ? html`<span class="auction-badge">🔨 ${this._t('child.won_at_auction')}</span>` : ''}</div>
             ${this._renderDeadlineBadge(chore, isCompletedForToday)}
+            ${isCompletedForToday ? '' : this._renderRejectNote(chore, child, 'tm-reject-note')}
+            ${this._renderInspectionTag(chore, child)}
+            ${isCompletedForToday ? '' : this._renderInspectionNote(chore, child, 'tm-insp-note')}
             ${chore.difficulty ? html`<span class="difficulty-badge difficulty-${chore.difficulty}">${this._t('child.difficulty_' + chore.difficulty) || chore.difficulty}</span>` : ''}
             ${this.config.show_description && chore.description ? html`
               <div class="chore-description">${chore.description}</div>
@@ -3636,20 +4087,29 @@ class TaskMateChildCard extends LitElement {
               <ha-icon icon="${pointsIcon}"></ha-icon>
               +${chore.effective_points ?? chore.points}
               ${dailyLimit > 1 ? html`<span style="font-size: 0.8em; opacity: 0.7;">(${completionsToday}/${dailyLimit})</span>` : ''}
+              ${chore._weeklyTarget > 0 ? html`<span style="font-size: 0.8em; opacity: 0.7;">${this._t('child.weekly_target_progress', { done: chore._weeklyProgress, target: chore._weeklyTarget })}</span>` : ''}
             </div>
             ${chore.require_photo && !isCompletedForToday ? html`
               <div class="recurrence-label">
                 <span class="photo-badge">📷 ${this._t('child.photo_needed')}</span>
               </div>
             ` : ''}
+            ${chore.open_ended && !isCompletedForToday ? html`
+              <div class="recurrence-label">
+                <span class="photo-badge">✍️ ${this._t('child.open_ended_tag')}</span>
+              </div>
+            ` : ''}
+            ${team ? html`<div>${this._renderTeamProgress(team, 'team-label')}</div>` : ''}
           </div>
         </div>
-        <div class="chore-checkbox">
+        <div class="chore-checkbox ${team ? 'team' : ''} ${team?.mine ? 'team-joined' : ''}">
           ${isLoading
             ? html`<ha-icon icon="mdi:loading" style="animation: spin 1s linear infinite; color: var(--fun-purple);"></ha-icon>`
             : isLockedPreview
               ? html`<ha-icon icon="mdi:lock-clock" class="chore-lock-icon"></ha-icon>`
-              : html`<ha-icon icon="mdi:check-bold"></ha-icon>`}
+              : team
+                ? html`<ha-icon icon="${team.mine ? 'mdi:account-multiple-minus' : 'mdi:account-multiple-plus'}"></ha-icon>`
+                : html`<ha-icon icon="mdi:check-bold"></ha-icon>`}
         </div>
       </div>
     `;
@@ -3752,6 +4212,7 @@ class TaskMateChildCard extends LitElement {
           </div>
           <div class="chore-details">
             <div class="chore-name">${chore.name}</div>
+            ${state === 'idle' ? this._renderRejectNote(chore, child, 'tm-reject-note') : ''}
           </div>
           <div class="timed-rate">${rateLabel}</div>
         </div>
@@ -3799,7 +4260,7 @@ class TaskMateChildCard extends LitElement {
 
         ${maxMin > 0 ? html`
           <div class="daily-cap-bar">
-            <span class="cap-label ${nearCap ? 'near-cap' : ''}">${this._t('child.timed_cap_label', {used: usedMin, max: maxMin})}</span>
+            <span class="cap-label ${nearCap ? 'near-cap' : ''}">${_ltrNums(this._t('child.timed_cap_label', {used: usedMin, max: maxMin}))}</span>
             <div class="cap-track">
               <div class="cap-fill ${nearCap ? 'warning' : ''}" style="width: ${capPct}%"></div>
             </div>
@@ -3917,7 +4378,16 @@ class TaskMateChildCard extends LitElement {
 
     // Undoing removes already-awarded points, so it is parent-only — short-circuit
     // for non-parents with one friendly message instead of a doomed service call.
+    // The one exception is a child's own tick still inside the undo window
+    // (#918), which goes through the restricted undo_chore service.
     if (!window.__taskmate_is_parent(this.hass)) {
+      const own = (todaysCompletions || []).find(
+        c => c.chore_id === chore.id && c.child_id === child.id && c.bonus_subtask_id === subtask.id
+      );
+      if (this._childCanUndo(own)) {
+        await this._childUndo(own, chore, child);
+        return;
+      }
       this._notifyUndo(this._t("child.undo_not_allowed"));
       return;
     }
@@ -4005,7 +4475,7 @@ class TaskMateChildCard extends LitElement {
           <div
             class="confetti"
             style="
-              left: ${piece.x}%;
+              inset-inline-start: ${piece.x}%;
               animation-delay: ${piece.delay}s;
               background: ${colors[index % colors.length]};
               border-radius: ${piece.round ? '50%' : '0'};
@@ -4018,7 +4488,7 @@ class TaskMateChildCard extends LitElement {
     `;
   }
 
-  async _handleComplete(chore, child, photoUrl = null) {
+  async _handleComplete(chore, child, photoUrl = null, extra = null) {
     const key = `${chore.id}_${child.id}`;
     const dailyLimit = chore.daily_limit || 1;
 
@@ -4030,8 +4500,34 @@ class TaskMateChildCard extends LitElement {
     // Photo-evidence chores can't be completed with a plain tap — open the
     // capture overlay first. The overlay uploads the photo and then calls back
     // into this method with a photoUrl, which takes the service path below.
+    // Open-ended chores can't be completed with a plain tap either — the
+    // child's description IS the chore, so collect it first. Gating here
+    // rather than on the button covers every design's render path at once,
+    // and the sheet calls back in with `extra` filled.
+    if (chore.open_ended && !extra) {
+      this._openExtraCapture(chore, child);
+      return;
+    }
+
+    // Teamwork (#928): a child already in the team taps to leave — no photo
+    // needed for that. Gated here, like open-ended, so every render path
+    // (classic, designed, pre-reader) behaves the same.
+    const team = this._teamState(chore, child);
+    if (team && team.mine) {
+      await this._handleTeamTap(chore, child, team);
+      return;
+    }
+
     if (chore.require_photo && !photoUrl) {
-      this._openPhotoCapture(chore, child);
+      this._openPhotoCapture(chore, child, extra);
+      return;
+    }
+
+    // A join that doesn't fill the team records nothing yet, so it skips the
+    // optimistic "done" state and the celebration below. The join that DOES
+    // fill it completes the chore for this child like any other tap.
+    if (team && team.joined.length + 1 < team.size) {
+      await this._handleTeamTap(chore, child, team, photoUrl);
       return;
     }
 
@@ -4082,7 +4578,9 @@ class TaskMateChildCard extends LitElement {
       // A photo-evidence completion MUST go through the service so it can carry
       // photo_url — a button-entity press cannot. Other chores prefer the button
       // entity so HA state-trigger automations fire.
-      const buttonEntityId = photoUrl ? null : (window.__taskmate_find_button
+      // A photo or an open-ended note can only travel on the service call, so
+      // either one rules out the button-entity shortcut.
+      const buttonEntityId = (photoUrl || extra) ? null : (window.__taskmate_find_button
         && window.__taskmate_find_button(this.hass, child.id, "complete", chore.id));
       if (buttonEntityId) {
         await this.hass.callService("button", "press", { entity_id: buttonEntityId });
@@ -4091,6 +4589,8 @@ class TaskMateChildCard extends LitElement {
           chore_id: chore.id,
           child_id: child.id,
           ...(photoUrl ? { photo_url: photoUrl } : {}),
+          ...(extra && extra.note ? { note: extra.note } : {}),
+          ...(extra && extra.suggested_points ? { suggested_points: extra.suggested_points } : {}),
         });
       }
 
@@ -4160,9 +4660,9 @@ class TaskMateChildCard extends LitElement {
 
   // ── Photo-evidence capture ────────────────────────────────────────────────
 
-  _openPhotoCapture(chore, child) {
+  _openPhotoCapture(chore, child, extra = null) {
     this._photoCapture = {
-      chore, child, step: "pick", previewUrl: "", blob: null,
+      chore, child, extra, step: "pick", previewUrl: "", blob: null,
       sizeKb: 0, error: "",
     };
     this.requestUpdate();
@@ -4265,9 +4765,9 @@ class TaskMateChildCard extends LitElement {
       const { photo_url: photoUrl } = await resp.json();
       if (!photoUrl) throw new Error("no photo_url in response");
 
-      const { chore, child } = cap;
+      const { chore, child, extra } = cap;
       this._closePhotoCapture();
-      await this._handleComplete(chore, child, photoUrl);
+      await this._handleComplete(chore, child, photoUrl, extra);
     } catch (err) {
       // Keep the overlay open on the preview so the child can retry.
       if (this._photoCapture) {
@@ -4293,6 +4793,81 @@ class TaskMateChildCard extends LitElement {
     }
     this._photoCapture = null;
     this.requestUpdate();
+  }
+
+  // ── Open-ended submission ("I did something extra", #832) ────────────────
+  //
+  // The two inputs are deliberately uncontrolled and read from the DOM on
+  // submit: binding .value would re-render on every keystroke and fight the
+  // caret. Lit reuses the same elements across re-renders, so the typed text
+  // survives the error-state update below.
+
+  _openExtraCapture(chore, child) {
+    this._extraCapture = { chore, child, error: "" };
+    this.requestUpdate();
+    this.updateComplete.then(() => {
+      const note = this.renderRoot && this.renderRoot.querySelector("#tm-extra-note");
+      if (note) note.focus();
+    });
+  }
+
+  _closeExtraCapture() {
+    this._extraCapture = null;
+    this.requestUpdate();
+  }
+
+  async _submitExtraCapture() {
+    const cap = this._extraCapture;
+    if (!cap) return;
+    const root = this.renderRoot;
+    const note = ((root && root.querySelector("#tm-extra-note")?.value) || "").trim();
+    if (!note) {
+      this._extraCapture = { ...cap, error: this._t("child.extra_needs_desc") };
+      this.requestUpdate();
+      return;
+    }
+    const raw = Number((root && root.querySelector("#tm-extra-points")?.value) || 0);
+    const suggested = Math.min(Math.max(0, Math.round(raw) || 0), 999);
+    const { chore, child } = cap;
+    this._closeExtraCapture();
+    await this._handleComplete(chore, child, null, { note, suggested_points: suggested });
+  }
+
+  _renderExtraCapture() {
+    const cap = this._extraCapture;
+    if (!cap) return "";
+    const chore = cap.chore || {};
+    const stop = (e) => e.stopPropagation();
+    return html`
+      <div class="photo-overlay" @click="${() => this._closeExtraCapture()}">
+        <div class="photo-sheet" @click="${stop}">
+          <div class="photo-title">✍️ ${this._t("child.extra_title")}</div>
+          <div class="photo-for">${chore.name || ""}</div>
+          <div class="photo-dropzone-hint" style="margin:0 0 10px">${this._t("child.extra_hint")}</div>
+
+          <textarea id="tm-extra-note" class="extra-note" rows="3"
+                    maxlength="200"
+                    placeholder="${this._t("child.extra_desc_placeholder")}"></textarea>
+
+          <label class="extra-points-label" for="tm-extra-points">
+            ${this._t("child.extra_points_label")}
+          </label>
+          <input id="tm-extra-points" class="extra-points" type="number"
+                 min="0" max="999" inputmode="numeric" placeholder="0">
+
+          ${cap.error ? html`<div class="photo-error">${cap.error}</div>` : ""}
+
+          <div class="photo-btn-row">
+            <button class="photo-btn ghost" @click="${() => this._closeExtraCapture()}">
+              ${this._t("child.photo_cancel")}
+            </button>
+            <button class="photo-btn primary" @click="${() => this._submitExtraCapture()}">
+              ✓ ${this._t("child.extra_submit")}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   _renderPhotoCapture() {
@@ -4363,6 +4938,111 @@ class TaskMateChildCard extends LitElement {
     return text.includes("unauthorized") || text.includes("not authorized");
   }
 
+  // ── Child undo (#918) ───────────────────────────────────────────────────
+  // The server marks each of today's completions a child may still take back:
+  // child_undo_pending (a submission no parent has reviewed) or
+  // child_undo_until (an auto-approved one, until that instant). Neither is
+  // ever set while the window is 0, so the card then behaves exactly as
+  // before. The backend re-checks everything; this only decides what to show.
+
+  _childCanUndo(completion, now = Date.now()) {
+    if (!completion || !(completion.completion_id || completion.id)) return false;
+    if (completion.child_undo_pending === true) return true;
+    const until = Date.parse(completion.child_undo_until || "");
+    return Number.isFinite(until) && until > now;
+  }
+
+  _latestCompletion(completions) {
+    return [...(completions || [])].sort(
+      (a, b) => new Date(b.completed_at || 0) - new Date(a.completed_at || 0)
+    )[0];
+  }
+
+  /** This child's completions that can still be undone, newest first. */
+  _childUndoCandidates(child, todaysCompletions, now = Date.now()) {
+    if (!child) return [];
+    return (todaysCompletions || [])
+      .filter(c => c.child_id === child.id && this._childCanUndo(c, now))
+      .sort((a, b) => new Date(b.completed_at || 0) - new Date(a.completed_at || 0));
+  }
+
+  /** Re-render when the soonest undo window closes, so its button goes away. */
+  _scheduleUndoExpiry(attrs) {
+    clearTimeout(this._undoExpiryTimer);
+    this._undoExpiryTimer = null;
+    const childId = this.config?.child_id || attrs?.children?.[0]?.id;
+    const now = Date.now();
+    const deadlines = (attrs?.todays_completions || [])
+      .filter(c => c.child_id === childId)
+      .map(c => Date.parse(c.child_undo_until || ""))
+      .filter(t => Number.isFinite(t) && t > now);
+    if (!deadlines.length) return;
+    // setTimeout overflows past ~24.8 days; the window tops out at an hour.
+    const wait = Math.min(Math.min(...deadlines) - now + 50, 2 ** 31 - 1);
+    this._undoExpiryTimer = setTimeout(() => {
+      this._undoExpiryTimer = null;
+      this.requestUpdate();
+    }, wait);
+  }
+
+  /** The "Undo <chore>" strip, shown on every design and in picture mode. */
+  _renderChildUndo(child, todaysCompletions) {
+    const candidates = this._childUndoCandidates(child, todaysCompletions);
+    if (!candidates.length) return "";
+    return html`
+      <div class="tm-child-undo" role="group" aria-label="${this._t("child.undo_recent")}">
+        ${candidates.map(c => html`
+          <button type="button" class="tm-child-undo-btn"
+            ?disabled=${!!this._loading[`undo_${c.completion_id || c.id}`]}
+            @click=${() => this._childUndo(c)}>
+            <ha-icon class="tm-rtl-flip" icon="mdi:undo-variant"></ha-icon>
+            ${this._t("child.undo_named", { name: c.chore_name || "" })}
+          </button>`)}
+      </div>`;
+  }
+
+  /**
+   * Take back one of the child's own completions through taskmate.undo_chore.
+   * The service reads the child from the stored completion, so nothing here
+   * can point it at a sibling.
+   */
+  async _childUndo(completion, chore = null, child = null) {
+    const completionId = completion?.completion_id || completion?.id;
+    if (!completionId) return;
+    const key = `undo_${completionId}`;
+    if (this._loading[key]) return;
+    const rowKey = chore ? (completion.bonus_subtask_id ? `${chore.id}_bonus_${completion.bonus_subtask_id}_${child?.id}` : chore.id) : null;
+    this._loading = { ...this._loading, [key]: true, ...(rowKey ? { [rowKey]: true } : {}) };
+    this.requestUpdate();
+    try {
+      await this.hass.callService("taskmate", "undo_chore", { completion_id: completionId });
+      this._playSound(this.config.undo_sound || "undo");
+      // Drop any optimistic tick for what was just undone. A main chore takes
+      // its bonus sub-tasks with it; a bonus undo leaves the main chore alone.
+      const choreId = completion.chore_id;
+      const childId = completion.child_id;
+      const next = { ...this._optimisticCompletions };
+      if (completion.bonus_subtask_id) {
+        delete next[`${choreId}_bonus_${completion.bonus_subtask_id}_${childId}`];
+      } else {
+        delete next[`${choreId}_${childId}`];
+        for (const k of Object.keys(next)) {
+          if (k.startsWith(`${choreId}_bonus_`) && k.endsWith(`_${childId}`)) delete next[k];
+        }
+      }
+      this._optimisticCompletions = next;
+    } catch (error) {
+      console.error("Failed to undo chore completion:", error);
+      const message = this._isUnauthorized(error)
+        ? this._t("child.undo_not_allowed")
+        : this._t("child.error_undo", { message: error?.message || "" });
+      this._notifyUndo(message);
+    } finally {
+      this._loading = { ...this._loading, [key]: false, ...(rowKey ? { [rowKey]: false } : {}) };
+      this.requestUpdate();
+    }
+  }
+
   async _handleUndo(chore, child, childCompletionsToday) {
     // Check if already loading for this chore (prevent double-clicks during loading)
     if (this._loading[chore.id]) {
@@ -4374,7 +5054,14 @@ class TaskMateChildCard extends LitElement {
     // user the call always fails with a raw "Unauthorized" — HA shows its own
     // snackbar and we used to add an error notification on top. Short-circuit
     // with one clear, friendly message and never fire the doomed call.
+    // The one exception is a child's own completion still inside the undo
+    // window (#918), which goes through the restricted undo_chore service.
     if (!window.__taskmate_is_parent(this.hass)) {
+      const latest = this._latestCompletion(childCompletionsToday);
+      if (this._childCanUndo(latest)) {
+        await this._childUndo(latest, chore, child);
+        return;
+      }
       this._notifyUndo(this._t("child.undo_not_allowed"));
       return;
     }
@@ -4434,6 +5121,158 @@ class TaskMateChildCard extends LitElement {
       this._loading = { ...this._loading, [chore.id]: false };
       this.requestUpdate();
     }
+  }
+
+  /* Surprise inspections (#981). The overview sensor carries a child's
+     inspections for today (`child.inspections`): an open one only when the
+     child was told, a pass / fail / redo decided today. Every helper below is
+     called from BOTH render paths (classic render() and _renderDesigned /
+     _designChoreMeta / the designed row builders), and the pass celebration
+     is triggered from updated(), which runs for every design. */
+  _inspectionsOf(child) {
+    return (child && Array.isArray(child.inspections)) ? child.inspections : [];
+  }
+
+  _inspectionFor(chore, child) {
+    return this._inspectionsOf(child).find(i => i.chore_id === chore.id) || null;
+  }
+
+  _inspLeft(iso) {
+    const ms = new Date(iso).getTime() - Date.now();
+    if (!Number.isFinite(ms)) return "";
+    const mins = Math.max(0, Math.ceil(ms / 60000));
+    const h = Math.floor(mins / 60);
+    return h ? `${h}h ${String(mins % 60).padStart(2, "0")}m` : `${mins}m`;
+  }
+
+  _renderInspectionBanners(child, designed, pointsName) {
+    const items = this._inspectionsOf(child);
+    if (!items.length) return "";
+    return html`${items.map(i => {
+      const name = i.name || "";
+      let icon = "mdi:magnify-scan";
+      let title;
+      let sub;
+      if (i.status === "open") {
+        title = this._t("inspection.coming_title");
+        sub = this._t("inspection.coming_sub", { name, time: this._inspLeft(i.until), bonus: i.bonus, points_name: pointsName });
+      } else if (i.status === "passed") {
+        icon = "mdi:check-decagram";
+        title = this._t("inspection.passed_title", { bonus: i.bonus, points_name: pointsName });
+        sub = i.note
+          ? this._t("inspection.passed_sub_note", { name, note: i.note })
+          : this._t("inspection.passed_sub", { name });
+      } else if (i.status === "redo") {
+        icon = "mdi:restore";
+        title = this._t("inspection.redo_title", { name });
+        sub = this._t("inspection.redo_sub", { points: i.points || 0, points_name: pointsName });
+      } else {
+        title = this._t("inspection.nope_title");
+        sub = this._t("inspection.nope_sub", { name });
+      }
+      return html`
+        <div class="tm-insp-banner ${designed ? "designed" : ""} is-${i.status}" role="status">
+          <span class="tm-insp-bi"><ha-icon icon="${icon}"></ha-icon></span>
+          <div class="tm-insp-bt">
+            <span class="tm-insp-title">${title}</span>
+            <span class="tm-insp-sub">${sub}</span>
+          </div>
+        </div>`;
+    })}`;
+  }
+
+  /** Extra class for a chore row under inspection (dashed amber / gold). */
+  _inspectionRowClass(chore, child) {
+    const i = this._inspectionFor(chore, child);
+    if (!i) return "";
+    return i.status === "open" ? "tm-insp-row-open" : i.status === "passed" ? "tm-insp-row-passed" : "";
+  }
+
+  _renderInspectionTag(chore, child) {
+    const i = this._inspectionFor(chore, child);
+    if (!i) return "";
+    const tags = {
+      open: ["mdi:magnify-scan", this._t("inspection.tag_open")],
+      passed: ["mdi:star", this._t("inspection.tag_passed", { bonus: i.bonus })],
+      redo: ["mdi:restore", this._t("inspection.tag_redo")],
+      failed: ["mdi:magnify-scan", this._t("inspection.tag_failed")],
+    };
+    const [icon, label] = tags[i.status] || tags.failed;
+    return html`<span class="tm-insp-tag is-${i.status}"><ha-icon icon="${icon}"></ha-icon>${label}</span>`;
+  }
+
+  /** The parent's "what needs fixing" under a chore sent back to redo. */
+  _renderInspectionNote(chore, child, cls) {
+    const i = this._inspectionFor(chore, child);
+    if (!i || i.status !== "redo" || !i.note) return "";
+    return html`<div class="${cls}" role="note"><ha-icon icon="mdi:information-outline"></ha-icon> “${i.note}”</div>`;
+  }
+
+  /* The pass celebration plays once per inspection on this device — the next
+     time the card loads after the pass, not on every hass update. */
+  _maybeInspectionCelebration(attrs) {
+    const child = (attrs.children || []).find(c => c.id === this.config?.child_id);
+    const passed = this._inspectionsOf(child).filter(i => i.status === "passed" && i.id);
+    if (!passed.length || this._inspCelebration) return;
+    const KEY = "taskmate_inspections_celebrated";
+    let seen;
+    try { seen = JSON.parse(window.localStorage.getItem(KEY) || "[]") || []; } catch (e) { seen = []; }
+    if (!Array.isArray(seen)) seen = [];
+    const next = passed.find(i => !seen.includes(i.id));
+    if (!next) return;
+    seen.push(next.id);
+    try { window.localStorage.setItem(KEY, JSON.stringify(seen.slice(-50))); } catch (e) { /* private mode: plays each load */ }
+    this._inspCelebration = next;
+    this._spawnConfetti();
+  }
+
+  _renderInspectionCelebration(pointsIcon) {
+    const i = this._inspCelebration;
+    if (!i) return "";
+    const close = () => { this._inspCelebration = null; this.requestUpdate(); };
+    return html`
+      <div class="celebration-overlay tm-insp-cele-ov" @click=${close}>
+        <div class="tm-insp-cele" role="dialog" aria-label="${this._t("inspection.celebrate_title")}" @click=${(e) => e.stopPropagation()}>
+          <div class="tm-insp-cele-mag"><ha-icon icon="mdi:magnify-scan"></ha-icon></div>
+          <div class="tm-insp-cele-title">${this._t("inspection.celebrate_title")}</div>
+          <div class="tm-insp-cele-msg">${this._t("inspection.celebrate_sub", { name: i.name || "" })}</div>
+          <div class="tm-insp-cele-big">+${i.bonus || 0} <ha-icon icon="${pointsIcon || "mdi:star"}"></ha-icon></div>
+          ${i.note ? html`<div class="tm-insp-cele-note">“${i.note}”</div>` : ""}
+          <button class="tm-insp-cele-btn" @click=${close}>${this._t("inspection.celebrate_ok")}</button>
+        </div>
+      </div>`;
+  }
+
+  /* Birthday mode (#924). The backend only sends `child.birthday` on the day
+     ({multiplier, age?, chores_off?}). Confetti is fired from updated(), which
+     runs for every design, and the banner helper is called from BOTH render
+     paths — the classic branch alone would leave it invisible on the others. */
+  _maybeBirthdayConfetti(attrs) {
+    const child = (attrs.children || []).find(c => c.id === this.config?.child_id);
+    if (!child || !child.birthday) return;
+    const once = window.__taskmate_birthday_once;
+    if (once && once(this.hass, child.id)) this._spawnConfetti();
+  }
+
+  _renderBirthdayBanner(child, designed) {
+    const b = child && child.birthday;
+    if (!b) return "";
+    const greeting = b.age != null
+      ? this._t("birthday.banner_age", { name: child.name, age: b.age })
+      : this._t("birthday.banner", { name: child.name });
+    const mult = Number(b.multiplier) || 1;
+    const details = [
+      mult > 1 ? this._t("birthday.multiplier", { multiplier: mult }) : "",
+      b.chores_off ? this._t("birthday.day_off") : "",
+    ].filter(Boolean).join(" · ");
+    return html`
+      <div class="${designed ? "tmd-birthday" : "birthday-banner"}" role="status">
+        <ha-icon icon="mdi:cake-variant"></ha-icon>
+        <div class="bday-text">
+          <span class="bday-title">${greeting}</span>
+          ${details ? html`<span class="bday-sub">${details}</span>` : ""}
+        </div>
+      </div>`;
   }
 
   _spawnConfetti() {
@@ -4548,7 +5387,7 @@ class TaskMateChildCardEditor extends LitElement {
         border-radius: 4px;
         padding: 4px 10px;
         cursor: pointer;
-        margin-left: auto;
+        margin-inline-start: auto;
       }
       .colour-helper {
         color: var(--secondary-text-color);

@@ -59,6 +59,10 @@ const LitElement = litBase;
 const html = LitElement.prototype.html;
 const css = LitElement.prototype.css;
 
+// Keeps number runs like "3 / 10" reading left to right in RTL text (#995);
+// identity until the design layer has loaded.
+const _ltrNums = (s) => (window.__taskmate_design && window.__taskmate_design.ltrNums ? window.__taskmate_design.ltrNums(s) : s);
+
 // The sticker alphabet, cycled as points accumulate so a long row stays
 // interesting instead of being forty identical stars.
 const STICKERS = [
@@ -264,7 +268,7 @@ class TaskMateStickerChartCard extends LitElement {
       .stickers-none, .muted {
         font-size: 0.92rem; font-weight: 600; color: var(--secondary-text-color);
       }
-      .overflow { font-size: 0.85rem; font-weight: 800; color: var(--secondary-text-color); margin-left: 4px; }
+      .overflow { font-size: 0.85rem; font-weight: 800; color: var(--secondary-text-color); margin-inline-start: 4px; }
       .goal-line {
         margin-top: 14px;
         font-size: 0.92rem; font-weight: 700; color: var(--primary-text-color);
@@ -342,11 +346,11 @@ class TaskMateStickerChartCard extends LitElement {
       .tile.pending { border-style: solid; border-color: rgba(255,193,7,0.85); background: rgba(255,193,7,0.14); }
       .tile.pending .glyph { filter: grayscale(0.2) opacity(0.85); }
       .count, .flag {
-        position: absolute; top: 6px; right: 8px;
+        position: absolute; top: 6px; inset-inline-end: 8px;
         font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 999px;
         background: rgba(0,0,0,0.35); color: #fff;
       }
-      .flag { right: auto; left: 8px; }
+      .flag { inset-inline-end: auto; inset-inline-start: 8px; }
       .tile.done .count { background: rgba(255,255,255,0.9); color: #111; }
       .none-today { padding: 22px 16px; text-align: center; }
 
@@ -810,7 +814,7 @@ class TaskMateStickerChartCard extends LitElement {
       <div class="confetti-container">
         ${this._confetti.map((p, i) => html`
           <div class="confetti"
-               style="left:${p.x}%;animation-delay:${p.delay}s;background:${colors[i % colors.length]};border-radius:${p.round ? "50%" : "0"};width:${p.size}px;height:${p.size}px"></div>`)}
+               style="inset-inline-start:${p.x}%;animation-delay:${p.delay}s;background:${colors[i % colors.length]};border-radius:${p.round ? "50%" : "0"};width:${p.size}px;height:${p.size}px"></div>`)}
       </div>`;
   }
 
@@ -869,7 +873,7 @@ class TaskMateStickerChartCard extends LitElement {
     const per = Math.max(1, Math.ceil(goal / MAX_BLOCKS));
     const total = Math.ceil(goal / per);
     const on = points >= goal ? total : Math.floor(Math.max(0, points) / per);
-    return html`<div class="blocks" role="img" aria-label="${Math.min(points, goal)} / ${goal}">${
+    return html`<div class="blocks" role="img" aria-label="${_ltrNums(`${Math.min(points, goal)} / ${goal}`)}">${
       Array.from({ length: total }, (_, i) => html`<i class="${i < on ? "on" : ""}"></i>`)}</div>
       ${per > 1 ? html`<div class="blocks-key">${this._t("sticker_chart.block_key", { count: per, unit })}</div>` : ""}`;
   }
@@ -918,7 +922,7 @@ class TaskMateStickerChartCard extends LitElement {
           </div>
           <div class="panel summary">
             <div class="today">
-              ${this._t("sticker_chart.day_count", { day, done, total: rows.length })}
+              ${_ltrNums(this._t("sticker_chart.day_count", { day, done, total: rows.length }))}
               ${allDone ? html` 🏆` : ""}
             </div>
           </div>
@@ -943,7 +947,7 @@ class TaskMateStickerChartCard extends LitElement {
             <div class="top-main">
               ${this.config.show_today === false ? "" : html`
                 <div class="today">
-                  ${this._t("sticker_chart.today", { done, total: rows.length })}
+                  ${_ltrNums(this._t("sticker_chart.today", { done, total: rows.length }))}
                   ${allDone ? html` 🏆 ${this._t("sticker_chart.all_done", { name: child.name })}` : ""}
                 </div>`}
               <div class="stickers" role="img"
@@ -958,11 +962,11 @@ class TaskMateStickerChartCard extends LitElement {
           </div>
 
           ${weekly ? (target > 0 ? html`
-            <div class="goal-line">${this._t("sticker_chart.week_goal", { points: earned, goal: target, unit })}</div>
+            <div class="goal-line">${_ltrNums(this._t("sticker_chart.week_goal", { points: earned, goal: target, unit }))}</div>
             ${this._renderBlocks(progress, target, unit)}
             ${full ? html`<div class="reached">🌟 ${this._t("sticker_chart.week_perfect")} 🌟</div>` : ""}
           ` : "") : goal > 0 ? html`
-            <div class="goal-line">${this._t("sticker_chart.goal", { points: earned, goal, unit })}</div>
+            <div class="goal-line">${_ltrNums(this._t("sticker_chart.goal", { points: earned, goal, unit }))}</div>
             ${this._renderBlocks(points, goal, unit)}
             ${reached ? html`<div class="reached">🎉 ${this._t("sticker_chart.goal_reached")} 🎉</div>` : ""}
           ` : html`<div class="goal-line muted">${this._t("sticker_chart.no_reward")}</div>`}
