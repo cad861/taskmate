@@ -256,6 +256,24 @@
     "wizard.avatar",
     "wizard.tips"
   ],
+  "pl.json": [
+    "approvals.timed_duration",
+    "badge.source_auto",
+    "child.start",
+    "child.timed_cap_label",
+    "common.design.cleanpro",
+    "overview.default_title",
+    "panel.bounty_col_status",
+    "panel.bounty_completed_meta",
+    "panel.nav_system",
+    "panel.notif_escalation_minutes_suffix",
+    "panel.wish_col_status",
+    "points_card.quick_label_add",
+    "points_card.quick_label_remove",
+    "points_display.editor.title_placeholder",
+    "wishlist.field_link",
+    "wizard.one_dashboard"
+  ],
   "pt-BR.json": [
     "approvals.timed_duration",
     "badge.source_auto",
