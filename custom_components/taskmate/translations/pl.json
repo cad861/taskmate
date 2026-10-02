@@ -1,0 +1,1387 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Witaj w TaskMate!",
+        "description": "Skonfiguruj rodzinny system zarządzania obowiązkami domowymi. Możesz dostosować walutę punktów, którą będą zdobywać dzieci.",
+        "data": {
+          "points_name": "Nazwa waluty punktów (np. Gwiazdki, Monety, Żetony)",
+          "points_icon": "Ikona punktów"
+        }
+      }
+    },
+    "error": {
+      "name_required": "Nazwa jest wymagana"
+    },
+    "abort": {
+      "already_configured": "TaskMate jest już skonfigurowany"
+    },
+    "create_entry": {
+      "default": "TaskMate jest gotowy. [Otwórz panel TaskMate](/taskmate-admin), aby dodać dzieci za pomocą kreatora, który zaproponuje obowiązki odpowiednie do ich wieku."
+    }
+  },
+  "selector": {
+    "chore_action": {
+      "options": {
+        "save": "Zapisz zmiany",
+        "re_enable": "Włącz ponownie obowiązek",
+        "disable": "Wyłącz obowiązek",
+        "delete": "Usuń ten obowiązek"
+      }
+    },
+    "reward_action": {
+      "options": {
+        "save": "Zapisz zmiany",
+        "delete": "Usuń nagrodę"
+      }
+    },
+    "time_category": {
+      "options": {
+        "morning": "Rano",
+        "afternoon": "Po południu",
+        "evening": "Wieczorem",
+        "night": "W nocy",
+        "anytime": "O dowolnej porze"
+      }
+    },
+    "schedule_mode": {
+      "options": {
+        "specific_days": "Wybrane dni tygodnia",
+        "recurring": "Cyklicznie (co N dni/tygodni/miesięcy)",
+        "one_shot": "Zadanie jednorazowe (jeden dzień)"
+      }
+    },
+    "due_days_option": {
+      "options": {
+        "monday": "Poniedziałek",
+        "tuesday": "Wtorek",
+        "wednesday": "Środa",
+        "thursday": "Czwartek",
+        "friday": "Piątek",
+        "saturday": "Sobota",
+        "sunday": "Niedziela"
+      }
+    },
+    "recurrence": {
+      "options": {
+        "every_2_days": "Co 2 dni",
+        "weekly": "Co tydzień",
+        "every_2_weeks": "Co 2 tygodnie",
+        "monthly": "Co miesiąc",
+        "every_3_months": "Co 3 miesiące",
+        "every_6_months": "Co 6 miesięcy"
+      }
+    },
+    "recurrence_day_option": {
+      "options": {
+        "monday": "Poniedziałek",
+        "tuesday": "Wtorek",
+        "wednesday": "Środa",
+        "thursday": "Czwartek",
+        "friday": "Piątek",
+        "saturday": "Sobota",
+        "sunday": "Niedziela",
+        "any_day": "Dowolny dzień"
+      }
+    },
+    "first_occurrence_mode": {
+      "options": {
+        "available_immediately": "Dostępny od razu",
+        "wait_for_first_occurrence": "Czekaj na pierwszy zaplanowany termin"
+      }
+    },
+    "streak_reset_mode": {
+      "options": {
+        "reset": "Zeruj — seria spada do 0 po pominiętym dniu",
+        "pause": "Wstrzymaj — seria zostaje zachowana do następnego wykonania"
+      }
+    },
+    "visibility_operator": {
+      "options": {
+        "none": "Bez filtra — zawsze pokazuj obowiązek",
+        "equals": "Równe — pokazuj, gdy stan encji dokładnie się zgadza",
+        "not_equals": "Różne — pokazuj, gdy stan encji się nie zgadza",
+        "gte": "Większe lub równe (≥) — pokazuj, gdy wartość liczbowa jest ≥ od docelowej",
+        "lte": "Mniejsze lub równe (≤) — pokazuj, gdy wartość liczbowa jest ≤ od docelowej",
+        "gt": "Większe (>) — pokazuj, gdy wartość liczbowa jest > od docelowej",
+        "lt": "Mniejsze (<) — pokazuj, gdy wartość liczbowa jest < od docelowej"
+      }
+    },
+    "assignment_mode": {
+      "options": {
+        "everyone": "Wszyscy — każde przypisane dziecko widzi obowiązek",
+        "alternating": "Na zmianę — rotacja między przypisanymi dziećmi, jedno dziennie",
+        "random": "Losowo — każdego dnia losowane jest jedno z przypisanych dzieci",
+        "balanced": "Zrównoważony — dzisiejsze obowiązki tego typu są dzielone równo między przypisane dzieci",
+        "first_come": "Kto pierwszy, ten lepszy — wygrywa dziecko, które wykona go pierwsze; pozostałym obowiązek znika",
+        "unassigned": "Nieprzypisany — żadne dziecko nie widzi tego obowiązku"
+      }
+    },
+    "task_group_policy": {
+      "options": {
+        "sticky": "Stały — to samo dziecko dla wszystkich obowiązków w grupie",
+        "spread": "Rozproszony — dzisiaj różne dzieci w obrębie grupy"
+      }
+    },
+    "task_group_action": {
+      "options": {
+        "save": "Zapisz zmiany",
+        "delete": "Usuń grupę"
+      }
+    }
+  },
+  "services": {
+    "complete_chore": {
+      "name": "Wykonaj obowiązek",
+      "description": "Oznacz obowiązek jako wykonany przez dziecko",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku do oznaczenia jako wykonany"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, które wykonało obowiązek"
+        },
+        "note": {
+          "name": "Notatka",
+          "description": "Co dziecko zrobiło, własnymi słowami. Wymagana przy obowiązkach otwartych; widoczna dla rodzica podczas zatwierdzania."
+        },
+        "suggested_points": {
+          "name": "Proponowane punkty",
+          "description": "Ile według dziecka warta była praca. Wskazówka dla zatwierdzającego rodzica — sama w sobie nie przyznaje punktów."
+        }
+      }
+    },
+    "complete_bonus_subtask": {
+      "name": "Wykonaj dodatkowe podzadanie",
+      "description": "Wykonaj dodatkowe podzadanie po ukończeniu obowiązku nadrzędnego",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku nadrzędnego"
+        },
+        "bonus_subtask_id": {
+          "name": "ID dodatkowego podzadania",
+          "description": "ID dodatkowego podzadania do wykonania"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka wykonującego dodatkowe podzadanie"
+        }
+      }
+    },
+    "approve_chore": {
+      "name": "Zatwierdź obowiązek",
+      "description": "Zatwierdź wykonany obowiązek i przyznaj punkty",
+      "fields": {
+        "completion_id": {
+          "name": "ID wykonania",
+          "description": "ID wykonania obowiązku do zatwierdzenia"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Przyznaj tyle punktów zamiast wartości obowiązku. Pozostaw puste, aby użyć punktów obowiązku."
+        },
+        "rating": {
+          "name": "Ocena jakości",
+          "description": "Opcjonalna ocena 1–3 gwiazdki, jak dobrze wykonano obowiązek. Gdy oceny jakości są włączone, punkty są mnożone przez mnożnik danej gwiazdki; pozostaw puste, aby wypłacić 100%."
+        }
+      }
+    },
+    "approve_all_chores": {
+      "name": "Zatwierdź wszystkie obowiązki",
+      "description": "Zatwierdź wszystkie oczekujące wykonania obowiązków (lub wybrane) i przyznaj punkty",
+      "fields": {
+        "completion_ids": {
+          "name": "ID wykonań",
+          "description": "Konkretne ID wykonań do zatwierdzenia; pomiń, aby zatwierdzić wszystkie oczekujące"
+        },
+        "rating": {
+          "name": "Ocena jakości",
+          "description": "Opcjonalna ocena 1–3 gwiazdki stosowana do każdego obowiązku zatwierdzonego tym wywołaniem (oceny jakości muszą być włączone)."
+        }
+      }
+    },
+    "reject_chore": {
+      "name": "Odrzuć obowiązek",
+      "description": "Odrzuć wykonany obowiązek",
+      "fields": {
+        "completion_id": {
+          "name": "ID wykonania",
+          "description": "ID wykonania obowiązku do odrzucenia"
+        },
+        "reason": {
+          "name": "Powód",
+          "description": "Opcjonalny powód pokazywany dziecku"
+        }
+      }
+    },
+    "undo_chore": {
+      "name": "Cofnij obowiązek",
+      "description": "Pozwól dziecku wycofać własny obowiązek — zgłoszenie oczekujące, dopóki rodzic go nie sprawdzi, albo automatycznie zatwierdzone w oknie cofania obowiązku. Wyłączone, dopóki okno nie zostanie ustawione powyżej 0 w ustawieniach TaskMate; wszystko, co sprawdził rodzic, może cofnąć tylko rodzic.",
+      "fields": {
+        "completion_id": {
+          "name": "ID wykonania",
+          "description": "ID wykonania obowiązku dziecka do wycofania"
+        }
+      }
+    },
+    "undo_chore_approval": {
+      "name": "Cofnij zatwierdzenie obowiązku",
+      "description": "Cofnij przypadkowe zatwierdzenie obowiązku — usuwa przyznane punkty i przywraca wykonanie do stanu oczekującego, aby można je było zatwierdzić ponownie.",
+      "fields": {
+        "completion_id": {
+          "name": "ID wykonania",
+          "description": "ID zatwierdzonego wykonania obowiązku do przywrócenia jako oczekujące"
+        }
+      }
+    },
+    "undo_transaction": {
+      "name": "Cofnij transakcję",
+      "description": "Cofnij transakcję punktową po jej ID — kary, premie, ręczne dodanie/odjęcie punktów i prezenty (obie strony). Transakcji automatycznych (premie weekendowe/za serię/za idealny tydzień, przesunięcia do puli, utrata wartości, odsetki) nie można cofnąć.",
+      "fields": {
+        "transaction_id": {
+          "name": "ID transakcji",
+          "description": "ID transakcji punktowej do cofnięcia"
+        }
+      }
+    },
+    "claim_reward": {
+      "name": "Odbierz nagrodę",
+      "description": "Dziecko odbiera nagrodę za swoje punkty",
+      "fields": {
+        "reward_id": {
+          "name": "ID nagrody",
+          "description": "ID nagrody do odebrania"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka odbierającego nagrodę"
+        }
+      }
+    },
+    "approve_reward": {
+      "name": "Zatwierdź nagrodę",
+      "description": "Zatwierdź prośbę o nagrodę",
+      "fields": {
+        "claim_id": {
+          "name": "ID prośby",
+          "description": "ID prośby o nagrodę do zatwierdzenia"
+        }
+      }
+    },
+    "allocate_points_to_pool": {
+      "name": "Przekaż punkty do puli",
+      "description": "Przenieś punkty z dostępnego salda dziecka do puli oszczędnościowej nagrody (zablokowane).",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka przekazującego punkty"
+        },
+        "reward_id": {
+          "name": "ID nagrody",
+          "description": "ID puli nagrody, do której trafią punkty"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Liczba punktów do przekazania (ograniczona pojemnością puli i dostępnym saldem)"
+        }
+      }
+    },
+    "add_points": {
+      "name": "Dodaj punkty",
+      "description": "Dodaj dziecku punkty premiowe",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, któremu dodać punkty"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Liczba punktów do dodania"
+        },
+        "reason": {
+          "name": "Powód",
+          "description": "Opcjonalny powód premii"
+        }
+      }
+    },
+    "remove_points": {
+      "name": "Odejmij punkty",
+      "description": "Odejmij dziecku punkty (kara)",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, któremu odjąć punkty"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Liczba punktów do odjęcia"
+        },
+        "reason": {
+          "name": "Powód",
+          "description": "Opcjonalny powód kary"
+        }
+      }
+    },
+    "reject_reward": {
+      "name": "Odrzuć nagrodę",
+      "description": "Odrzuć prośbę o nagrodę",
+      "fields": {
+        "claim_id": {
+          "name": "ID prośby",
+          "description": "ID prośby o nagrodę do odrzucenia"
+        },
+        "reason": {
+          "name": "Powód",
+          "description": "Opcjonalny powód pokazywany dziecku"
+        }
+      }
+    },
+    "preview_sound": {
+      "name": "Odsłuchaj dźwięk",
+      "description": "Odtwórz w przeglądarce podgląd dźwięku wykonania",
+      "fields": {
+        "sound": {
+          "name": "Dźwięk",
+          "description": "Dźwięk do odsłuchania"
+        }
+      }
+    },
+    "set_chore_order": {
+      "name": "Ustaw kolejność obowiązków",
+      "description": "Ustaw kolejność wyświetlania obowiązków dla dziecka",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, dla którego ustawić kolejność obowiązków"
+        },
+        "chore_order": {
+          "name": "Kolejność obowiązków",
+          "description": "Uporządkowana lista ID obowiązków"
+        }
+      }
+    },
+    "add_penalty": {
+      "name": "Dodaj karę",
+      "description": "Utwórz nową definicję kary",
+      "fields": {
+        "name": {
+          "name": "Nazwa",
+          "description": "Nazwa kary"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Liczba punktów odejmowanych po zastosowaniu"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Opcjonalny opis kary"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Ikona MDI kary"
+        },
+        "assigned_to": {
+          "name": "Przypisana do",
+          "description": "Lista ID dzieci, których dotyczy kara"
+        }
+      }
+    },
+    "update_penalty": {
+      "name": "Aktualizuj karę",
+      "description": "Zaktualizuj istniejącą definicję kary",
+      "fields": {
+        "penalty_id": {
+          "name": "ID kary",
+          "description": "ID kary do aktualizacji"
+        },
+        "name": {
+          "name": "Nazwa",
+          "description": "Nowa nazwa kary"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Nowa wartość punktowa"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Nowy opis"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Nowa ikona"
+        },
+        "assigned_to": {
+          "name": "Przypisana do",
+          "description": "Nowa lista ID dzieci"
+        }
+      }
+    },
+    "remove_penalty": {
+      "name": "Usuń karę",
+      "description": "Usuń definicję kary",
+      "fields": {
+        "penalty_id": {
+          "name": "ID kary",
+          "description": "ID kary do usunięcia"
+        }
+      }
+    },
+    "apply_penalty": {
+      "name": "Nałóż karę",
+      "description": "Nałóż karę na dziecko, odejmując punkty",
+      "fields": {
+        "penalty_id": {
+          "name": "ID kary",
+          "description": "ID kary do nałożenia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, na które nałożyć karę"
+        }
+      }
+    },
+    "add_bonus": {
+      "name": "Dodaj premię",
+      "description": "Utwórz nową definicję premii",
+      "fields": {
+        "name": {
+          "name": "Nazwa",
+          "description": "Nazwa premii"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Liczba punktów przyznawanych po zastosowaniu"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Opcjonalny opis premii"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Ikona MDI premii"
+        },
+        "assigned_to": {
+          "name": "Przypisana do",
+          "description": "Lista ID dzieci, których dotyczy premia"
+        }
+      }
+    },
+    "update_bonus": {
+      "name": "Aktualizuj premię",
+      "description": "Zaktualizuj istniejącą definicję premii",
+      "fields": {
+        "bonus_id": {
+          "name": "ID premii",
+          "description": "ID premii do aktualizacji"
+        },
+        "name": {
+          "name": "Nazwa",
+          "description": "Nowa nazwa premii"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Nowa wartość punktowa"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Nowy opis"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Nowa ikona"
+        },
+        "assigned_to": {
+          "name": "Przypisana do",
+          "description": "Nowa lista ID dzieci"
+        }
+      }
+    },
+    "remove_bonus": {
+      "name": "Usuń premię",
+      "description": "Usuń definicję premii",
+      "fields": {
+        "bonus_id": {
+          "name": "ID premii",
+          "description": "ID premii do usunięcia"
+        }
+      }
+    },
+    "apply_bonus": {
+      "name": "Przyznaj premię",
+      "description": "Przyznaj dziecku premię, dodając punkty",
+      "fields": {
+        "bonus_id": {
+          "name": "ID premii",
+          "description": "ID premii do przyznania"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, któremu przyznać premię"
+        }
+      }
+    },
+    "add_chore": {
+      "name": "Dodaj obowiązek",
+      "description": "Utwórz dynamicznie nowy obowiązek, zwykle z automatyzacji lub skryptu",
+      "fields": {
+        "name": {
+          "name": "Nazwa",
+          "description": "Nazwa obowiązku"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Opcjonalny opis obowiązku"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Punkty przyznawane za wykonanie obowiązku"
+        },
+        "assigned_to": {
+          "name": "Przypisany do",
+          "description": "Lista ID dzieci, którym przypisać obowiązek. Pozostaw puste, aby przypisać wszystkim dzieciom"
+        },
+        "time_category": {
+          "name": "Pora dnia",
+          "description": "Kiedy obowiązek ma być wykonany: morning (rano), afternoon (po południu), evening (wieczorem), night (w nocy) lub anytime (o dowolnej porze)"
+        },
+        "one_shot": {
+          "name": "Jednorazowy",
+          "description": "Jeśli włączone, jest to obowiązek jednorazowy, który wygasa po wykonaniu lub na koniec dnia"
+        },
+        "requires_approval": {
+          "name": "Wymaga zatwierdzenia",
+          "description": "Jeśli włączone, rodzic musi zatwierdzić wykonanie, zanim punkty zostaną przyznane"
+        },
+        "team_size": {
+          "name": "Wielkość zespołu",
+          "description": "Uczyń z tego obowiązek zespołowy, który liczy się dopiero, gdy dołączy do niego tyle różnych dzieci. Gdy zespół jest pełny, zostaje zgłoszony za wszystkich. 0 = zwykły obowiązek."
+        },
+        "team_points_mode": {
+          "name": "Punkty zespołowe",
+          "description": "Jak wypłacany jest obowiązek zespołowy: „each” daje każdemu uczestnikowi pełne punkty, „split” dzieli je równo (z zaokrągleniem w dół)."
+        },
+        "team_bonus": {
+          "name": "Premia zespołowa",
+          "description": "Dodatkowe punkty, które każdy uczestnik zdobywa po wykonaniu obowiązku zespołowego."
+        }
+      }
+    },
+    "skip_chore": {
+      "name": "Pomiń obowiązek",
+      "description": "Przesuń dzisiejszą rotację na kolejną osobę. Tymczasowe — jutro rotacja wraca do normy.",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku do pominięcia"
+        }
+      }
+    },
+    "set_chore_manual_start": {
+      "name": "Ustaw dziecko rozpoczynające",
+      "description": "Ustaw, które dziecko zaczyna rotację obowiązku. W trybie „na zmianę” zmienia kolejność puli; w trybie losowym/zrównoważonym nadpisuje tylko dzisiejszą osobę.",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku do aktualizacji"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, które ma rozpocząć rotację"
+        }
+      }
+    },
+    "add_task_group": {
+      "name": "Dodaj grupę zadań",
+      "description": "Utwórz grupę zadań (sticky = to samo dziecko, spread = różne dzieci).",
+      "fields": {
+        "name": {
+          "name": "Nazwa",
+          "description": "Wyświetlana nazwa grupy"
+        },
+        "policy": {
+          "name": "Zasada",
+          "description": "sticky (to samo dziecko) lub spread (różne dzieci)"
+        },
+        "chore_ids": {
+          "name": "ID obowiązków",
+          "description": "Lista ID obowiązków w grupie. Przy sticky pierwszy obowiązek jest wiodący."
+        }
+      }
+    },
+    "update_task_group": {
+      "name": "Aktualizuj grupę zadań",
+      "description": "Zaktualizuj nazwę, zasadę lub skład grupy zadań.",
+      "fields": {
+        "group_id": {
+          "name": "ID grupy",
+          "description": "ID grupy do aktualizacji"
+        },
+        "name": {
+          "name": "Nazwa",
+          "description": "Nowa wyświetlana nazwa"
+        },
+        "policy": {
+          "name": "Zasada",
+          "description": "Nowa zasada (sticky lub spread)"
+        },
+        "chore_ids": {
+          "name": "ID obowiązków",
+          "description": "Nowa lista ID obowiązków. Przy sticky pierwszy obowiązek jest wiodący."
+        }
+      }
+    },
+    "remove_task_group": {
+      "name": "Usuń grupę zadań",
+      "description": "Usuń grupę zadań. Obowiązki należące do grupy pozostają bez zmian.",
+      "fields": {
+        "group_id": {
+          "name": "ID grupy",
+          "description": "ID grupy do usunięcia"
+        }
+      }
+    },
+    "start_timed_task": {
+      "name": "Uruchom zadanie na czas",
+      "description": "Uruchom lub wznów stoper zadania na czas",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku na czas"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka uruchamiającego stoper"
+        }
+      }
+    },
+    "leave_team_chore": {
+      "name": "Opuść obowiązek zespołowy",
+      "description": "Wypisz dziecko z obowiązku zespołowego, do którego dołączyło dzisiaj, zanim zespół się skompletuje",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku zespołowego"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka opuszczającego zespół"
+        }
+      }
+    },
+    "complete_next_chore": {
+      "name": "Wykonaj następny obowiązek",
+      "description": "Wykonaj następny niewykonany obowiązek dziecka, w kolejności z karty dziecka. Obowiązki wymagające zdjęcia, notatki, stopera lub zespołu są pomijane. Przeznaczone dla przycisków na zegarku i skrótów; obowiązują zwykłe zasady zatwierdzania.",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, którego następny obowiązek wykonać"
+        }
+      }
+    },
+    "post_bounty": {
+      "name": "Opublikuj zlecenie",
+      "description": "Opublikuj jednorazowe zadanie na tablicy zleceń za stałą liczbę punktów. Każde uprawnione dziecko może je przyjąć; ukończenie trafia do zwykłej kolejki zatwierdzeń.",
+      "fields": {
+        "title": {
+          "name": "Tytuł",
+          "description": "Na czym polega zadanie, np. „Umyj samochód”"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Stała liczba punktów wypłacana, gdy rodzic zatwierdzi wykonane zadanie"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Opcjonalne dodatkowe szczegóły dla dzieci"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Ikona MDI widoczna na tablicy"
+        },
+        "expires_at": {
+          "name": "Wygasa",
+          "description": "Opcjonalna data i godzina, o której zlecenie znika z tablicy, jeśli nikt go nie przyjął. Pozostaw puste, aby nie wygasało."
+        },
+        "eligible_child_ids": {
+          "name": "Uprawnione dzieci",
+          "description": "ID dzieci, które mogą je przyjąć. Puste = wszystkie dzieci."
+        },
+        "claim_hours": {
+          "name": "Rezerwacja (godziny)",
+          "description": "Jak długo trwa rezerwacja, zanim zlecenie wróci na tablicę"
+        },
+        "require_photo": {
+          "name": "Wymagaj zdjęcia",
+          "description": "Dziecko musi dołączyć zdjęcie, oznaczając zadanie jako wykonane"
+        },
+        "notify_children": {
+          "name": "Powiadom dzieci",
+          "description": "Wyślij uprawnionym dzieciom powiadomienie „Nowe zlecenie”"
+        }
+      }
+    },
+    "update_bounty": {
+      "name": "Aktualizuj zlecenie",
+      "description": "Edytuj zlecenie. Po przyjęciu można zmienić tylko punkty i termin wygaśnięcia.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID zlecenia",
+          "description": "ID zlecenia do edycji"
+        },
+        "title": {
+          "name": "Tytuł",
+          "description": "Na czym polega zadanie, np. „Umyj samochód”"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Stała liczba punktów wypłacana, gdy rodzic zatwierdzi wykonane zadanie"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Opcjonalne dodatkowe szczegóły dla dzieci"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Ikona MDI widoczna na tablicy"
+        },
+        "expires_at": {
+          "name": "Wygasa",
+          "description": "Opcjonalna data i godzina, o której zlecenie znika z tablicy, jeśli nikt go nie przyjął. Pozostaw puste, aby nie wygasało."
+        },
+        "eligible_child_ids": {
+          "name": "Uprawnione dzieci",
+          "description": "ID dzieci, które mogą je przyjąć. Puste = wszystkie dzieci."
+        },
+        "claim_hours": {
+          "name": "Rezerwacja (godziny)",
+          "description": "Jak długo trwa rezerwacja, zanim zlecenie wróci na tablicę"
+        },
+        "require_photo": {
+          "name": "Wymagaj zdjęcia",
+          "description": "Dziecko musi dołączyć zdjęcie, oznaczając zadanie jako wykonane"
+        },
+        "notify_children": {
+          "name": "Powiadom dzieci",
+          "description": "Wyślij uprawnionym dzieciom powiadomienie „Nowe zlecenie”"
+        }
+      }
+    },
+    "remove_bounty": {
+      "name": "Usuń zlecenie",
+      "description": "Zdejmij zlecenie z tablicy. Niedozwolone, gdy wykonane zadanie czeka na zatwierdzenie.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID zlecenia",
+          "description": "ID zlecenia do usunięcia"
+        }
+      }
+    },
+    "claim_bounty": {
+      "name": "Przyjmij zlecenie",
+      "description": "Przyjmij zlecenie w imieniu dziecka, rezerwując je dla niego na czas rezerwacji. Dziecko może mieć tylko jedno przyjęte zlecenie naraz.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID zlecenia",
+          "description": "ID zlecenia do przyjęcia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka przyjmującego zlecenie"
+        }
+      }
+    },
+    "give_back_bounty": {
+      "name": "Oddaj zlecenie",
+      "description": "Odłóż przyjęte zlecenie z powrotem na tablicę, aby inne dziecko mogło je wziąć",
+      "fields": {
+        "bounty_id": {
+          "name": "ID zlecenia",
+          "description": "ID przyjętego zlecenia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, które przyjęło zlecenie"
+        }
+      }
+    },
+    "complete_bounty": {
+      "name": "Wykonaj zlecenie",
+      "description": "Oznacz przyjęte zlecenie jako wykonane. Trafia do kolejki zatwierdzeń jak obowiązek.",
+      "fields": {
+        "bounty_id": {
+          "name": "ID zlecenia",
+          "description": "ID przyjętego zlecenia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, które przyjęło zlecenie"
+        },
+        "photo_url": {
+          "name": "URL zdjęcia",
+          "description": "Zdjęcie wykonanego zadania (wymagane, jeśli zlecenie tego wymaga)"
+        }
+      }
+    },
+    "pause_timed_task": {
+      "name": "Wstrzymaj zadanie na czas",
+      "description": "Wstrzymaj działający stoper zadania na czas",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku na czas"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka wstrzymującego stoper"
+        }
+      }
+    },
+    "stop_timed_task": {
+      "name": "Zatrzymaj zadanie na czas",
+      "description": "Zatrzymaj stoper zadania na czas i wyślij do zatwierdzenia",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku na czas"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka zatrzymującego stoper"
+        }
+      }
+    },
+    "add_badge": {
+      "name": "Dodaj odznakę",
+      "description": "Utwórz własną odznakę.",
+      "fields": {
+        "name": {
+          "name": "Nazwa",
+          "description": "Wyświetlana nazwa odznaki"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Opis, jak zdobyć odznakę"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Ikona odznaki (np. mdi:beach)"
+        },
+        "tier": {
+          "name": "Poziom",
+          "description": "Poziom odznaki: bronze (brązowa), silver (srebrna), gold (złota) lub platinum (platynowa)"
+        },
+        "point_bonus": {
+          "name": "Premia punktowa",
+          "description": "Punkty przyznawane dziecku po zdobyciu odznaki"
+        },
+        "criteria": {
+          "name": "Kryteria",
+          "description": "Lista słowników metryka / operator / wartość. Puste = tylko ręczne przyznawanie."
+        },
+        "assigned_to": {
+          "name": "Przypisana do",
+          "description": "Lista ID dzieci (puste = wszystkie)"
+        },
+        "notify_on_earn": {
+          "name": "Powiadom po zdobyciu",
+          "description": "Wyślij powiadomienie, gdy odznaka zostanie zdobyta"
+        }
+      }
+    },
+    "update_badge": {
+      "name": "Aktualizuj odznakę",
+      "description": "Zaktualizuj istniejącą odznakę. W odznakach wbudowanych można edytować tylko point_bonus, tier, assigned_to, enabled i notify_on_earn.",
+      "fields": {
+        "badge_id": {
+          "name": "ID odznaki",
+          "description": "ID odznaki do aktualizacji"
+        },
+        "name": {
+          "name": "Nazwa",
+          "description": "Nowa wyświetlana nazwa odznaki"
+        },
+        "description": {
+          "name": "Opis",
+          "description": "Nowy opis odznaki"
+        },
+        "icon": {
+          "name": "Ikona",
+          "description": "Nowa ikona odznaki"
+        },
+        "tier": {
+          "name": "Poziom",
+          "description": "Poziom odznaki: bronze (brązowa), silver (srebrna), gold (złota) lub platinum (platynowa)"
+        },
+        "point_bonus": {
+          "name": "Premia punktowa",
+          "description": "Punkty przyznawane dziecku po zdobyciu odznaki"
+        },
+        "criteria": {
+          "name": "Kryteria",
+          "description": "Lista słowników metryka / operator / wartość. Puste = tylko ręczne przyznawanie."
+        },
+        "assigned_to": {
+          "name": "Przypisana do",
+          "description": "Lista ID dzieci (puste = wszystkie)"
+        },
+        "enabled": {
+          "name": "Włączona",
+          "description": "Czy odznaka jest aktywna"
+        },
+        "notify_on_earn": {
+          "name": "Powiadom po zdobyciu",
+          "description": "Wyślij powiadomienie, gdy odznaka zostanie zdobyta"
+        }
+      }
+    },
+    "remove_badge": {
+      "name": "Usuń odznakę",
+      "description": "Usuń własną odznakę. Odznak wbudowanych nie można usunąć.",
+      "fields": {
+        "badge_id": {
+          "name": "ID odznaki",
+          "description": "ID odznaki do usunięcia"
+        }
+      }
+    },
+    "award_badge_manually": {
+      "name": "Przyznaj odznakę ręcznie",
+      "description": "Ręcznie przyznaj dziecku odznakę.",
+      "fields": {
+        "badge_id": {
+          "name": "ID odznaki",
+          "description": "ID odznaki do przyznania"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka otrzymującego odznakę"
+        }
+      }
+    },
+    "revoke_badge": {
+      "name": "Odbierz odznakę",
+      "description": "Odbierz przyznaną odznakę. Jeśli przyznano premię punktową, zostanie ona cofnięta.",
+      "fields": {
+        "awarded_badge_id": {
+          "name": "ID przyznanej odznaki",
+          "description": "ID rekordu przyznanej odznaki do odebrania"
+        }
+      }
+    },
+    "rebuild_badges": {
+      "name": "Przelicz odznaki",
+      "description": "Po cichu ponownie oceń wszystkie odznaki wszystkich dzieci (bez powiadomień i bez premii punktowych)."
+    },
+    "apply_mandatory_penalty": {
+      "name": "Nałóż karę za obowiązkowe zadanie",
+      "description": "Odejmij skonfigurowane punkty karne za pominięty obowiązek obowiązkowy i usuń pozycję do przeglądu.",
+      "fields": {
+        "miss_id": {
+          "name": "ID pominięcia",
+          "description": "ID pozycji przeglądu pominiętego obowiązku obowiązkowego"
+        }
+      }
+    },
+    "choose_avatar": {
+      "name": "Wybierz awatar",
+      "description": "Dziecko zmienia awatar na jeden z odblokowanych.",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka"
+        },
+        "icon": {
+          "name": "Ikona awatara",
+          "description": "Ikona mdi odblokowanego awatara z katalogu (np. mdi:rocket-launch)."
+        }
+      }
+    },
+    "dismiss_mandatory_chore": {
+      "name": "Odrzuć pominięty obowiązek obowiązkowy",
+      "description": "Usuń pozycję przeglądu pominiętego obowiązku obowiązkowego bez kary.",
+      "fields": {
+        "miss_id": {
+          "name": "ID pominięcia",
+          "description": "ID pozycji przeglądu pominiętego obowiązku obowiązkowego"
+        }
+      }
+    },
+    "gift_points": {
+      "name": "Podaruj punkty",
+      "description": "Przekaż dostępne punkty od jednego dziecka do drugiego (pod kontrolą rodzica).",
+      "fields": {
+        "from_child_id": {
+          "name": "ID dziecka przekazującego",
+          "description": "ID dziecka, które przekazuje punkty"
+        },
+        "to_child_id": {
+          "name": "ID dziecka otrzymującego",
+          "description": "ID dziecka, które otrzymuje punkty"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Liczba punktów do przekazania"
+        }
+      }
+    },
+    "adjust_streak_freezes": {
+      "name": "Zmień zamrożenia serii",
+      "description": "Daj dziecku żetony zamrożenia serii (wartość dodatnia) lub je odbierz (wartość ujemna). Przyznanie nigdy nie przekracza limitu streak_freeze_max.",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, którego żetony się zmieniają"
+        },
+        "amount": {
+          "name": "Ilość",
+          "description": "Żetony do dodania (dodatnie) lub odjęcia (ujemne)"
+        }
+      }
+    },
+    "postpone_mandatory_chore": {
+      "name": "Odłóż obowiązek obowiązkowy",
+      "description": "Daj pominiętemu obowiązkowi obowiązkowemu kolejny okres (lub jutro) bez kary i usuń pozycję do przeglądu.",
+      "fields": {
+        "miss_id": {
+          "name": "ID pominięcia",
+          "description": "ID pozycji przeglądu pominiętego obowiązku obowiązkowego"
+        }
+      }
+    },
+    "request_swap": {
+      "name": "Poproś o zamianę obowiązku",
+      "description": "Dziecko prosi o przejęcie dzisiejszego przydziału obowiązku z rotacji (wymaga zatwierdzenia rodzica).",
+      "fields": {
+        "chore_id": {
+          "name": "ID obowiązku",
+          "description": "ID obowiązku do przejęcia"
+        },
+        "requester_id": {
+          "name": "ID dziecka proszącego",
+          "description": "ID dziecka, które prosi o zamianę"
+        }
+      }
+    },
+    "test_notification": {
+      "name": "Testowe powiadomienie",
+      "description": "Wyślij przykładowe powiadomienie danego typu do jego włączonych odbiorców (ignoruje główny przełącznik, aby można było sprawdzić routing).",
+      "fields": {
+        "type_id": {
+          "name": "Typ powiadomienia",
+          "description": "ID typu powiadomienia, np. pending_chore_approval, badge_earned, streak_milestone"
+        }
+      }
+    },
+    "record_allowance_payout": {
+      "name": "Zapisz wypłatę kieszonkowego",
+      "description": "Odejmij punkty i zapisz w rejestrze wypłatę kieszonkowego w prawdziwych pieniądzach (stały kurs przeliczenia; pod kontrolą rodzica).",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka otrzymującego wypłatę"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Punkty do zamiany na gotówkę i odjęcia"
+        }
+      }
+    },
+    "add_wish": {
+      "name": "Dodaj marzenie",
+      "description": "Dziecko dodaje coś, na co chce oszczędzać. Czeka to na zatwierdzenie przez rodzica.",
+      "fields": {
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka dodającego marzenie"
+        },
+        "name": {
+          "name": "Nazwa",
+          "description": "Czego dziecko chce"
+        },
+        "target": {
+          "name": "Cel",
+          "description": "Proponowana liczba punktów, ile to kosztuje. Rodzic może ją zmienić przy zatwierdzaniu."
+        },
+        "link": {
+          "name": "Link",
+          "description": "Opcjonalny adres internetowy (http lub https) tej rzeczy"
+        },
+        "photo_url": {
+          "name": "Obrazek",
+          "description": "Opcjonalny obrazek przesłany przed chwilą przez endpoint zdjęć TaskMate"
+        }
+      }
+    },
+    "withdraw_wish": {
+      "name": "Wycofaj marzenie",
+      "description": "Dziecko wycofuje marzenie, które wciąż czeka na zatwierdzenie, lub usuwa odrzucone.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, do którego należy marzenie"
+        }
+      }
+    },
+    "move_points_to_wish": {
+      "name": "Przenieś punkty do marzenia",
+      "description": "Przenieś punkty z dostępnego salda dziecka do jednego z jego zatwierdzonych marzeń.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, do którego należy marzenie"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Ile punktów przenieść (ograniczone saldem i tym, czego marzeniu jeszcze brakuje)"
+        }
+      }
+    },
+    "take_points_from_wish": {
+      "name": "Wyjmij punkty z marzenia",
+      "description": "Zwróć część własnych zaoszczędzonych punktów dziecka z marzenia. Punkty od wspierających nigdy nie są wypłacane.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, do którego należy marzenie"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Ile zaoszczędzonych punktów wyjąć (ograniczone tym, ile dziecko odłożyło)"
+        }
+      }
+    },
+    "request_wish_redeem": {
+      "name": "Poproś o realizację marzenia",
+      "description": "W pełni sfinansowane marzenie staje się prośbą o nagrodę oczekującą na zatwierdzenie rodzica.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "child_id": {
+          "name": "ID dziecka",
+          "description": "ID dziecka, do którego należy marzenie"
+        }
+      }
+    },
+    "approve_wish": {
+      "name": "Zatwierdź marzenie",
+      "description": "Zamień oczekujące marzenie w cel oszczędnościowy, opcjonalnie z inną wartością docelową.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "target": {
+          "name": "Cel",
+          "description": "Ile punktów kosztuje marzenie. Pozostaw puste, aby zachować propozycję dziecka."
+        }
+      }
+    },
+    "decline_wish": {
+      "name": "Odrzuć marzenie",
+      "description": "Odmów marzenia. Zaoszczędzone punkty wracają do dziecka, a wsparcia zostają anulowane.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "reason": {
+          "name": "Powód",
+          "description": "Opcjonalny powód pokazywany dziecku"
+        }
+      }
+    },
+    "pledge_to_wish": {
+      "name": "Wesprzyj marzenie",
+      "description": "Zapisz punkty, którymi krewny dokłada się do marzenia dziecka. Nigdy nie wpływają na żadne saldo.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "name": {
+          "name": "Od kogo",
+          "description": "Od kogo jest wsparcie, np. Babcia"
+        },
+        "points": {
+          "name": "Punkty",
+          "description": "Ile punktów zadeklarować (ograniczone tym, czego marzeniu jeszcze brakuje)"
+        },
+        "message": {
+          "name": "Wiadomość",
+          "description": "Opcjonalna wiadomość dla dziecka"
+        }
+      }
+    },
+    "remove_wish_pledge": {
+      "name": "Usuń wsparcie marzenia",
+      "description": "Cofnij wsparcie. Możliwe do momentu realizacji marzenia.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        },
+        "pledge_id": {
+          "name": "ID wsparcia",
+          "description": "ID wsparcia do usunięcia"
+        }
+      }
+    },
+    "remove_wish": {
+      "name": "Usuń marzenie",
+      "description": "Usuń marzenie. Zaoszczędzone punkty wracają do dziecka, a wsparcia zostają anulowane.",
+      "fields": {
+        "wish_id": {
+          "name": "ID marzenia",
+          "description": "ID marzenia"
+        }
+      }
+    },
+    "start_inspection": {
+      "name": "Rozpocznij kontrolę",
+      "description": "Oznacz obowiązek zatwierdzony w ciągu ostatnich 24 godzin do niespodziewanej kontroli. Zalicz ją lub nie przed zamknięciem okna; nierozstrzygnięta kontrola zamyka się po cichu.",
+      "fields": {
+        "completion_id": {
+          "name": "ID wykonania",
+          "description": "ID zatwierdzonego wykonania obowiązku do skontrolowania"
+        },
+        "bonus": {
+          "name": "Premia",
+          "description": "Punkty wypłacane, jeśli kontrola wypadnie pozytywnie. Domyślnie wartość z Ustawień."
+        },
+        "window": {
+          "name": "Okno",
+          "description": "Ile masz czasu na sprawdzenie: 1h, 2h, 4h lub bed (do pory snu). Domyślnie wartość z Ustawień."
+        },
+        "tell_child": {
+          "name": "Powiedz dziecku",
+          "description": "Pokaż teraz „Nadchodzi kontrola” na karcie dziecka. Wyłącz, aby kontrola była tajna."
+        }
+      }
+    },
+    "pass_inspection": {
+      "name": "Zalicz kontrolę",
+      "description": "Skontrolowany obowiązek został zaliczony. Wypłaca premię jako zwykły wpis punktowy i świętuje na karcie dziecka.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID kontroli",
+          "description": "ID otwartej kontroli"
+        },
+        "bonus": {
+          "name": "Premia",
+          "description": "Punkty do wypłaty. Domyślnie premia ustawiona przy rozpoczęciu kontroli."
+        },
+        "note": {
+          "name": "Notatka",
+          "description": "Opcjonalna notatka pokazywana dziecku"
+        }
+      }
+    },
+    "fail_inspection": {
+      "name": "Nie zaliczaj kontroli",
+      "description": "Skontrolowany obowiązek nie został zaliczony. Punkty nie są odejmowane. Można go odesłać do poprawy; poprawka nie daje dodatkowych punktów.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID kontroli",
+          "description": "ID otwartej kontroli"
+        },
+        "redo": {
+          "name": "Odeślij do poprawy",
+          "description": "Przywróć obowiązek na listę dziecka jako niewykonany na dziś. Domyślnie wartość z Ustawień."
+        },
+        "note": {
+          "name": "Notatka",
+          "description": "Opcjonalna notatka pokazywana dziecku (co trzeba poprawić)"
+        }
+      }
+    },
+    "cancel_inspection": {
+      "name": "Anuluj kontrolę",
+      "description": "Odwołaj otwartą kontrolę, tak jakby nigdy się nie rozpoczęła.",
+      "fields": {
+        "inspection_id": {
+          "name": "ID kontroli",
+          "description": "ID otwartej kontroli"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "child_stats": {
+        "unit_of_measurement": "obowiązków"
+      },
+      "child_badges": {
+        "unit_of_measurement": "odznak"
+      },
+      "child_watch": {
+        "state": {
+          "left": "Zostało: #",
+          "all_done": "Wszystko zrobione",
+          "no_chores": "Brak obowiązków"
+        }
+      }
+    },
+    "number": {
+      "weekend_multiplier": {
+        "name": "Mnożnik weekendowy"
+      },
+      "perfect_week_bonus": {
+        "name": "Premia za idealny tydzień"
+      }
+    },
+    "select": {
+      "streak_reset_mode": {
+        "name": "Tryb resetu serii"
+      },
+      "card_design": {
+        "name": "Wygląd karty"
+      }
+    }
+  },
+  "exceptions": {
+    "calendar_unknown_event": {
+      "message": "To wydarzenie nie jest obowiązkiem TaskMate w kalendarzu tego dziecka."
+    },
+    "calendar_series_not_supported": {
+      "message": "Powtarzający się obowiązek można przesunąć lub usunąć z kalendarza tylko po jednym dniu. Aby zmienić całą serię, edytuj obowiązek w TaskMate."
+    },
+    "calendar_repeating_create": {
+      "message": "Nie można dodawać powtarzających się wydarzeń z kalendarza. Zamiast tego utwórz powtarzający się obowiązek w TaskMate."
+    },
+    "calendar_rename_series": {
+      "message": "Zmień nazwę powtarzającego się obowiązku w TaskMate. Z kalendarza można tylko przesunąć lub usunąć pojedynczy dzień."
+    },
+    "calendar_time_follows_chore": {
+      "message": "Powtarzający się obowiązek zachowuje swoją porę dnia. Z kalendarza można zmienić tylko datę pojedynczego wystąpienia."
+    },
+    "calendar_past_date": {
+      "message": "Nie można dodawać obowiązków do dnia w przeszłości ani przenosić ich na taki dzień lub z niego."
+    },
+    "calendar_already_scheduled": {
+      "message": "{chore} jest już zaplanowany na {date}."
+    },
+    "calendar_empty_title": {
+      "message": "Nadaj obowiązkowi tytuł."
+    },
+    "calendar_own_event": {
+      "message": "To wydarzenie zostało opublikowane przez sam TaskMate, więc nie zostanie dodane jako nowy obowiązek."
+    }
+  }
+}
