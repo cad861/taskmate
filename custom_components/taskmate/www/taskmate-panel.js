@@ -1950,6 +1950,7 @@ class TaskMatePanel extends HTMLElement {
         unavailability_entity: c.unavailability_entity || "",
         pause_streak_when_unavailable: !!c.pause_streak_when_unavailable,
         linked_user_id: c.linked_user_id || "",
+        picture_entity: c.picture_entity || "",
         birthday: c.birthday || "",
         age_group: c.age_group || "",
         presence_entity: c.presence_entity || "",
@@ -1962,7 +1963,7 @@ class TaskMatePanel extends HTMLElement {
         name: "", avatar: "mdi:account-circle", availability_entity: "",
         availability_inverted: false, unavailability_entity: "",
         pause_streak_when_unavailable: false,
-        linked_user_id: "", presence_entity: "",
+        linked_user_id: "", picture_entity: "", presence_entity: "",
         birthday: "", age_group: "",
         kiosk_pin: "", kiosk_pin_clear: false, has_kiosk_pin: false,
       } });
@@ -2013,13 +2014,15 @@ class TaskMatePanel extends HTMLElement {
           unavailability_entity: d.unavailability_entity || "",
           pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "",
           birthday: (d.birthday || "").trim(), age_group: d.age_group || "",
-          presence_entity: d.presence_entity || "" }
+          presence_entity: d.presence_entity || "",
+          picture_entity: d.picture_entity || "" }
       : { type: "taskmate/update_child", child_id: d.id, name: d.name.trim(), avatar: d.avatar || "mdi:account-circle",
           availability_entity: d.availability_entity || "", availability_inverted: !!d.availability_inverted,
           unavailability_entity: d.unavailability_entity || "",
           pause_streak_when_unavailable: !!d.pause_streak_when_unavailable, linked_user_id: d.linked_user_id || "",
           birthday: (d.birthday || "").trim(), age_group: d.age_group || "",
-          presence_entity: d.presence_entity || "" };
+          presence_entity: d.presence_entity || "",
+          picture_entity: d.picture_entity || "" };
     const { ok, err, res } = await this._callWS(payload);
     if (!ok) { this._showToast("err", this._t("panel.toast_save_failed", {error: err})); return; }
     // The PIN goes through its own command so it is hashed server-side and
@@ -9403,6 +9406,8 @@ class TaskMatePanel extends HTMLElement {
             (this._haUsers || []).map(u => ({ v: u.id, l: u.is_admin ? `${u.name} (admin)` : u.name }))
           ),
           this._t("panel.child_link_user_hint")),
+        this._entityPickerField(this._t("panel.child_picture_entity_label"), "picture_entity", d.picture_entity,
+          ["person"], this._t("panel.child_picture_entity_hint")),
         this._kioskPinField(d),
       ].join(""),
       `<button type="button" class="tm-btn" data-act="close-dialog">${this._t("panel.btn_cancel")}</button>
