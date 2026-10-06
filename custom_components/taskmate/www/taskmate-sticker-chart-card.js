@@ -239,11 +239,20 @@ class TaskMateStickerChartCard extends LitElement {
       }
       .heading ha-icon { --mdc-icon-size: 20px; }
       .heading .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* The child's running total: the number the whole chart is about, so it
+         gets a tinted pill of its own rather than a footnote beside the title. */
       .score {
-        display: inline-flex; align-items: center; gap: 4px;
-        font-size: 0.9rem; font-weight: 600; color: var(--secondary-text-color);
+        display: inline-flex; align-items: center; gap: 8px;
+        padding-block: 4px; padding-inline: 12px 16px; border-radius: 999px;
+        background: rgba(127, 127, 127, 0.14);
+        color: var(--primary-text-color);
       }
-      .score ha-icon { --mdc-icon-size: 16px; color: var(--tone, #3498db); }
+      @supports (background: color-mix(in srgb, red, blue)) {
+        .score { background: color-mix(in srgb, var(--tone, #3498db) 20%, transparent); }
+      }
+      .score ha-icon { --mdc-icon-size: 30px; color: var(--tone, #3498db); }
+      .score .num { font-size: 2rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+      .score .unit { font-size: 0.8rem; font-weight: 600; color: var(--secondary-text-color); }
 
       /* -- Summary -- */
       .summary { padding: 16px; }
@@ -938,7 +947,11 @@ class TaskMateStickerChartCard extends LitElement {
           <div class="heading">
             <ha-icon icon="mdi:calendar-check"></ha-icon>
             <span class="title">${child.name}</span>
-            <span class="score"><ha-icon icon="${attrs.points_icon || "mdi:star"}"></ha-icon>${points}</span>
+            <span class="score">
+            <ha-icon icon="${attrs.points_icon || "mdi:star"}"></ha-icon>
+            <span class="num">${points}</span>
+            <span class="unit">${unit}</span>
+          </span>
           </div>
           <div class="panel summary">
             <div class="today">
@@ -959,7 +972,11 @@ class TaskMateStickerChartCard extends LitElement {
         <div class="heading">
           <ha-icon icon="mdi:star-face"></ha-icon>
           <span class="title">${title}</span>
-          <span class="score"><ha-icon icon="${attrs.points_icon || "mdi:star"}"></ha-icon>${points}</span>
+          <span class="score">
+            <ha-icon icon="${attrs.points_icon || "mdi:star"}"></ha-icon>
+            <span class="num">${points}</span>
+            <span class="unit">${unit}</span>
+          </span>
         </div>
 
         <div class="panel summary">
