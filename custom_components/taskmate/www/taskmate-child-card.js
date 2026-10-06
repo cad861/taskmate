@@ -3007,7 +3007,7 @@ class TaskMateChildCard extends LitElement {
           <span class="ch-emoji">${r.glyph}</span>
           <div class="ch-mid">
             <div class="ch-name">${r.chore.name}</div>
-            ${r.done ? "" : html`<div class="chip soft" style="margin-top:3px">+${r.points} ⭐</div>`}
+            ${r.done ? "" : html`<div class="chip soft" style="margin-top:3px">+${r.points} <ha-icon style="--mdc-icon-size:1.1em;vertical-align:-0.15em" icon="${this._pointsIcon()}"></ha-icon></div>`}
             ${this._designChoreMeta(r)}
           </div>
           ${r.done
@@ -4152,9 +4152,10 @@ class TaskMateChildCard extends LitElement {
     const timeStr = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 
     // Rate display
+    const pointsName = attrs.points_name || this._t('common.stars');
     const rateLabel = chore.timed_rate_minutes === 1
-      ? `${ratePoints} ${this._t('child.pts_per_min')}`
-      : `${ratePoints} ${this._t('child.pts_per_n_min', {count: chore.timed_rate_minutes})}`;
+      ? `${ratePoints} ${this._t('child.pts_per_min', {pointsName})}`
+      : `${ratePoints} ${this._t('child.pts_per_n_min', {count: chore.timed_rate_minutes, pointsName})}`;
 
     // Daily cap info
     const maxMin = chore.timed_max_daily_minutes || 0;
@@ -4384,7 +4385,7 @@ class TaskMateChildCard extends LitElement {
     // for non-parents with one friendly message instead of a doomed service call.
     // The one exception is a child's own tick still inside the undo window
     // (#918), which goes through the restricted undo_chore service.
-    if (!window.__taskmate_is_parent(this.hass)) {
+    if (!this._isParent()) {
       const own = (todaysCompletions || []).find(
         c => c.chore_id === chore.id && c.child_id === child.id && c.bonus_subtask_id === subtask.id
       );
@@ -4936,6 +4937,16 @@ class TaskMateChildCard extends LitElement {
     }));
   }
 
+  /**
+   * Parent-only controls are shown to admins and TaskMate parents unless the
+   * card sets show_parent_actions: false (#1032) — for a shared kids' dashboard
+   * where a parent account stays signed in. The card then behaves exactly as it
+   * does for a child. Display only; the services keep their own permission checks.
+   */
+  _isParent() {
+    return this.config?.show_parent_actions !== false && window.__taskmate_is_parent(this.hass);
+  }
+
   /** True if an error from reject_chore is an authorization/admin rejection. */
   _isUnauthorized(error) {
     const text = `${error?.message || ""} ${error?.code || ""}`.toLowerCase();
@@ -5060,7 +5071,7 @@ class TaskMateChildCard extends LitElement {
     // with one clear, friendly message and never fire the doomed call.
     // The one exception is a child's own completion still inside the undo
     // window (#918), which goes through the restricted undo_chore service.
-    if (!window.__taskmate_is_parent(this.hass)) {
+    if (!this._isParent()) {
       const latest = this._latestCompletion(childCompletionsToday);
       if (this._childCanUndo(latest)) {
         await this._childUndo(latest, chore, child);
@@ -5192,12 +5203,18 @@ class TaskMateChildCard extends LitElement {
     return i.status === "open" ? "tm-insp-row-open" : i.status === "passed" ? "tm-insp-row-passed" : "";
   }
 
+  _pointsIcon() {
+    const attrs = (window.__taskmate_attrs && window.__taskmate_attrs(this.hass, this.config?.entity))
+      || this.hass?.states?.[this.config?.entity]?.attributes || {};
+    return attrs.points_icon || "mdi:star";
+  }
+
   _renderInspectionTag(chore, child) {
     const i = this._inspectionFor(chore, child);
     if (!i) return "";
     const tags = {
       open: ["mdi:magnify-scan", this._t("inspection.tag_open")],
-      passed: ["mdi:star", this._t("inspection.tag_passed", { bonus: i.bonus })],
+      passed: [this._pointsIcon(), this._t("inspection.tag_passed", { bonus: i.bonus })],
       redo: ["mdi:restore", this._t("inspection.tag_redo")],
       failed: ["mdi:magnify-scan", this._t("inspection.tag_failed")],
     };
@@ -5538,6 +5555,7 @@ class TaskMateChildCardEditor extends LitElement {
       { name: 'pre_reader', selector: { boolean: {} } },
       { name: 'pre_reader_labels', selector: { boolean: {} } },
       { name: 'pre_reader_points', selector: { boolean: {} } },
+      { name: 'show_parent_actions', selector: { boolean: {} } },
       { name: 'debug', selector: { boolean: {} } },
     ];
   }
@@ -5559,6 +5577,7 @@ class TaskMateChildCardEditor extends LitElement {
       pre_reader: this._t('child.editor.pre_reader'),
       pre_reader_labels: this._t('child.editor.pre_reader_labels'),
       pre_reader_points: this._t('child.editor.pre_reader_points'),
+      show_parent_actions: this._t('common.editor.show_parent_actions'),
       debug: this._t('child.editor.show_debug'),
     };
     return labels[entry.name] ?? entry.name;
@@ -5575,6 +5594,7 @@ class TaskMateChildCardEditor extends LitElement {
       dependency_mode: this._t('child.editor.dependency_helper'),
       elapsed_time_mode: this._t('child.editor.elapsed_helper'),
       include_anytime_chores: this._t('child.editor.include_anytime_chores_helper'),
+      show_parent_actions: this._t('common.editor.show_parent_actions_helper'),
     };
     return helpers[entry.name] ?? '';
   };
@@ -5598,6 +5618,7 @@ class TaskMateChildCardEditor extends LitElement {
       pre_reader: this.config.pre_reader === true,
       pre_reader_labels: this.config.pre_reader_labels === true,
       pre_reader_points: this.config.pre_reader_points === true,
+      show_parent_actions: this.config.show_parent_actions !== false,
       debug: this.config.debug === true,
     };
 

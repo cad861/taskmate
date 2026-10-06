@@ -479,14 +479,15 @@ export function createIncentiveCard(P) {
        admins *and* TaskMate parents get the Apply buttons. Defining one is
        structural config, so the manage controls (pencil, add/edit/delete) are
        admin-only — matching the `_parent` / `_admin` service gates. A child on
-       a shared tablet sees the list with no buttons. */
+       a shared tablet sees the list with no buttons. show_parent_actions: false
+       (#1032) gives a parent who stays signed in on that tablet the same view. */
 
     _canApply() {
-      return window.__taskmate_is_parent(this.hass);
+      return this.config?.show_parent_actions !== false && window.__taskmate_is_parent(this.hass);
     }
 
     _canManage() {
-      return !!this.hass?.user?.is_admin;
+      return this.config?.show_parent_actions !== false && !!this.hass?.user?.is_admin;
     }
 
     _toggleEditMode() {
@@ -1073,6 +1074,7 @@ export function createIncentiveCard(P) {
       return [
         { name: 'entity', selector: { entity: { domain: 'sensor' } } },
         { name: 'title', selector: { text: {} } },
+        { name: 'show_parent_actions', selector: { boolean: {} } },
         {
           name: 'card_design',
           selector: {
@@ -1091,6 +1093,7 @@ export function createIncentiveCard(P) {
       const labels = {
         entity: this._t('common.editor.overview_entity'),
         title: this._t('common.editor.card_title'),
+        show_parent_actions: this._t('common.editor.show_parent_actions'),
         card_design: this._t('common.design.field_label'),
       };
       return labels[entry.name] ?? entry.name;
@@ -1099,6 +1102,7 @@ export function createIncentiveCard(P) {
     _computeHelper = (entry) => {
       const helpers = {
         entity: this._t('common.editor.overview_entity_helper'),
+        show_parent_actions: this._t('common.editor.show_parent_actions_helper'),
       };
       return helpers[entry.name] ?? '';
     };
@@ -1108,6 +1112,7 @@ export function createIncentiveCard(P) {
       const data = {
         entity: this.config.entity || '',
         title: this.config.title || '',
+        show_parent_actions: this.config.show_parent_actions !== false,
         card_design: this.config.card_design || 'global',
       };
       return html`
