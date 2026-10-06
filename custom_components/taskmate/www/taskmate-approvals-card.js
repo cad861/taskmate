@@ -811,6 +811,19 @@ class TaskMateApprovalsCard extends LitElement {
     return child || null;
   }
 
+  _pointsAttrs() {
+    return (window.__taskmate_attrs && window.__taskmate_attrs(this.hass, this.config.entity))
+      || this.hass?.states?.[this.config.entity]?.attributes || {};
+  }
+
+  _pointsIcon() {
+    return this._pointsAttrs().points_icon || "mdi:star";
+  }
+
+  _pointsName() {
+    return this._pointsAttrs().points_name || this._t("common.points");
+  }
+
   // Flatten all pending items into a single ordered, day/time-grouped list so
   // the designed views can render approvals, reward claims and mandatory misses
   // together while reusing every existing handler.
@@ -1069,7 +1082,7 @@ class TaskMateApprovalsCard extends LitElement {
             <div class="muted ap-pl-sub">${it.childName}</div>
           </div>
           ${this._apPhotoDesigned(it, "ap-pl-photo")}
-          <div class="chip ap-gold">+${it.points} ⭐</div>
+          <div class="chip ap-gold">+${it.points} <ha-icon style="--mdc-icon-size:1.1em;vertical-align:-0.15em" icon="${this._pointsIcon()}"></ha-icon></div>
         </div>
         <div class="row" style="margin-top:11px;gap:8px">
           ${this._designActions(it, "full")}
@@ -1166,7 +1179,7 @@ class TaskMateApprovalsCard extends LitElement {
               ${childName}
             </span>
             <span class="points-badge">
-              <ha-icon icon="mdi:star"></ha-icon>
+              <ha-icon icon="${this._pointsIcon()}"></ha-icon>
               ${cost}
             </span>
           </div>
@@ -1256,7 +1269,7 @@ class TaskMateApprovalsCard extends LitElement {
             </span>
           </div>
           ${penalty > 0
-            ? html`<span class="penalty-note">${this._t('approvals.penalty_points', { points: penalty })}</span>`
+            ? html`<span class="penalty-note">${this._t('approvals.penalty_points', { points: penalty, pointsName: this._pointsName() })}</span>`
             : html`<span class="penalty-note none">${this._t('approvals.no_penalty')}</span>`}
         </div>
         <div class="action-buttons right">
@@ -1550,7 +1563,7 @@ class TaskMateApprovalsCard extends LitElement {
               </span>
             ` : ''}
             <span class="points-badge">
-              <ha-icon icon="mdi:star"></ha-icon>
+              <ha-icon icon="${this._pointsIcon()}"></ha-icon>
               ${completion.points}
             </span>
             ${this._renderStars(completion)}

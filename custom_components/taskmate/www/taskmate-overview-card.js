@@ -510,6 +510,17 @@ class TaskMateOverviewCard extends LitElement {
     return html`<div class="av" style="--av:${size}px;--ac:${tone}">${inner}</div>`;
   }
 
+  /**
+   * Parent-only controls are shown to admins and TaskMate parents unless the
+   * card sets show_parent_actions: false (#1032) — for a shared kids' dashboard
+   * where a parent account stays signed in. The card then behaves exactly as it
+   * does for a child (no complete-on-behalf). Display only; the services keep
+   * their own permission checks.
+   */
+  _isParent() {
+    return this.config?.show_parent_actions !== false && window.__taskmate_is_parent(this.hass);
+  }
+
   /** Per-child today progress, mirroring the classic tile filtering exactly. */
   _childProgress(child, chores, completions, attrs) {
     const childChores = this._childChoresToday(child, chores, attrs);
@@ -543,7 +554,7 @@ class TaskMateOverviewCard extends LitElement {
       pendingApprovals = (attrs.chore_completions || completions.filter(c => !c.approved)).length;
     }
 
-    const isParent = window.__taskmate_is_parent(this.hass);
+    const isParent = this._isParent();
 
     // Aggregate today's progress across all children
     let doneTotal = 0;
@@ -764,7 +775,7 @@ class TaskMateOverviewCard extends LitElement {
     // Pending approvals for this child
     const childPending = childCompletions.filter(c => !c.approved).length;
 
-    const isParent = window.__taskmate_is_parent(this.hass);
+    const isParent = this._isParent();
     const outstanding = childChores.filter(c => {
       const doneToday = completions.filter(
         x => x.child_id === child.id && x.chore_id === c.id && !x.bonus_subtask_id
@@ -908,6 +919,7 @@ class TaskMateOverviewCardEditor extends LitElement {
       { name: 'entity', selector: { entity: { domain: 'sensor' } } },
       { name: 'title', selector: { text: {} } },
       { name: 'approvals_entity', selector: { entity: { domain: 'sensor' } } },
+      { name: 'show_parent_actions', selector: { boolean: {} } },
       {
         name: 'card_design',
         selector: {
@@ -927,6 +939,7 @@ class TaskMateOverviewCardEditor extends LitElement {
       entity: this._t('overview.editor.entity_label'),
       title: this._t('overview.editor.title_label'),
       approvals_entity: this._t('overview.editor.approvals_entity_label'),
+      show_parent_actions: this._t('common.editor.show_parent_actions'),
       card_design: this._t('common.design.field_label'),
     };
     return labels[entry.name] ?? entry.name;
@@ -936,6 +949,7 @@ class TaskMateOverviewCardEditor extends LitElement {
     const helpers = {
       entity: this._t('overview.editor.entity_helper'),
       approvals_entity: this._t('overview.editor.approvals_entity_helper'),
+      show_parent_actions: this._t('common.editor.show_parent_actions_helper'),
     };
     return helpers[entry.name] ?? '';
   };
@@ -946,6 +960,7 @@ class TaskMateOverviewCardEditor extends LitElement {
       entity: this.config.entity || '',
       title: this.config.title || '',
       approvals_entity: this.config.approvals_entity || '',
+      show_parent_actions: this.config.show_parent_actions !== false,
       card_design: this.config.card_design || 'global',
     };
     return html`

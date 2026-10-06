@@ -166,8 +166,8 @@ def test_a_past_day_is_ticked_through_the_backdating_service():
     assert "as_parent: true" in CARD
     assert "this.dayCompletions" in CARD
     assert '"taskmate-day-changed"' in CARD
-    # rotation chores can't be logged for a past day, so aren't offered
-    assert 'if (past && mode !== "everyone") continue;' in CARD
+    # rotation and team chores can't be logged for a past day, so aren't offered
+    assert 'if (past && (mode !== "everyone" || chore.team)) continue;' in CARD
 
 
 def test_the_card_finds_lit_outside_a_dashboard():

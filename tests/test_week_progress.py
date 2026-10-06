@@ -91,3 +91,24 @@ def test_earned_counts_approved_points_since_monday_only():
     result = _progress([_chore()], completions)
     assert result["millie"]["earned"] == 5
     assert result["evie"]["earned"] == 7
+
+
+# ── Weekly-target (#883) and open-ended chores ───────────────────────────────
+
+
+def test_a_weekly_target_chore_offers_its_quota_once_not_a_slot_per_day():
+    # Every-day schedule, but the child picks the days: 2 times a week at 3 points.
+    assert _progress([_chore(points=3, weekly_target=2)])["millie"]["available"] == 6
+
+
+def test_a_weekly_target_chore_ignores_the_daily_limit_and_weekend_multiplier():
+    chore = _chore(points=3, weekly_target=2, daily_limit=3)
+    assert _progress([chore], settings={"weekend_multiplier": "2.0"})["millie"]["available"] == 6
+
+
+def test_an_open_ended_chore_adds_nothing_to_whats_available_but_its_pay_still_counts():
+    chore = _chore(points=0, open_ended=True)
+    done = [_done("millie", datetime(2026, 9, 15, 9, tzinfo=UTC), 7)]
+    out = _progress([chore], done)["millie"]
+    assert out["available"] == 0
+    assert out["earned"] == 7

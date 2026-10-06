@@ -11,7 +11,8 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -24,7 +25,7 @@ from .coord_rewards import reward_is_time_locked
 from .coordinator import TaskMateCoordinator
 from .entity import taskmate_device_info
 from .models import Child
-from .watch import DEFAULT_STATE_STRINGS, watch_state, watch_summary
+from .watch import DEFAULT_STATE_STRINGS, today_board, watch_state, watch_summary
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -934,6 +935,7 @@ async def async_setup_entry(
     entities.append(TaskMateIncentivesSensor(coordinator, entry))
     entities.append(TaskMateBountiesSensor(coordinator, entry))
     entities.append(TaskMateAuctionsSensor(coordinator, entry))
+    entities.append(TaskMateChoreBoardSensor(coordinator, entry))
 
     # Add sensors for each child
     for child in coordinator.data.get("children", []):
@@ -1014,6 +1016,22 @@ class _CachedAttrsSensor(TaskMateBaseSensor):
         raise NotImplementedError
 
 
+# The singleton sensors the cards merge into the overview's attributes, by
+# unique_id suffix. The suffix doubles as the key in `companion_entities` and
+# matches the default entity id (sensor.taskmate_<suffix>) the cards fall back to.
+COMPANION_SUFFIXES = (
+    "chores",
+    "chore_availability",
+    "rewards",
+    "activity",
+    "incentives",
+    "pending_approvals",
+    "bounties",
+    "auctions",
+    "chore_board",
+)
+
+
 class TaskMateOverallStatsSensor(_CachedAttrsSensor):
     """Overview sensor — scalars plus the compact per-child summary.
 
@@ -1023,7 +1041,9 @@ class TaskMateOverallStatsSensor(_CachedAttrsSensor):
 
     # The per-child summary grows with the family; the scalars stay recorded
     # so history/statistics on them keep working (#817).
-    _unrecorded_attributes = frozenset({"children", "vacation_periods", "season_champions"})
+    _unrecorded_attributes = frozenset(
+        {"children", "vacation_periods", "season_champions", "companion_entities", "badge_entities"}
+    )
 
     def __init__(
         self,
@@ -1033,6 +1053,44 @@ class TaskMateOverallStatsSensor(_CachedAttrsSensor):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_overall_stats"
         self._attr_name = "TaskMate Overview"
+        self._published_entity_map: dict | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, self._async_entity_registry_updated)
+        )
+
+    @callback
+    def _async_entity_registry_updated(self, _event: Event) -> None:
+        """Republish when a companion sensor is created, removed or renamed."""
+        if self._entity_map() != self._published_entity_map:
+            self.async_write_ha_state()
+
+    def _entity_map(self) -> dict:
+        """The entity ids the companion and per-child badges sensors really
+        have (#1018). Home Assistant puts the device's area in front of a new
+        entity's id (2026.6+), and users rename entities, so the cards can't
+        rely on the sensor.taskmate_<suffix> defaults."""
+        if getattr(self, "hass", None) is None:
+            return {"companion_entities": {}, "badge_entities": {}}
+        registry = er.async_get(self.hass)
+        prefix = self._entry.entry_id
+
+        def lookup(suffix: str) -> str | None:
+            return registry.async_get_entity_id("sensor", DOMAIN, f"{prefix}_{suffix}")
+
+        companions = {s: eid for s in COMPANION_SUFFIXES if (eid := lookup(s))}
+        badges = {c.id: eid for c in self.coordinator.storage.get_children() if (eid := lookup(f"{c.id}_badges"))}
+        return {"companion_entities": companions, "badge_entities": badges}
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        # Kept out of the cached build: a rename doesn't touch the coordinator
+        # data the cache is keyed on.
+        entity_map = self._entity_map()
+        self._published_entity_map = entity_map
+        return {**super().extra_state_attributes, **entity_map}
 
     @property
     def native_value(self) -> int:
@@ -1433,6 +1491,54 @@ class TaskMateAuctionsSensor(_CachedAttrsSensor):
 
     def _build_attributes(self) -> dict:
         return {"auctions": self.coordinator.auctions_public_state()}
+
+
+class TaskMateChoreBoardSensor(TaskMateBaseSensor):
+    """The Today page's chore board, for the chore board card (#1017).
+
+    The state is how many chores are still to do today across every child.
+    The ``chore_board`` attribute is what the admin panel's Today page draws:
+    today's status of each child's chores, plus the last seven days of
+    done/total per child for the week view. The panel reads it over the
+    admin-only WebSocket; this puts it where a non-admin dashboard can.
+
+    Keyed on the date as well as the coordinator snapshot, like the watch
+    sensors, so a quiet midnight still rolls the board over.
+    """
+
+    _unrecorded_attributes = frozenset({"chore_board"})
+    _attr_icon = "mdi:view-grid-outline"
+
+    def __init__(
+        self,
+        coordinator: TaskMateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_chore_board"
+        self._attr_name = "TaskMate Chore Board"
+        self._board_key: tuple | None = None
+        self._board: dict | None = None
+
+    def _current_board(self) -> dict:
+        key = (
+            id(self.coordinator.data),
+            getattr(self.coordinator, "external_state_version", 0),
+            dt_util.as_local(dt_util.now()).date(),
+        )
+        if key != self._board_key or self._board is None:
+            self._board = self.coordinator.daily_progress_state(board=today_board(self.coordinator))
+            self._board_key = key
+        return self._board
+
+    @property
+    def native_value(self) -> int:
+        children = self._current_board()["board"]["children"]
+        return sum(1 for e in children for c in e["chores"] if c["status"] in ("todo", "missed"))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {"chore_board": self._current_board()}
 
 
 class ChildPointsSensor(TaskMateBaseSensor):

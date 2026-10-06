@@ -32,6 +32,12 @@ class PointsMixin:
         the rest of the week). Rotation
         chores are skipped — who is active on a future day can't be known — so
         ``earned`` may run past ``available``; cards cap the display.
+
+        A weekly-target chore (#883) is picked up on whichever days the child
+        chooses, so it adds its quota (target × points) once rather than a slot
+        per scheduled day. An open-ended chore has no price of its own, so it
+        adds nothing to ``available`` (what was paid for it still counts in
+        ``earned``).
         """
         today = dt_util.now().date()
         week_start = today - timedelta(days=today.weekday())
@@ -63,8 +69,14 @@ class PointsMixin:
                 mode = getattr(chore, "assignment_mode", "everyone") or "everyone"
                 if mode not in ("everyone", "first_come"):
                     continue
+                if getattr(chore, "open_ended", False):
+                    continue
                 limit = 1 if mode == "first_come" else max(1, int(getattr(chore, "daily_limit", 1) or 1))
                 points = self.effective_chore_points(chore)
+                weekly_target = int(getattr(chore, "weekly_target", 0) or 0)
+                if weekly_target:
+                    available += weekly_target * points
+                    continue
                 for day in days:
                     if self.is_vacation_day(day) or not self._is_chore_scheduled_for_date(chore, day):
                         continue

@@ -32,6 +32,14 @@ def _setup(chore, completions=()):
     coord.storage.add_completion = MagicMock(side_effect=stored.append)
     coord.storage.update_completion = MagicMock()
     coord._award_points = AsyncMock(side_effect=lambda child, pts, **kw: pts)
+    # The follow-up an ordinary approval runs, so a test can see it happen.
+    coord.storage.get_last_completed = MagicMock(return_value={})
+    coord.storage.set_last_completed = MagicMock()
+    coord.storage.update_chore = MagicMock()
+    coord._async_advance_quests = AsyncMock()
+    coord._async_evaluate_challenges = AsyncMock()
+    coord.badges = MagicMock()
+    coord.badges.evaluate_for_child = AsyncMock()
     return coord, stored
 
 
@@ -148,3 +156,153 @@ def test_the_panel_shows_the_sticker_card_for_the_day():
     assert '"taskmate/day_completions"' in panel
     ws = (Path(__file__).parents[1] / "custom_components/taskmate/websocket.py").read_text()
     assert "_ws_day_completions,\n" in ws
+
+
+# ── It is an ordinary approval, not a shortcut ───────────────────────────────
+
+
+def test_runs_the_same_after_approval_hooks_as_any_approval():
+    coord, _ = _setup(_bed())
+    _run(coord)
+    coord.badges.evaluate_for_child.assert_awaited_once_with("millie", "manual")
+    coord._async_advance_quests.assert_awaited_once_with("millie", "bed")
+    coord._async_evaluate_challenges.assert_awaited_once_with("millie")
+    coord.storage.async_save.assert_awaited()
+    coord.async_refresh.assert_awaited()
+
+
+def test_it_is_marked_backdated_and_parent_made():
+    coord, _ = _setup(_bed())
+    completion = _run(coord)
+    assert completion.backdated is True
+    assert completion.child_undo_allowed is False
+    assert ChoreCompletion.from_dict(completion.to_dict()).backdated is True
+    # Written only when set, so ordinary completions keep their small records.
+    assert "backdated" not in ChoreCompletion(chore_id="a", child_id="b", completed_at=NOW).to_dict()
+
+
+def test_records_last_completed_when_it_is_the_latest():
+    coord, _ = _setup(_bed())
+    completion = _run(coord)
+    coord.storage.set_last_completed.assert_called_once_with("bed", "millie", completion.completed_at.isoformat())
+
+
+def test_does_not_pull_last_completed_back_behind_a_later_completion():
+    coord, _ = _setup(_bed())
+    coord.storage.get_last_completed = MagicMock(return_value={"current": "2026-09-15T08:00:00+00:00"})
+    _run(coord)
+    coord.storage.set_last_completed.assert_not_called()
+
+
+def test_a_one_shot_job_is_disabled_for_that_child_like_any_approval():
+    chore = _bed(schedule_mode="one_shot", created_date=MONDAY.isoformat())
+    coord, _ = _setup(chore)
+    _run(coord)
+    assert "millie" in chore.disabled_for
+    coord.storage.update_chore.assert_called()
+
+
+# ── Chore kinds that can't (or must not) be logged afterwards ────────────────
+
+
+def test_refuses_open_ended_chores():
+    coord, _ = _setup(_bed(open_ended=True))
+    with pytest.raises(ValueError, match="open-ended"):
+        _run(coord)
+
+
+def test_refuses_teamwork_chores():
+    coord, _ = _setup(_bed(team_size=2))
+    coord.teamwork_size = MagicMock(return_value=2)
+    with pytest.raises(ValueError, match="needs a team"):
+        _run(coord)
+
+
+def test_refuses_a_day_won_at_auction():
+    coord, _ = _setup(_bed())
+    coord.auction_winner = MagicMock(return_value="evie")
+    with pytest.raises(ValueError, match="won at auction"):
+        _run(coord)
+
+
+# ── Weekly targets (#883) ────────────────────────────────────────────────────
+
+
+def _week_of(day, n, chore_id="bed"):
+    return [
+        ChoreCompletion(chore_id=chore_id, child_id="millie", completed_at=datetime(2026, 9, day, 8, tzinfo=UTC))
+        for _ in range(n)
+    ]
+
+
+def test_a_weekly_target_chore_can_be_logged_on_any_day_while_the_quota_is_open():
+    # Due only at weekends, but a weekly-target chore's days are the child's choice.
+    coord, stored = _setup(_bed(weekly_target=2, due_days=["saturday"]), _week_of(15, 1))
+    _run(coord)
+    assert len(stored) == 2
+
+
+def test_a_weekly_target_chore_refuses_once_that_weeks_quota_is_met():
+    coord, _ = _setup(_bed(weekly_target=2, due_days=["saturday"]), _week_of(15, 1) + _week_of(16, 1))
+    with pytest.raises(ValueError, match="already reached its 2"):
+        _run(coord)
+
+
+def test_the_quota_is_counted_for_the_week_of_the_day_being_logged():
+    # Two completions last week fill last week's quota, not this week's.
+    last_week = _week_of(9, 2)
+    coord, stored = _setup(_bed(weekly_target=2, due_days=[]), last_week)
+    _run(coord)  # Monday 14th: this week has none yet
+    assert len(stored) == 3
+    with pytest.raises(ValueError, match="already reached its 2"):
+        _run(coord, day=date(2026, 9, 10))  # Thursday of last week: already 2
+
+
+# ── Undoing one ──────────────────────────────────────────────────────────────
+
+
+def _undo(completion, child, last_completed=None):
+    coord = _make_coord(children=[child], completions=[completion])
+    coord.storage.get_chore = MagicMock(return_value=None)
+    coord.storage.get_last_completed = MagicMock(return_value=last_completed or {})
+    coord.storage.undo_last_completed = MagicMock()
+    with patch.object(coord_chores.dt_util, "_now", NOW):
+        coord._reverse_completion_awards(completion, [completion])
+    return coord
+
+
+def _approved(backdated):
+    return ChoreCompletion(
+        chore_id="bed",
+        child_id="millie",
+        completed_at=datetime(2026, 9, 14, 12, tzinfo=UTC),
+        approved=True,
+        points_awarded=2,
+        backdated=backdated,
+    )
+
+
+def test_undoing_a_backdated_job_leaves_the_streak_alone():
+    child = Child(name="Millie", id="millie", points=10, current_streak=5, last_completion_date="2026-09-16")
+    _undo(_approved(backdated=True), child)
+    assert child.current_streak == 5
+    assert child.last_completion_date == "2026-09-16"
+    assert child.points == 8  # the points it paid are still taken back
+
+
+def test_undoing_an_ordinary_approval_still_takes_a_day_off_the_streak():
+    child = Child(name="Millie", id="millie", points=10, current_streak=5, last_completion_date="2026-09-14")
+    _undo(_approved(backdated=False), child)
+    assert child.current_streak == 4
+
+
+def test_undoing_a_backdated_job_does_not_pop_a_later_last_completed():
+    child = Child(name="Millie", id="millie", points=10)
+    coord = _undo(_approved(backdated=True), child, {"current": "2026-09-15T08:00:00+00:00"})
+    coord.storage.undo_last_completed.assert_not_called()
+
+
+def test_undoing_a_backdated_job_that_set_last_completed_restores_it():
+    child = Child(name="Millie", id="millie", points=10)
+    coord = _undo(_approved(backdated=True), child, {"current": "2026-09-14T12:00:00+00:00"})
+    coord.storage.undo_last_completed.assert_called_once_with("bed", "millie")

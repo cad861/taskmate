@@ -7086,7 +7086,7 @@ class TaskMatePanel extends HTMLElement {
         <div class="tm-meta">${this._esc(name(b.claimed_by))}${comp ? ` · ${this._timeAgo(comp.completed_at)}` : ""}</div>`;
     } else if (b.status === "completed") {
       status = `<span class="tm-pill tm-pill-success">${this._t("panel.bounty_status_completed")}</span>
-        <div class="tm-meta">${this._t("panel.bounty_completed_meta", { name: this._esc(name(b.claimed_by)), points: this._num(b.points_awarded || b.points), points_name: this._esc((this._state.settings && this._state.settings.points_name) || this._t("common.points")) })}</div>`;
+        <div class="tm-meta">${this._t("panel.bounty_completed_meta", { name: this._esc(name(b.claimed_by)), points: this._num(b.points_awarded || b.points), points_name: this._esc(this._pointsName()) })}</div>`;
     } else if (b.status === "expired") {
       status = `<span class="tm-pill tm-pill-muted">${this._t("panel.bounty_status_expired")}</span>
         <div class="tm-meta">${this._t(b.lapse_count > 0 ? "panel.bounty_expired_lapsed_meta" : b.claim_count > 0 ? "panel.bounty_expired_unfinished_meta" : "panel.bounty_expired_meta", { date: b.closed_at ? this._esc(new Date(b.closed_at).toLocaleDateString([], { day: "numeric", month: "short" })) : "" })}</div>`;
@@ -7393,7 +7393,7 @@ class TaskMatePanel extends HTMLElement {
       const child = childById[b.child_id];
       return `<span class="tm-auc-chip" title="${this._esc(child ? child.name : "?")}">
         ${child ? this._childAvatar(child) : ""}
-        ${show ? `<b>${this._num(b.points)} ★</b>` : `<span class="tm-text-muted">${this._t("panel.auction_sealed")}</span>`}
+        ${show ? `<b>${this._num(b.points)} ${this._pointsIconHtml()}</b>` : `<span class="tm-text-muted">${this._t("panel.auction_sealed")}</span>`}
         ${i === 0 && a.status === "open" && show ? `<span class="tm-meta">· ${this._t("panel.auction_leading")}</span>` : ""}
       </span>`;
     }).join("");
@@ -7404,9 +7404,9 @@ class TaskMatePanel extends HTMLElement {
     const chore = `
       <div class="tm-name-main tm-bounty-cell">
         <span class="tm-avatar tm-auc-ic">${this._mdi(a.icon || "mdi:gavel")}</span>
-        <div><strong>${this._esc(a.chore_name)}</strong><div class="tm-meta">${this._esc(this._t("panel.auction_normally", { date: this._auctionDate(a.occurrence), points: this._num(a.normal_points) }))}</div></div>
+        <div><strong>${this._esc(a.chore_name)}</strong><div class="tm-meta">${this._esc(this._t("panel.auction_normally", { date: this._auctionDate(a.occurrence), points: this._num(a.normal_points), points_name: this._pointsName() }))}</div></div>
       </div>`;
-    const max = `<strong class="tm-numeric tm-auc-gold">${this._num(a.max_points)} ★</strong>${a.min_points > 1 ? `<div class="tm-meta">${this._t("panel.auction_min_meta", { points: this._num(a.min_points) })}</div>` : ""}`;
+    const max = `<strong class="tm-numeric tm-auc-gold">${this._num(a.max_points)} ${this._pointsIconHtml()}</strong>${a.min_points > 1 ? `<div class="tm-meta">${this._t("panel.auction_min_meta", { points: this._num(a.min_points), points_name: this._esc(this._pointsName()) })}</div>` : ""}`;
     if (a.status === "open") {
       const left = Date.parse(a.closes_at || "") - Date.now();
       const who = (a.eligible_child_ids || []).map(cid => childById[cid]).filter(Boolean)
@@ -7434,7 +7434,7 @@ class TaskMatePanel extends HTMLElement {
       result = `<span class="tm-pill tm-pill-muted">${this._t("panel.auction_status_cancelled")}</span>`;
       status = `<span class="tm-pill tm-pill-muted">${this._t("panel.auction_status_normal")}</span>`;
     } else if (a.winner_id) {
-      result = `<div class="tm-auc-win">${winner ? this._childAvatar(winner) : ""}<div><strong>${this._esc(winner ? winner.name : "?")}</strong> ${this._t("panel.auction_won_at", { points: `<strong class="tm-auc-gold">${this._num(a.price)} ★</strong>` })}
+      result = `<div class="tm-auc-win">${winner ? this._childAvatar(winner) : ""}<div><strong>${this._esc(winner ? winner.name : "?")}</strong> ${this._t("panel.auction_won_at", { points: `<strong class="tm-auc-gold">${this._num(a.price)} ${this._pointsIconHtml()}</strong>` })}
         <div class="tm-meta">${this._esc(this._t("panel.auction_assigned_for", { date: this._auctionDate(a.occurrence) }))}</div></div></div>`;
       const st = a.chore_status || "todo";
       status = st === "done"
@@ -7582,10 +7582,10 @@ class TaskMatePanel extends HTMLElement {
           <div class="tm-auc-steprow">
             <div class="tm-auc-stepper">
               <button type="button" data-act="auction-max-step" data-id="-1" aria-label="−">−</button>
-              <span>${this._num(d.max_points)} ★</span>
+              <span>${this._num(d.max_points)} ${this._pointsIconHtml()}</span>
               <button type="button" data-act="auction-max-step" data-id="1" aria-label="+">+</button>
             </div>
-            <span class="tm-meta">${this._t("panel.auction_normally_worth", { points: normal })}</span>
+            <span class="tm-meta">${this._t("panel.auction_normally_worth", { points: normal, points_name: this._esc(this._pointsName()) })}</span>
           </div>
           <div class="tm-chip-row" style="margin-top:8px">
             ${multiples.map(([m, n]) => chip("auction-max-set", n, Number(d.max_points) === n, `${m}× · ${n}`)).join("")}
@@ -8158,7 +8158,7 @@ class TaskMatePanel extends HTMLElement {
         <div class="tm-tpl-icon"><ha-icon icon="${this._esc(tpl.icon || "mdi:clipboard-list")}"></ha-icon></div>
         <div class="tm-manage-tpl-info">
           <div class="tm-manage-tpl-name">${this._esc(tpl.name)}${locked ? ' <span class="tm-text-vfaint" style="font-size:12px">🔒</span>' : ""}</div>
-          <div class="tm-meta">${this._t("panel.template_pts_total", {count, points: pts})}</div>
+          <div class="tm-meta">${this._t("panel.template_pts_total", {count, points: pts, points_name: this._esc(this._pointsName())})}</div>
         </div>
         <div class="tm-row-actions">
           ${locked ? "" : `<button type="button" class="tm-btn tm-btn-sm" data-act="tpl-edit" data-id="${this._esc(tpl.id)}">${this._t("panel.btn_edit")}</button>`}
@@ -8200,7 +8200,7 @@ class TaskMatePanel extends HTMLElement {
           <div class="tm-tpl-icon"><ha-icon icon="${this._esc(tpl.icon || "mdi:clipboard-list")}"></ha-icon></div>
           <div style="flex:1">
             <div class="tm-tpl-picker-name">${this._esc(tpl.name)}</div>
-            <div class="tm-meta">${this._t("panel.template_pts_total", {count, points: pts})}</div>
+            <div class="tm-meta">${this._t("panel.template_pts_total", {count, points: pts, points_name: this._esc(this._pointsName())})}</div>
           </div>
           <span class="tm-pill ${tpl.builtin ? "tm-pill-accent" : "tm-pill-success"}">${tpl.builtin ? this._t("panel.template_builtin") : this._t("panel.template_custom")}</span>
         </div>
@@ -8227,7 +8227,7 @@ class TaskMatePanel extends HTMLElement {
       ${chores.map((c, i) => this._renderTemplateChoreCard(c, i)).join("")}
       ${chores.length > 0 ? `
         <div class="tm-tpl-confirm-bar">
-          <div>${this._t("panel.template_confirm_bar", {count: chores.length, points: totalPts})}</div>
+          <div>${this._t("panel.template_confirm_bar", {count: chores.length, points: totalPts, points_name: this._esc(this._pointsName())})}</div>
           <button type="button" class="tm-btn tm-btn-raised" data-act="tpl-apply">${this._t("panel.template_create_btn", {count: chores.length})}</button>
         </div>
       ` : `<div class="tm-card tm-empty"><p>${this._t("panel.empty_template_all_removed")}</p></div>`}
@@ -8243,7 +8243,7 @@ class TaskMatePanel extends HTMLElement {
           <span class="tm-tpl-expand ${expanded ? "open" : ""}">▶</span>
           <span class="tm-tpl-preview-name">${this._esc(chore.name)}</span>
           <span class="tm-tpl-preview-summary">
-            <span>${this._t("panel.pts_display", {count: chore.points || 0})}</span>
+            <span>${this._t("panel.pts_display", {count: chore.points || 0, points_name: this._esc(this._pointsName())})}</span>
             <span>${schedLabel}</span>
             <span>${this._esc(this._timeCategoryLabel(chore.time_category))}</span>
           </span>
@@ -8308,7 +8308,7 @@ class TaskMatePanel extends HTMLElement {
                 <label class="tm-tpl-check-row">
                   <input type="checkbox" data-tpl-chore-check="${this._esc(c.id)}">
                   <span>${this._esc(c.name)}</span>
-                  <span class="tm-text-muted" style="margin-inline-start:auto">${this._t("panel.pts_display", {count: c.points})}</span>
+                  <span class="tm-text-muted" style="margin-inline-start:auto">${this._t("panel.pts_display", {count: c.points, points_name: this._esc(this._pointsName())})}</span>
                 </label>
               `).join("")}
             </div>
@@ -8649,8 +8649,8 @@ class TaskMatePanel extends HTMLElement {
               <div class="tm-setting-label">${this._t("panel.settings_surprise_params_label")}<small>${this._t("panel.settings_surprise_params_hint")}</small></div>
               <div class="tm-difficulty-mults">
                 <label>${this._t("panel.settings_surprise_chance")}<input type="number" class="tm-input" step="1" min="0" max="100" data-setting="surprise_bonus_chance" value="${this._num(s.surprise_bonus_chance, 15)}"></label>
-                <label>${this._t("panel.settings_surprise_min")}<input type="number" class="tm-input" step="1" min="0" data-setting="surprise_bonus_min" value="${this._num(s.surprise_bonus_min, 5)}"></label>
-                <label>${this._t("panel.settings_surprise_max")}<input type="number" class="tm-input" step="1" min="0" data-setting="surprise_bonus_max" value="${this._num(s.surprise_bonus_max, 20)}"></label>
+                <label>${this._t("panel.settings_surprise_min", { points_name: this._esc(this._pointsName()) })}<input type="number" class="tm-input" step="1" min="0" data-setting="surprise_bonus_min" value="${this._num(s.surprise_bonus_min, 5)}"></label>
+                <label>${this._t("panel.settings_surprise_max", { points_name: this._esc(this._pointsName()) })}<input type="number" class="tm-input" step="1" min="0" data-setting="surprise_bonus_max" value="${this._num(s.surprise_bonus_max, 20)}"></label>
               </div>
             </div>
             <div class="tm-setting-row tm-setting-stack">
@@ -8711,7 +8711,7 @@ class TaskMatePanel extends HTMLElement {
             <div class="tm-setting-row">
               <div class="tm-setting-label">${this._t("panel.settings_spendcap_params_label")}<small>${this._t("panel.settings_spendcap_params_hint")}</small></div>
               <div class="tm-difficulty-mults">
-                <label>${this._t("panel.settings_spendcap_amount")}<input type="number" class="tm-input" step="1" min="0" data-setting="spend_cap_amount" value="${this._num(s.spend_cap_amount, 0)}"></label>
+                <label>${this._t("panel.settings_spendcap_amount", { points_name: this._esc(this._pointsName()) })}<input type="number" class="tm-input" step="1" min="0" data-setting="spend_cap_amount" value="${this._num(s.spend_cap_amount, 0)}"></label>
                 <label>${this._t("panel.settings_decay_period")}
                   <select class="tm-select" data-setting="spend_cap_period">
                     <option value="weekly" ${s.spend_cap_period === "weekly" ? "selected" : ""}>${this._t("panel.reward_restock_weekly")}</option>
@@ -9264,18 +9264,28 @@ class TaskMatePanel extends HTMLElement {
   // backend (complete_chore with completed_date) re-checks every rule here —
   // the last 7 days, the child's own non-rotating job, due that day, that
   // day's limit — so this list is a convenience, not the gate.
+  // "Today" is Home Assistant's today: the backend checks the day against its
+  // own clock and zone, so a browser in another zone (or a tablet with a wrong
+  // clock) must not offer a day the backend would call today or too old.
   _backdateDays() {
-    const pad = (n) => String(n).padStart(2, "0");
+    const tz = this._hass?.config?.time_zone;
     const lang = this._hass?.locale?.language || this._hass?.language || undefined;
+    let todayKey;
+    try {
+      todayKey = new Date().toLocaleDateString("en-CA", tz ? { timeZone: tz } : undefined);
+    } catch (err) {
+      todayKey = new Date().toLocaleDateString("en-CA");
+    }
+    const [y, m, d0] = todayKey.split("-").map(Number);
     const days = [];
     for (let back = 1; back <= 7; back++) {
-      const d = new Date();
-      d.setHours(12, 0, 0, 0);
-      d.setDate(d.getDate() - back);
+      // Plain calendar arithmetic on the date parts, at noon UTC so no zone
+      // can push it onto a neighbouring day.
+      const d = new Date(Date.UTC(y, m - 1, d0 - back, 12));
       days.push({
-        v: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
-        l: d.toLocaleDateString(lang, { weekday: "long", day: "numeric", month: "short" }),
-        dow: ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][d.getDay()],
+        v: d.toISOString().slice(0, 10),
+        l: d.toLocaleDateString(lang, { weekday: "long", day: "numeric", month: "short", timeZone: "UTC" }),
+        dow: ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][d.getUTCDay()],
       });
     }
     return days;
@@ -9287,6 +9297,11 @@ class TaskMatePanel extends HTMLElement {
       if ((c.disabled_for || []).includes(childId)) return false;
       if ((c.assigned_to || []).length && !(c.assigned_to || []).includes(childId)) return false;
       if ((c.assignment_mode || "everyone") !== "everyone") return false;
+      // TaskMate refuses these for a past day: an open-ended job needs the
+      // child's note and a price, and a team's members can't be reconstructed.
+      if (c.open_ended || c.team_size >= 2) return false;
+      // A weekly-target job has no fixed days: the child picks them.
+      if (Number(c.weekly_target) > 0) return true;
       if ((c.schedule_mode || "specific_days") === "specific_days") {
         const due = c.due_days || [];
         return !due.length || due.includes(dow);
@@ -9301,6 +9316,8 @@ class TaskMatePanel extends HTMLElement {
     const day = this._backdateDays()[0];
     const first = this._backdateChores(childId, day.dow)[0];
     this._backdateKey = "";
+    this._backdateUseList = false;
+    this._backdateCardReady = undefined;
     this._openDialog({ kind: "backdate", data: { child_id: childId, day: day.v, chore_id: first ? first.id : "" } });
     this._backdateCardReady = await this._loadBackdateCard();
     if (this._dialog && this._dialog.kind === "backdate") this._render();
@@ -9334,26 +9351,45 @@ class TaskMatePanel extends HTMLElement {
 
   // Called after every render: the card element is created once and moved
   // into the dialog's placeholder, so a re-render never loses its state.
+  //
+  // Nothing here may throw: it runs inside the panel's render, so an error
+  // would leave the whole panel dead until a reload. If the card can't be
+  // built (its module hasn't defined it yet, or the overview sensor is
+  // missing), the dialog falls back to the plain job list instead.
   _mountBackdateCard() {
     const host = this.querySelector(".tm-backdate-host");
     if (!host || !this._dialog || this._dialog.kind !== "backdate") return;
-    const d = this._dialog.data;
-    if (!this._backdateCard) {
-      this._backdateCard = document.createElement("taskmate-sticker-chart-card");
-      this._backdateCard.addEventListener("taskmate-day-changed", () => this._refreshBackdateDay());
+    // Not defined yet: _openBackdateDialog re-renders once the import settles.
+    if (!customElements.get("taskmate-sticker-chart-card")) return;
+    try {
+      const entity = this._overviewEntity();
+      if (!entity) throw new Error("no TaskMate overview sensor");
+      const d = this._dialog.data;
+      if (!this._backdateCard) {
+        this._backdateCard = document.createElement("taskmate-sticker-chart-card");
+        this._backdateCard.addEventListener("taskmate-day-changed", () => this._refreshBackdateDay());
+      }
+      const card = this._backdateCard;
+      const key = `${d.child_id}|${d.day}`;
+      if (this._backdateKey !== key) {
+        card.setConfig({ entity, child_id: d.child_id, date: d.day, show_claim: false });
+        this._backdateKey = key;
+        card.dayCompletions = [];
+        this._refreshBackdateDay();
+        // Changing the day isn't an unsaved edit: every tick is saved as it's made.
+        this._dialogInitialHash = this._hashDialog();
+      }
+      card.hass = this._hass;
+      if (card.parentNode !== host) host.appendChild(card);
+    } catch (err) {
+      console.warn("TaskMate: sticker chart card couldn't be shown in the panel", err);
+      if (!this._backdateUseList) {
+        this._backdateUseList = true;
+        this._backdateCard = null;
+        // Re-render on the next turn rather than from inside a render.
+        setTimeout(() => { if (this._dialog && this._dialog.kind === "backdate") this._render(); }, 0);
+      }
     }
-    const card = this._backdateCard;
-    const key = `${d.child_id}|${d.day}`;
-    if (this._backdateKey !== key) {
-      this._backdateKey = key;
-      card.setConfig({ entity: this._overviewEntity(), child_id: d.child_id, date: d.day, show_claim: false });
-      card.dayCompletions = [];
-      this._refreshBackdateDay();
-      // Changing the day isn't an unsaved edit: every tick is saved as it's made.
-      this._dialogInitialHash = this._hashDialog();
-    }
-    card.hass = this._hass;
-    if (card.parentNode !== host) host.appendChild(card);
   }
 
   async _refreshBackdateDay() {
@@ -9372,7 +9408,7 @@ class TaskMatePanel extends HTMLElement {
     const name = child.name || this._t("panel.child_unnamed");
     const days = this._backdateDays();
     const day = days.find(x => x.v === d.day) || days[0];
-    if (this._backdateCardReady !== false) {
+    if (this._backdateCardReady !== false && !this._backdateUseList) {
       return this._dialogShell(
         this._t("panel.backdate_title", { name }),
         [
@@ -9512,7 +9548,7 @@ class TaskMatePanel extends HTMLElement {
               <div class="tm-tpl-preview-card" style="margin-bottom:8px">
                 <div style="display:flex;align-items:center;gap:10px;padding:10px 14px">
                   <span style="font-weight:600;flex:1">${this._esc(c.name || this._t("panel.template_unnamed"))}</span>
-                  <span class="tm-meta">${this._t("panel.pts_display", {count: c.points || 0})}</span>
+                  <span class="tm-meta">${this._t("panel.pts_display", {count: c.points || 0, points_name: this._esc(this._pointsName())})}</span>
                   <button type="button" class="tm-tpl-remove" data-act="tpl-dialog-remove-chore" data-idx="${i}">✕</button>
                 </div>
                 <div style="padding:0 14px 12px;border-top:1px solid var(--tm-border-soft)">
@@ -10873,6 +10909,15 @@ class TaskMatePanel extends HTMLElement {
     return `<ha-icon icon="${this._esc(name || "mdi:account-circle")}"></ha-icon>`;
   }
 
+  _pointsName() {
+    return this._state.settings?.points_name || this._t("common.points");
+  }
+
+  /** The configured points icon, sized to sit inline after a number. */
+  _pointsIconHtml() {
+    return `<ha-icon class="tm-pts-ic" icon="${this._esc(this._state.settings?.points_icon || "mdi:star")}"></ha-icon>`;
+  }
+
   _styles() {
     return `<style>
       /* Fill the panel area without depending on a percentage-height chain.
@@ -11336,6 +11381,7 @@ class TaskMatePanel extends HTMLElement {
       .tm-auc-ic { width: 34px; height: 34px; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #7e57c2, #5e35b1); }
       .tm-auc-ic ha-icon { --mdc-icon-size: 18px; }
       .tm-auc-gold { color: var(--tm-gold, #d4ac0d); }
+      .tm-pts-ic { --mdc-icon-size: 1.1em; vertical-align: -0.15em; }
       .tm-auc-head { flex: 1; min-width: 0; }
       .tm-auc-chips .tm-chip-btn { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
       .tm-auc-chips .tm-chip-btn > ha-icon { --mdc-icon-size: 15px; }

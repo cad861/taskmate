@@ -539,10 +539,16 @@ class TaskMateStickerChartCard extends LitElement {
       const assigned = (Array.isArray(chore.assigned_to) ? chore.assigned_to : []).map(String);
       if (assigned.length && !assigned.includes(childId)) continue;
 
+      // An open-ended chore is a placeholder for unlisted work: the child's note
+      // is the job, and a tile has nowhere to take it, so it stays on the child
+      // card. (A completion made there still counts in the totals.)
+      if (chore.open_ended) continue;
+
       const mode = chore.assignment_mode || "everyone";
-      // Whose turn a rotation chore was can't be reconstructed for a past
-      // day, and TaskMate refuses to log one, so it isn't offered.
-      if (past && mode !== "everyone") continue;
+      // Whose turn a rotation chore was, or who made up a team, can't be
+      // reconstructed for a past day, and TaskMate refuses to log one, so
+      // it isn't offered.
+      if (past && (mode !== "everyone" || chore.team)) continue;
       if (mode !== "everyone" && mode !== "first_come") {
         const active = chore.assignment_current_child_id ? String(chore.assignment_current_child_id) : "";
         if (active !== childId) continue;
@@ -557,7 +563,17 @@ class TaskMateStickerChartCard extends LitElement {
       const perChild = availability[chore.id];
       if (perChild && perChild[childId] === false && mine.length === 0) continue;
 
-      const limit = mode === "first_come" ? 1 : Math.max(1, Number(chore.daily_limit) || 1);
+      let limit = mode === "first_come" ? 1 : Math.max(1, Number(chore.daily_limit) || 1);
+      // Weekly target (#883): the quota caps it a level above the day. Once the
+      // earlier days have filled it there is nothing left to tick, so the row
+      // goes; a tick made today that filled it stays, so it can still be undone.
+      // (A past day's weekly total isn't known here; TaskMate checks it.)
+      const weeklyTarget = Number(chore.weekly_target) || 0;
+      if (weeklyTarget > 0 && !past) {
+        const left = Math.max(0, weeklyTarget - Number((child.weekly_chore_progress || {})[chore.id] || 0));
+        if (mine.length === 0 && left === 0) continue;
+        limit = Math.min(limit, mine.length + left);
+      }
       const approved = mine.filter(c => c.approved).length;
 
       const key = `${childId}:${chore.id}`;
@@ -643,8 +659,12 @@ class TaskMateStickerChartCard extends LitElement {
           chore_id: row.chore.id, child_id: child.id,
         });
       }
-      this._playSound(row.chore.completion_sound || this.config.default_sound || "coin");
-      this._celebrate(child, row, lastOfDay);
+      // Logging a past day happens in the admin panel's dialog, where a coin
+      // chime and a full-screen pop-up would land on the grown-up, not the child.
+      if (!pastDate) {
+        this._playSound(row.chore.completion_sound || this.config.default_sound || "coin");
+        this._celebrate(child, row, lastOfDay);
+      }
     } catch (err) {
       const next = { ...this._optimistic };
       delete next[row.key];
@@ -683,7 +703,7 @@ class TaskMateStickerChartCard extends LitElement {
     try {
       await this.hass.callService("taskmate", "reject_chore", { completion_id: latest.completion_id });
       if (this._pastDay()) this._dayChanged();
-      this._playSound(this.config.undo_sound || "undo");
+      else this._playSound(this.config.undo_sound || "undo");
       this._toast(this._t("sticker_chart.undone"));
     } catch (err) {
       const msg = String(err?.message || err || "");
