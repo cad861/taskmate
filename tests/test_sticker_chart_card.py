@@ -195,3 +195,10 @@ def test_a_week_can_be_shown_as_just_what_was_earned():
     banner for a plain "you've earned x this week"."""
     assert 'this.config.week_style === "earned"' in CARD
     assert "sticker_chart.week_earned" in CARD
+
+
+def test_each_tile_shows_what_the_job_is_worth():
+    """The badge reads the price the sensor already worked out (difficulty and
+    team share included) and can be turned off with `show_points: false`."""
+    assert "row.chore.effective_points ?? row.chore.points" in CARD
+    assert "this.config.show_points !== false" in CARD
