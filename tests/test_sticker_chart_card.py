@@ -188,3 +188,10 @@ def test_the_goal_tile_and_claim_button_can_be_hidden():
     """`show_goal: false` drops the goal tile and the claim button with it, for
     a view that rewards weekly jobs and lists its rewards elsewhere."""
     assert "reward && this.config.show_goal !== false" in CARD
+
+
+def test_a_week_can_be_shown_as_just_what_was_earned():
+    """`week_style: earned` swaps "x / y this week", the blocks and the perfect-week
+    banner for a plain "you've earned x this week"."""
+    assert 'this.config.week_style === "earned"' in CARD
+    assert "sticker_chart.week_earned" in CARD

@@ -981,7 +981,9 @@ class TaskMateStickerChartCard extends LitElement {
             <div class="face">${this._face(child)}</div>
           </div>
 
-          ${weekly ? (target > 0 ? html`
+          ${weekly && this.config.week_style === "earned" ? html`
+            <div class="goal-line">${_ltrNums(this._t("sticker_chart.week_earned", { points: progress, unit }))}</div>
+          ` : weekly ? (target > 0 ? html`
             <div class="goal-line">${_ltrNums(this._t("sticker_chart.week_goal", { points: earned, goal: target, unit }))}</div>
             ${this._renderBlocks(progress, target, unit)}
             ${full ? html`<div class="reached">🌟 ${this._t("sticker_chart.week_perfect")} 🌟</div>` : ""}
