@@ -361,6 +361,15 @@ class TaskMateStickerChartCard extends LitElement {
       }
       .flag { inset-inline-end: auto; inset-inline-start: 8px; }
       .tile.done .count { background: rgba(255,255,255,0.9); color: #111; }
+      /* What the job is worth, under its name, so a child can see what a tick earns. */
+      .worth {
+        display: inline-flex; align-items: center; gap: 2px;
+        font-size: 12px; font-weight: 800; line-height: 1;
+        padding: 3px 8px; border-radius: 999px;
+        background: rgba(127,127,127,0.2); color: var(--primary-text-color);
+      }
+      .worth ha-icon { --mdc-icon-size: 14px; color: var(--tone, #f1c40f); }
+      .tile.done .worth { background: rgba(255,255,255,0.9); color: #111; }
       .none-today { padding: 22px 16px; text-align: center; }
 
       /* -- Goal + claim -- */
@@ -875,6 +884,8 @@ class TaskMateStickerChartCard extends LitElement {
     const grad = GRADIENTS[index % GRADIENTS.length];
     const pct = Math.round((100 * Math.min(row.total, row.limit)) / row.limit);
     const stateLabel = this._t(`sticker_chart.state.${row.state}`);
+    const worth = Number(row.chore.effective_points ?? row.chore.points) || 0;
+    const icon = (this._attrs() || {}).points_icon || "mdi:star";
     return html`
       <button class="tile ${row.state}"
               style="--grad:${grad};--pct:${pct}%"
@@ -890,6 +901,8 @@ class TaskMateStickerChartCard extends LitElement {
         ${row.state === "pending" ? html`<span class="flag">⏳</span>` : ""}
         <span class="glyph">${glyph}</span>
         <span class="label">${label}</span>
+        ${this.config.show_points !== false && worth > 0
+          ? html`<span class="worth"><ha-icon icon="${icon}"></ha-icon>${worth}</span>` : ""}
       </button>`;
   }
 
