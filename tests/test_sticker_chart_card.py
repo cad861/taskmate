@@ -202,3 +202,9 @@ def test_each_tile_shows_what_the_job_is_worth():
     team share included) and can be turned off with `show_points: false`."""
     assert "row.chore.effective_points ?? row.chore.points" in CARD
     assert "this.config.show_points !== false" in CARD
+
+
+def test_a_child_can_have_their_own_colour():
+    """`child_colors` (by id or name, hex only) overrides the design's colour for
+    that child's gem, pill and badges."""
+    assert "this.config.child_colors" in CARD
