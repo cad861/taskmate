@@ -237,7 +237,7 @@ class TaskMateStickerChartCard extends LitElement {
         color: var(--primary-text-color);
         font-size: 1.05rem; font-weight: 500;
       }
-      .heading ha-icon { --mdc-icon-size: 20px; }
+      .heading ha-icon { --mdc-icon-size: 18px; }
       .heading .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* The child's running total: the number the whole chart is about, so it
          gets a tinted pill of its own rather than a footnote beside the title. */
@@ -250,8 +250,8 @@ class TaskMateStickerChartCard extends LitElement {
       @supports (background: color-mix(in srgb, red, blue)) {
         .score { background: color-mix(in srgb, var(--tone, #3498db) 20%, transparent); }
       }
-      .score ha-icon { --mdc-icon-size: 30px; color: var(--tone, #3498db); }
-      .score .num { font-size: 2rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+      .score ha-icon { --mdc-icon-size: 24px; color: var(--tone, #3498db); }
+      .score .num { font-size: 1.8rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
       .score .unit { font-size: 0.8rem; font-weight: 600; color: var(--secondary-text-color); }
 
       /* -- Summary -- */
@@ -269,9 +269,9 @@ class TaskMateStickerChartCard extends LitElement {
         background: rgba(127,127,127,0.18);
         flex: none;
       }
-      .face ha-icon { --mdc-icon-size: 60px; color: var(--primary-color); }
+      .face ha-icon { --mdc-icon-size: 48px; color: var(--primary-color); }
       .stickers {
-        font-size: 26px; line-height: 1.3;
+        font-size: 22px; line-height: 1.3;
         word-break: break-all;
       }
       .stickers-none, .muted {
@@ -324,11 +324,11 @@ class TaskMateStickerChartCard extends LitElement {
       .tile:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
       .tile:active { transform: scale(0.96); }
       .glyph {
-        font-size: 36px; line-height: 1;
+        font-size: 30px; line-height: 1;
         filter: grayscale(1) opacity(0.5);
       }
       .glyph img {
-        width: 58px; height: 58px; min-width: 0; min-height: 0;
+        width: 48px; height: 48px; min-width: 0; min-height: 0;
         object-fit: cover; border-radius: 12px; display: block;
       }
       .label {
@@ -368,7 +368,7 @@ class TaskMateStickerChartCard extends LitElement {
         padding: 3px 8px; border-radius: 999px;
         background: rgba(127,127,127,0.2); color: var(--primary-text-color);
       }
-      .worth ha-icon { --mdc-icon-size: 14px; color: var(--tone, #f1c40f); }
+      .worth ha-icon { --mdc-icon-size: 12px; color: var(--tone, #f1c40f); }
       .tile.done .worth { background: rgba(255,255,255,0.9); color: #111; }
       .none-today { padding: 22px 16px; text-align: center; }
 
@@ -377,7 +377,7 @@ class TaskMateStickerChartCard extends LitElement {
         display: flex; align-items: center; gap: 14px;
         padding: 16px 18px; width: 50%; box-sizing: border-box;
       }
-      .goal-tile ha-icon { --mdc-icon-size: 26px; color: #f1c40f; }
+      .goal-tile ha-icon { --mdc-icon-size: 22px; color: #f1c40f; }
       .goal-tile .gt-title { font-weight: 600; color: var(--primary-text-color); }
       .goal-tile .gt-sub { font-size: 0.8rem; color: var(--secondary-text-color); }
       .claim {
@@ -386,7 +386,7 @@ class TaskMateStickerChartCard extends LitElement {
         font: inherit; font-weight: 600; color: var(--primary-text-color);
         cursor: pointer; border: none;
       }
-      .claim ha-icon { --mdc-icon-size: 44px; }
+      .claim ha-icon { --mdc-icon-size: 36px; }
       .claim[disabled] { cursor: default; opacity: 0.6; }
       .claim.armed { outline: 3px solid #f1c40f; outline-offset: -3px; }
 
@@ -425,7 +425,7 @@ class TaskMateStickerChartCard extends LitElement {
         font-size: 1.8rem; font-weight: bold; color: #e67e22;
         display: flex; align-items: center; justify-content: center; gap: 8px;
       }
-      .celebration-points ha-icon { --mdc-icon-size: 28px; color: #f1c40f; }
+      .celebration-points ha-icon { --mdc-icon-size: 24px; color: #f1c40f; }
       .confetti-container {
         position: fixed; inset: 0;
         pointer-events: none; z-index: 10000; overflow: hidden;
@@ -456,9 +456,9 @@ class TaskMateStickerChartCard extends LitElement {
       }
       @media (max-width: 420px) {
         .face { width: 76px; height: 76px; min-width: 76px; }
-        .face ha-icon { --mdc-icon-size: 42px; }
-        .stickers { font-size: 21px; }
-        .glyph { font-size: 30px; }
+        .face ha-icon { --mdc-icon-size: 34px; }
+        .stickers { font-size: 18px; }
+        .glyph { font-size: 26px; }
         .goal-tile { width: 100%; }
       }
     `;
@@ -942,7 +942,12 @@ class TaskMateStickerChartCard extends LitElement {
     const done = rows.filter(r => r.state === "done").length;
     const allDone = rows.length > 0 && done === rows.length;
 
-    const tone = `var(--tmd-c${(index % 6) + 1}, ${index % 2 ? "#e84393" : "#3498db"})`;
+    // A child can be given their own colour (`child_colors`, by id or name), so
+    // two children's gems never have to be the design's default pair.
+    const own = (this.config.child_colors || {})[child.id] || (this.config.child_colors || {})[child.name];
+    const tone = /^#[0-9a-fA-F]{3,8}$/.test(own || "")
+      ? own
+      : `var(--tmd-c${(index % 6) + 1}, ${index % 2 ? "#e84393" : "#3498db"})`;
     const title = this.config.title || this._t("sticker_chart.default_title", { name: child.name });
 
     const pendingClaim = reward && (attrs.pending_reward_claims || [])
