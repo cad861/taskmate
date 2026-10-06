@@ -182,3 +182,9 @@ def test_a_refused_tap_explains_itself():
     assert "_failed(err, child)" in CARD
     assert "sticker_chart.not_allowed" in CARD
     assert "/unauthori|not authorized|admin|permission|forbidden/i" in CARD
+
+
+def test_the_goal_tile_and_claim_button_can_be_hidden():
+    """`show_goal: false` drops the goal tile and the claim button with it, for
+    a view that rewards weekly jobs and lists its rewards elsewhere."""
+    assert "reward && this.config.show_goal !== false" in CARD

@@ -998,7 +998,7 @@ class TaskMateStickerChartCard extends LitElement {
           </div>` : html`
           <div class="panel none-today muted">${this._t("sticker_chart.no_jobs_today")}</div>`}
 
-        ${reward ? html`
+        ${reward && this.config.show_goal !== false ? html`
           <div class="panel goal-tile">
             <ha-icon icon="mdi:trophy"></ha-icon>
             <div>
