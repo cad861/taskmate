@@ -68,8 +68,11 @@ def _compute_common(coordinator: TaskMateCoordinator) -> dict:
     """
     data = coordinator.data
     data_id = id(data)
+    # External entities TaskMate reads (a child's photo among them) are not part
+    # of ``data``, so their version is part of the key.
+    external = getattr(coordinator, "external_state_version", 0)
     cached = getattr(coordinator, _COMMON_CACHE_ATTR, None)
-    if cached and cached.get("data_id") == data_id:
+    if cached and cached.get("data_id") == data_id and cached.get("external") == external:
         return cached["common"]
 
     children = data.get("children", [])
@@ -148,7 +151,7 @@ def _compute_common(coordinator: TaskMateCoordinator) -> dict:
         # Sent back to redo by an inspection (#981): not "done" on the card.
         "inspection_redo_ids": _inspection_redo_ids(coordinator),
     }
-    setattr(coordinator, _COMMON_CACHE_ATTR, {"data_id": data_id, "common": common})
+    setattr(coordinator, _COMMON_CACHE_ATTR, {"data_id": data_id, "external": external, "common": common})
     return common
 
 
