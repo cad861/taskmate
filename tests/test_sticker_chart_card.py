@@ -208,3 +208,13 @@ def test_a_child_can_have_their_own_colour():
     """`child_colors` (by id or name, hex only) overrides the design's colour for
     that child's gem, pill and badges."""
     assert "this.config.child_colors" in CARD
+
+
+def test_finished_jobs_can_be_parked_at_the_end():
+    """`done_last` re-orders only by state, keeping each group's own order."""
+    assert "this.config.done_last" in CARD
+
+
+def test_the_new_options_are_in_the_visual_editor():
+    for name in ("week_style", "show_goal", "show_points", "done_last"):
+        assert f'name: "{name}"' in CARD
