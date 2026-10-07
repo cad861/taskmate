@@ -121,3 +121,57 @@ class TestSensorExposure:
         row = self._summary(child, {"person.evie": _state(EVIE_PIC)})
         assert row["avatar_image"] == ""
         assert row["avatar"] == "mdi:rocket-launch"
+
+
+class TestPhotoChangesReachTheSensors:
+    """A photo changed on the person entity must show without a TaskMate edit."""
+
+    @staticmethod
+    def _event(entity_id, old_picture, new_picture):
+        def state(picture):
+            return None if picture is None else _state(picture)
+
+        event = MagicMock()
+        event.data = {"entity_id": entity_id, "old_state": state(old_picture), "new_state": state(new_picture)}
+        return event
+
+    @staticmethod
+    def _tracking_coord(entity="person.millie"):
+        child = Child(name="Millie", id="millie", picture_entity=entity)
+        coord = _coord([child], {})
+        coord.external_state_version = 0
+        coord.async_update_listeners = MagicMock()
+        coord.storage.get_chores = MagicMock(return_value=[])
+        coord._refresh_tracked_availability_entities()
+        return coord
+
+    def test_the_picture_entity_is_tracked(self):
+        coord = self._tracking_coord()
+        assert coord._tracked_picture_entities == {"person.millie"}
+
+    def test_a_children_without_a_picture_entity_track_nothing(self):
+        coord = self._tracking_coord(entity="")
+        assert coord._tracked_picture_entities == set()
+
+    def test_a_new_photo_refreshes_the_sensors(self):
+        coord = self._tracking_coord()
+        coord._availability_state_changed(self._event("person.millie", MILLIE_PIC, "/api/image/serve/new/512x512"))
+        assert coord.external_state_version == 1
+        coord.async_update_listeners.assert_called_once()
+
+    def test_a_person_arriving_home_does_not(self):
+        """The state flips constantly; the picture did not change."""
+        coord = self._tracking_coord()
+        coord._availability_state_changed(self._event("person.millie", MILLIE_PIC, MILLIE_PIC))
+        assert coord.external_state_version == 0
+        coord.async_update_listeners.assert_not_called()
+
+    def test_a_photo_removed_is_a_change(self):
+        coord = self._tracking_coord()
+        coord._availability_state_changed(self._event("person.millie", MILLIE_PIC, None))
+        assert coord.external_state_version == 1
+
+    def test_other_entities_are_ignored(self):
+        coord = self._tracking_coord()
+        coord._availability_state_changed(self._event("person.someone_else", None, MILLIE_PIC))
+        assert coord.external_state_version == 0
