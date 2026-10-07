@@ -938,8 +938,14 @@ class TaskMateStickerChartCard extends LitElement {
     const full = target > 0 && progress >= target;
     const shown = Math.min(earned, MAX_STICKERS);
 
-    const rows = this._todaysChores(child, attrs);
+    let rows = this._todaysChores(child, attrs);
     const done = rows.filter(r => r.state === "done").length;
+    // Optionally park finished jobs at the end, so what is left to do is at
+    // the front. A stable sort: the jobs keep their usual order within a group.
+    if (this.config.done_last) {
+      const rank = { done: 2, pending: 1 };
+      rows = rows.map((row, i) => [row, i]).sort((a, b) => ((rank[a[0].state] || 0) - (rank[b[0].state] || 0)) || a[1] - b[1]).map(x => x[0]);
+    }
     const allDone = rows.length > 0 && done === rows.length;
 
     // A child can be given their own colour (`child_colors`, by id or name), so
@@ -1158,10 +1164,25 @@ class TaskMateStickerChartCardEditor extends LitElement {
           },
         },
       },
+      {
+        name: "week_style",
+        selector: {
+          select: {
+            options: [
+              { value: "goal", label: this._t("sticker_chart.editor.week_style_total") },
+              { value: "earned", label: this._t("sticker_chart.editor.week_style_earned") },
+            ],
+            mode: "dropdown",
+          },
+        },
+      },
       { name: "title", selector: { text: {} } },
       { name: "columns", selector: { number: { min: 2, max: 6, mode: "slider" } } },
       { name: "show_today", selector: { boolean: {} } },
+      { name: "show_goal", selector: { boolean: {} } },
       { name: "show_claim", selector: { boolean: {} } },
+      { name: "show_points", selector: { boolean: {} } },
+      { name: "done_last", selector: { boolean: {} } },
       { name: "allow_undo", selector: { boolean: {} } },
       { name: "sound", selector: { boolean: {} } },
       {
@@ -1184,6 +1205,10 @@ class TaskMateStickerChartCardEditor extends LitElement {
       child_id: this._t("sticker_chart.editor.child"),
       reward_id: this._t("sticker_chart.editor.reward"),
       goal: this._t("sticker_chart.editor.goal"),
+      week_style: this._t("sticker_chart.editor.week_style"),
+      show_goal: this._t("sticker_chart.editor.show_goal"),
+      show_points: this._t("sticker_chart.editor.show_points"),
+      done_last: this._t("sticker_chart.editor.done_last"),
       title: this._t("sticker_chart.editor.title"),
       columns: this._t("sticker_chart.editor.columns"),
       show_today: this._t("sticker_chart.editor.show_today"),
@@ -1212,12 +1237,14 @@ class TaskMateStickerChartCardEditor extends LitElement {
   // default column count is omitted, so a card's YAML stays minimal.
   _valueChanged(e) {
     e.stopPropagation();
-    const defaultsOn = new Set(["show_today", "show_claim", "allow_undo", "sound"]);
+    const defaultsOn = new Set(["show_today", "show_goal", "show_claim", "show_points", "allow_undo", "sound"]);
     const newConfig = {};
     for (const [key, value] of Object.entries(e.detail.value)) {
       if (value === "" || value === null || value === undefined) continue;
       if (key === "card_design" && value === "global") continue;
       if (key === "goal" && value === "reward") continue;
+      if (key === "week_style" && value === "goal") continue;
+      if (key === "done_last" && value === false) continue;
       if (defaultsOn.has(key) && value === true) continue;
       if (key === "columns" && Number(value) === 4) continue;
       newConfig[key] = value;
@@ -1229,7 +1256,10 @@ class TaskMateStickerChartCardEditor extends LitElement {
 
   render() {
     if (!this.hass || !this.config) return html``;
-    const data = { goal: "reward", show_today: true, show_claim: true, allow_undo: true, sound: true, columns: 4, ...this.config };
+    const data = {
+      goal: "reward", week_style: "goal", show_today: true, show_goal: true, show_claim: true, show_points: true,
+      done_last: false, allow_undo: true, sound: true, columns: 4, ...this.config,
+    };
     return html`
       <ha-form
         .hass=${this.hass}
